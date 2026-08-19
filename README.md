@@ -573,7 +573,7 @@ service. The enclosure itself is not finished — no cameras are attached yet �
 the self-test correctly refuses to report `READY TO PLAY` on the hardware.
 
 - **Version:** 0.2.0
-- **Tests:** 165 passing on macOS and on the Raspberry Pi (Python 3.13.5, arm64)
+- **Tests:** 231 passing on macOS and on the Raspberry Pi (Python 3.13.5, arm64)
 - **Dependencies:** none. Standard library only, so the Pi install needs no pip
   packages.
 
@@ -584,6 +584,8 @@ See [docs/pi-baseline-audit.md](docs/pi-baseline-audit.md) for the read-only
 audit taken before anything was installed.
 
 - The service installs, enables, starts, and survives a restart.
+- Re-running the installer upgrades in place and preserves the device ID, the
+  setup password, and every saved setting.
 - It listens on port 80 (setup page), 39877 (Companion), 39876/udp (discovery),
   and loopback 9210/9248 (the relay).
 - It read the real network through the netplan-owned profile without modifying
@@ -637,6 +639,32 @@ audit taken before anything was installed.
   owner — each stating what it keeps and what it removes.
 - Safe shutdown with a clear safe-to-unplug message.
 - Raspberry Pi installer, hardened systemd unit, and Windows executable build.
+- An illustrated setup guide for owners and an operator guide for whoever builds
+  and maintains enclosures, both tested against the code so a quoted timeout or
+  error code cannot silently go stale.
+
+### Hardened against
+
+Found by tests that are now part of the suite, and each fixed:
+
+- Unbounded memory growth from repeated pairing attempts, reachable without
+  authentication.
+- Shots accumulating forever when a computer connects but stops answering,
+  leaving PiTrac waiting on a reply that never comes.
+- Shot delivery reporting healthy when nothing was actually listening on the
+  relay port, which would lose every shot silently.
+- The enclosure claiming `SETUP REQUIRED` while a computer was paired and shots
+  were flowing.
+- The Companion under-reporting lost shots, because it could only count the ones
+  that reached it.
+- E6 shots counted four times over, once per message in the sequence.
+- Invalid country codes, over-long network names, and control characters
+  surfacing as internal errors instead of something a person can act on.
+
+Verified stable and left alone: no thread, socket, or memory growth across 180
+shots with simulator and link churn; the relay survives garbage, binary, huge,
+and partial input; network names containing apostrophes, emoji, colons,
+backslashes, and CJK survive scanning, joining, and display.
 
 ### Not implemented yet
 
