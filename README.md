@@ -65,6 +65,18 @@ PYTHONPATH=src python3 -m pitrac_easy_connect.demo gspro --no-network --no-pair
 The `Run GSPro Demo.command` and `Run E6 Demo.command` files do the same thing
 from Finder.
 
+## Guides
+
+- **[Setting up PiTrac](docs/beginner-guide.html)** &mdash; the illustrated guide for
+  whoever owns the enclosure. Printable, and written for someone who has never
+  used a terminal. A plain-text version is at
+  [beginner-guide.md](docs/beginner-guide.md).
+- **[Operator guide](docs/operator-guide.md)** &mdash; installing on a new Raspberry Pi 5,
+  setting up simulator PCs, building a second enclosure, upgrading, and
+  diagnosing a misbehaving unit.
+- **[Pi baseline audit](docs/pi-baseline-audit.md)** &mdash; what the target Pi actually
+  looks like, and the integration constraints that follow from it.
+
 ## Install on the Raspberry Pi
 
 Copy this directory to the Pi, then:
