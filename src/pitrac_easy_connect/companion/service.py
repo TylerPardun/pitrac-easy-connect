@@ -234,6 +234,7 @@ class CompanionService:
             self.computer_name,
             on_shot=self._forward_shot,
             on_state=self._on_link_state,
+            on_enclosure_status=self._on_enclosure_status,
         )
         with self._lock:
             self._link = client
@@ -247,6 +248,10 @@ class CompanionService:
             client, self._link = self._link, None
         if client is not None:
             client.stop()
+
+    def _on_enclosure_status(self, payload: Dict[str, Any]) -> None:
+        with self._lock:
+            self._pi_status = dict(payload)
 
     def _on_link_state(self) -> None:
         client = self._link
@@ -467,6 +472,21 @@ class CompanionService:
             pi_status = dict(self._pi_status)
         chain = self.chain()
         blocking = next((step for step in chain if step["blocking"]), None)
+
+        # The enclosure's relay counts every shot PiTrac sent, including the
+        # ones that never reached this computer. Prefer its numbers so a user is
+        # never told nothing was lost when something was.
+        relay = pi_status.get("relay") or {}
+        if relay:
+            shots = {
+                "delivered": relay.get("shotsForwarded", delivered),
+                "lost": relay.get("shotsFailed", lost),
+                "lastAt": last_shot,
+                "countedBy": "enclosure",
+            }
+        else:
+            shots = {"delivered": delivered, "lost": lost, "lastAt": last_shot,
+                     "countedBy": "this computer"}
         return {
             "version": self.version,
             "computerName": self.computer_name,
@@ -486,7 +506,7 @@ class CompanionService:
                 for key, value in sorted(self.paired_enclosures.items())
             ],
             "activeDeviceId": self.store.get("activeDeviceId", ""),
-            "shots": {"delivered": delivered, "lost": lost, "lastAt": last_shot},
+            "shots": shots,
         }
 
     def close(self) -> None:

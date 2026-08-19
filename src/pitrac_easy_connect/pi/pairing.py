@@ -39,6 +39,12 @@ from ..common.errors import (
 
 CODE_LIFETIME_SECONDS = 300.0
 EXCHANGE_LIFETIME_SECONDS = 120.0
+
+#: How many pairing exchanges may be in flight at once. Starting an exchange
+#: needs no authentication, so without a cap anyone who can reach the setup page
+#: could make the enclosure allocate memory indefinitely. A real user needs one;
+#: a few spare covers a refreshed page or a second computer being set up.
+MAX_OPEN_EXCHANGES = 8
 MAX_FAILURES = 5
 FAILURE_WINDOW_SECONDS = 600.0
 SECRET_BYTES = 32
@@ -173,6 +179,12 @@ class PairingManager:
                 for key, value in getattr(self, "_exchanges", {}).items()
                 if value["expiresAt"] > now
             }
+            # Evict the oldest rather than refusing, so a genuine user whose
+            # page reloaded a few times is never locked out of pairing.
+            while len(self._exchanges) >= MAX_OPEN_EXCHANGES:
+                oldest = min(self._exchanges, key=lambda key: self._exchanges[key]["expiresAt"])
+                del self._exchanges[oldest]
+
             session_id = secrets.token_hex(8)
             private = exchange.generate_private()
             public = exchange.public_for(private)

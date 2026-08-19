@@ -123,6 +123,20 @@ NET_INTERRUPTED = _define(
     "Try the network change again. Leave the power connected while it runs.",
 )
 
+NET_INVALID_DETAILS = _define(
+    "PT-NET-011",
+    "That network name or password cannot be used.",
+    "Nothing was changed. PiTrac is still on the network it was using.",
+    "Wi-Fi names are up to 32 characters and passwords up to 63. Check for stray "
+    "line breaks pasted in from somewhere else.",
+)
+NET_COUNTRY_INVALID = _define(
+    "PT-NET-012",
+    "That is not a country PiTrac recognises.",
+    "Nothing was changed.",
+    "Choose your country from the list on the setup page.",
+)
+
 # Pairing and ownership -----------------------------------------------------
 
 PAIR_CODE_INVALID = _define(

@@ -115,6 +115,7 @@ class PiService:
             companion_connected=lambda: self.link_server.connected,
             simulator_status=lambda: self._simulator_status,
             config_problems=self._config_problems,
+            relay_listening=lambda: self.relay.listening,
         )
 
     # --- Boot -------------------------------------------------------------
@@ -243,6 +244,12 @@ class PiService:
                     self._note(rolled_back.message)
             except Exception:
                 pass
+            try:
+                # A Companion that is connected but wedged would otherwise leave
+                # PiTrac waiting on a reply that never comes.
+                self.relay.sweep()
+            except Exception:
+                pass
             if time.monotonic() - last_refresh > POLL_SECONDS * 2:
                 last_refresh = time.monotonic()
                 try:
@@ -260,7 +267,38 @@ class PiService:
                 state = State.SHUTTING_DOWN
             self._last_report = report
             self._state = state
+        self._push_status()
         return state
+
+    def _push_status(self) -> None:
+        """Send the enclosure's view to the attached computer, if there is one."""
+
+        session = self.link_server.session
+        if session is None or not session.authenticated:
+            return
+        try:
+            session.send(link.enclosure_status(self.compact_status()))
+        except Exception:
+            # The link dying is handled by the link server, not here.
+            pass
+
+    def compact_status(self) -> Dict[str, Any]:
+        """The subset of state the Companion shows, small enough to push often."""
+
+        with self._lock:
+            report = self._last_report
+            state = self._state
+        return {
+            "state": state.value,
+            "headline": state.headline,
+            "detail": state.detail,
+            "version": self.version,
+            "device": self.identity.as_dict(),
+            "network": self.provisioner.status(),
+            "relay": self.relay.status(),
+            "pitrac": self.pitrac.status(self.backend, self.relay.ports).as_dict(),
+            "selfTest": report.as_dict() if report else None,
+        }
 
     @property
     def state(self) -> State:

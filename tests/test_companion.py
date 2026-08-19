@@ -340,3 +340,74 @@ def test_masking_hides_the_secret_and_reverses_exactly():
     masked = exchange.mask_secret(key, secret)
     assert masked != secret
     assert exchange.unmask_secret(key, masked) == secret
+
+
+# --- The two ends must agree -----------------------------------------------
+
+
+def test_the_companion_reports_the_shots_the_enclosure_actually_saw(rig):
+    """The relay sees every shot; this computer only sees the ones that arrived."""
+    import json as _json
+    import socket as _socket
+
+    rig.pair()
+    assert rig.wait_linked() is True
+
+    # Drop the link, then send shots that die at the relay.
+    rig.pi.link_server.session.close()
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline and rig.pi.relay.companion_attached:
+        time.sleep(0.02)
+
+    port = rig.pi.relay.ports[Simulator.GSPRO]
+    for number in range(4):
+        sock = _socket.create_connection(("127.0.0.1", port), timeout=5)
+        sock.settimeout(4)
+        sock.sendall(_json.dumps({"ShotNumber": number, "BallData": {"Speed": 100}}).encode())
+        try:
+            sock.recv(4096)
+        except Exception:
+            pass
+        sock.close()
+
+    assert rig.pi.relay.shots_failed == 4
+
+    # Once the Companion is back, it must learn what it missed.
+    assert rig.wait_linked(timeout=15) is True
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        shots = rig.companion.status()["shots"]
+        if shots["lost"] == 4:
+            break
+        time.sleep(0.1)
+    shots = rig.companion.status()["shots"]
+    assert shots["lost"] == 4, "the user would have been told nothing was lost"
+    assert shots["countedBy"] == "enclosure"
+
+
+def test_both_ends_converge_on_the_same_state(rig):
+    rig.pair()
+    assert rig.wait_linked() is True
+    rig.companion.send_test_shot()
+
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        if rig.pi.state.value == rig.companion.status()["state"]:
+            break
+        time.sleep(0.1)
+    assert rig.pi.state.value == rig.companion.status()["state"] == "READY TO PLAY"
+
+
+def test_the_companion_learns_the_enclosure_state_without_asking(rig):
+    rig.pair()
+    assert rig.wait_linked() is True
+
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        enclosure = rig.companion.status()["enclosure"]
+        if enclosure.get("selfTest"):
+            break
+        time.sleep(0.1)
+    enclosure = rig.companion.status()["enclosure"]
+    assert enclosure["device"]["deviceId"] == rig.pi.identity.device_id
+    assert enclosure["selfTest"]["checks"], "the enclosure's checks should arrive unprompted"

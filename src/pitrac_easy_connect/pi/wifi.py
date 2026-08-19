@@ -36,7 +36,9 @@ from typing import Any, Callable, Dict, List, Optional
 from ..common.configstore import ConfigStore
 from ..common.errors import (
     NET_CONFIRM_TIMEOUT,
+    NET_COUNTRY_INVALID,
     NET_COUNTRY_REQUIRED,
+    NET_INVALID_DETAILS,
     NET_ENTERPRISE,
     NET_HOTSPOT_FAILED,
     NET_INTERRUPTED,
@@ -210,7 +212,38 @@ class WifiProvisioner:
         return self.backend.wifi_country()
 
     def set_country(self, country: str) -> None:
-        self.backend.set_wifi_country(country)
+        # Validated here rather than in the backend so a mistyped country is a
+        # message the user can act on, not an internal error.
+        code = str(country or "").strip().upper()
+        if len(code) != 2 or not all("A" <= character <= "Z" for character in code):
+            raise EasyConnectError(NET_COUNTRY_INVALID, "{!r} is not two letters".format(country))
+        try:
+            self.backend.set_wifi_country(code)
+        except BackendError as exc:
+            raise EasyConnectError(NET_COUNTRY_INVALID, str(exc)) from exc
+
+    @staticmethod
+    def _validate_details(ssid: str, password: Optional[str]) -> None:
+        """Reject names and passwords no wireless network could accept.
+
+        802.11 caps an SSID at 32 bytes and a WPA passphrase at 63 characters.
+        Checking here turns a confusing failure deep inside NetworkManager into a
+        sentence about line breaks, which is the usual real cause.
+        """
+
+        if len(ssid.encode("utf-8")) > 32:
+            raise EasyConnectError(NET_INVALID_DETAILS, "the network name is too long")
+        if any(ord(character) < 32 or ord(character) == 127 for character in ssid):
+            raise EasyConnectError(
+                NET_INVALID_DETAILS, "the network name contains a line break or control character"
+            )
+        if password is not None:
+            if len(password) > 63:
+                raise EasyConnectError(NET_INVALID_DETAILS, "the password is too long")
+            if any(ord(character) < 32 or ord(character) == 127 for character in password):
+                raise EasyConnectError(
+                    NET_INVALID_DETAILS, "the password contains a line break or control character"
+                )
 
     def scan(self) -> List[WifiNetwork]:
         if not self.backend.wifi_country():
@@ -231,6 +264,7 @@ class WifiProvisioner:
                 raise EasyConnectError(NET_COUNTRY_REQUIRED, "no wireless country is set")
             if not str(ssid).strip():
                 raise EasyConnectError(NET_NOT_FOUND, "no network name was given")
+            self._validate_details(str(ssid), password)
 
             self._reject_unsupported_security(ssid, hidden)
 

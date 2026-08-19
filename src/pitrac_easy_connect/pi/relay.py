@@ -35,6 +35,11 @@ RELAY_HOST = "127.0.0.1"
 #: How often an accept loop checks whether it has been asked to stop.
 ACCEPT_POLL_SECONDS = 0.2
 
+#: How long a forwarded shot may wait for the Companion to say what happened to
+#: it. A Companion that is connected but wedged would otherwise leave PiTrac
+#: waiting for a reply forever, and leave a record behind for every shot.
+SHOT_ACK_SECONDS = 15.0
+
 
 @dataclass
 class ShotRecord:
@@ -43,6 +48,12 @@ class ShotRecord:
     at: float
     delivered: bool = False
     message: str = ""
+    #: Whether this message completes a shot, as opposed to being one step of a
+    #: multi-message sequence. Only these are counted for the user.
+    is_shot: bool = True
+    #: Monotonic deadline for the Companion's answer. Wall-clock time is not
+    #: used because it can jump when the Pi first syncs its clock.
+    deadline: float = 0.0
 
     def as_dict(self) -> Dict[str, Any]:
         return {
@@ -51,6 +62,7 @@ class ShotRecord:
             "at": self.at,
             "delivered": self.delivered,
             "message": self.message,
+            "isShot": self.is_shot,
         }
 
 
@@ -76,6 +88,24 @@ class _PitracConnection:
             self.sock.close()
         except OSError:
             pass
+
+
+def is_shot_message(simulator: Simulator, message: Dict[str, Any]) -> bool:
+    """Whether this message is the one that puts a ball in the air.
+
+    GSPro carries a whole shot in one message. E6 needs four — a handshake, ball
+    data, club data, and finally SendShot — so counting every message would tell
+    the user they hit four times as many balls as they did.
+    """
+
+    if simulator is Simulator.GSPRO:
+        options = message.get("ShotDataOptions")
+        if not isinstance(options, dict):
+            return bool(message.get("BallData"))
+        if options.get("IsHeartBeat"):
+            return False
+        return bool(options.get("ContainsBallData")) or bool(message.get("BallData"))
+    return message.get("Type") == "SendShot"
 
 
 def unavailable_reply(simulator: Simulator, reason: str) -> Dict[str, Any]:
@@ -114,6 +144,8 @@ class ShotRelay:
         self._pending: Dict[int, ShotRecord] = {}
         self.shots_forwarded = 0
         self.shots_failed = 0
+        self.messages_forwarded = 0
+        self.messages_failed = 0
 
     # --- Lifecycle --------------------------------------------------------
 
@@ -201,9 +233,13 @@ class ShotRelay:
             record.delivered = accepted
             record.message = message
             if accepted:
-                self.shots_forwarded += 1
+                self.messages_forwarded += 1
+                if record.is_shot:
+                    self.shots_forwarded += 1
             else:
-                self.shots_failed += 1
+                self.messages_failed += 1
+                if record.is_shot:
+                    self.shots_failed += 1
 
         if not accepted:
             # Tell PiTrac in the simulator's own language rather than leaving it
@@ -280,19 +316,62 @@ class ShotRelay:
                     del self._connections[simulator]
             connection.close()
 
+    def _expire_pending(self) -> List[ShotRecord]:
+        """Give up on shots the Companion never answered. Returns the expired ones."""
+
+        now = time.monotonic()
+        with self._lock:
+            expired = [
+                record
+                for sequence, record in list(self._pending.items())
+                if record.deadline and record.deadline <= now
+            ]
+            for record in expired:
+                self._pending.pop(record.sequence, None)
+                record.delivered = False
+                record.message = "the computer did not confirm the shot"
+                self.messages_failed += 1
+                if record.is_shot:
+                    self.shots_failed += 1
+        return expired
+
+    def sweep(self) -> None:
+        """Tell PiTrac about any shot that timed out. Safe to call often."""
+
+        for record in self._expire_pending():
+            with self._lock:
+                connection = self._connections.get(Simulator(record.simulator))
+            if connection is None:
+                continue
+            try:
+                connection.send(
+                    unavailable_reply(Simulator(record.simulator), record.message)
+                )
+            except OSError:
+                continue
+
     def _forward(
         self, connection: _PitracConnection, simulator: Simulator, message: Dict[str, Any]
     ) -> None:
+        self.sweep()
         with self._lock:
             self._sequence += 1
             sequence = self._sequence
             sender = self._send_to_companion
-            record = ShotRecord(sequence, simulator.value, time.time())
+            record = ShotRecord(
+                sequence,
+                simulator.value,
+                time.time(),
+                deadline=time.monotonic() + SHOT_ACK_SECONDS,
+                is_shot=is_shot_message(simulator, message),
+            )
             self._history.append(record)
             del self._history[: max(0, len(self._history) - self._history_limit)]
 
             if sender is None:
-                self.shots_failed += 1
+                self.messages_failed += 1
+                if record.is_shot:
+                    self.shots_failed += 1
                 record.message = "no computer is connected"
             else:
                 self._pending[sequence] = record
@@ -314,7 +393,9 @@ class ShotRelay:
         except Exception:  # the link died between the check and the send
             with self._lock:
                 self._pending.pop(sequence, None)
-                self.shots_failed += 1
+                self.messages_failed += 1
+                if record.is_shot:
+                    self.shots_failed += 1
                 record.message = "the connection to the computer was lost"
             try:
                 connection.send(
@@ -326,6 +407,17 @@ class ShotRelay:
     # --- Reporting --------------------------------------------------------
 
     @property
+    def listening(self) -> bool:
+        """Whether the relay actually holds its ports.
+
+        Checked separately from PiTrac's configuration: if the bind failed —
+        because another copy of the service is running, say — PiTrac would be
+        pointed at a port with nothing behind it, and every shot would vanish.
+        """
+
+        return len(self._servers) == len(self.ports) and bool(self._servers)
+
+    @property
     def pitrac_connected(self) -> bool:
         with self._lock:
             return bool(self._connections)
@@ -333,10 +425,13 @@ class ShotRelay:
     def status(self) -> Dict[str, Any]:
         with self._lock:
             return {
+                "listening": self.listening,
                 "pitracConnected": bool(self._connections),
                 "companionConnected": self._send_to_companion is not None,
                 "shotsForwarded": self.shots_forwarded,
                 "shotsFailed": self.shots_failed,
+                "messagesForwarded": self.messages_forwarded,
+                "messagesFailed": self.messages_failed,
                 "ports": {sim.value: port for sim, port in self.ports.items()},
                 "recentShots": [record.as_dict() for record in reversed(self._history)],
             }

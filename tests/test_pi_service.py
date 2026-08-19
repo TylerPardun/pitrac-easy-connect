@@ -2,6 +2,7 @@
 
 import json
 import socket
+import time
 import urllib.error
 import urllib.request
 
@@ -295,3 +296,81 @@ def test_there_is_no_route_that_runs_a_command(portal):
     for path in ("/api/exec", "/api/shell", "/api/run", "/api/command"):
         status, _data = request(base + path, {})
         assert status == 404, path
+
+
+# --- Repeated restarts -----------------------------------------------------
+
+
+def test_the_service_survives_repeated_restarts(tmp_path):
+    """Ten start/stop cycles must not leak threads or lose the identity."""
+
+    backend = home_network_pi(country="US")
+    pitrac = PitracInstallation(tmp_path / "s.json", tmp_path / "c.json")
+    paths = ServicePaths(tmp_path / "state")
+    ports = {Simulator.GSPRO: 0, Simulator.E6: 0}
+
+    identity = None
+    baseline = None
+    for cycle in range(10):
+        built = PiService(backend, paths, pitrac, ports, 0, 0, manage_hostname=False)
+        built.start()
+        try:
+            if identity is None:
+                identity = built.identity
+            else:
+                assert built.identity == identity, "identity changed on restart"
+            assert built.relay.listening is True, "relay failed to bind on cycle %d" % cycle
+        finally:
+            built.stop()
+        time.sleep(0.05)
+        if cycle == 1:
+            baseline = threading.active_count()
+
+    assert threading.active_count() <= baseline + 2, "threads accumulated across restarts"
+
+
+def test_a_second_service_on_the_same_ports_reports_it_is_not_listening(tmp_path):
+    """Two copies must not silently half-work."""
+
+    backend = home_network_pi(country="US")
+    pitrac = PitracInstallation(tmp_path / "s.json", tmp_path / "c.json")
+    first = PiService(
+        backend, ServicePaths(tmp_path / "a"), pitrac,
+        {Simulator.GSPRO: 0, Simulator.E6: 0}, 0, 0, manage_hostname=False,
+    )
+    first.start()
+    try:
+        taken = dict(first.relay.ports)
+        second = PiService(
+            backend, ServicePaths(tmp_path / "b"), pitrac, taken, 0, 0, manage_hostname=False
+        )
+        second.start()
+        try:
+            assert second.relay.listening is False
+            report = second.selftest.run()
+            problem = next(c for c in report.checks if c.key == "pitracTarget")
+            assert problem.status == "fail"
+        finally:
+            second.stop()
+    finally:
+        first.stop()
+
+
+def test_a_read_only_state_directory_fails_loudly_not_silently(tmp_path):
+    import os
+
+    state = tmp_path / "locked"
+    state.mkdir()
+    (state / "device.json").write_text('{"schemaVersion": 1, "data": {}}')
+    os.chmod(state, 0o500)
+    try:
+        with pytest.raises(Exception):
+            PiService(
+                home_network_pi(country="US"),
+                ServicePaths(state),
+                PitracInstallation(tmp_path / "s.json", tmp_path / "c.json"),
+                {Simulator.GSPRO: 0, Simulator.E6: 0},
+                0, 0, manage_hostname=False,
+            )
+    finally:
+        os.chmod(state, 0o700)

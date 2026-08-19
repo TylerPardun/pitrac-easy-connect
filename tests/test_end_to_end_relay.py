@@ -400,3 +400,85 @@ def test_a_garbage_frame_does_not_bring_the_link_down(chain):
 
     time.sleep(0.2)
     assert chain.client.connected is True
+
+
+# --- E6, which needs four messages per shot -------------------------------
+
+
+@pytest.fixture
+def e6_chain(tmp_path):
+    built = Chain(tmp_path, simulator=Simulator.E6)
+    yield built
+    built.close()
+
+
+def test_the_full_e6_sequence_travels_and_is_accepted(e6_chain):
+    """PiTrac's real E6 conversation: handshake, ball, club, then send."""
+    sock = e6_chain.pitrac_socket()
+
+    sock.sendall(json.dumps({"Type": "Handshake"}).encode("utf-8"))
+    assert _read_json(sock)["Type"] in {"Handshake", "HandshakeAck"}
+
+    sock.sendall(json.dumps({
+        "Type": "SetBallData",
+        "BallData": {"BackSpin": 2604, "BallSpeed": 148.3, "LaunchAngle": 12.9,
+                     "LaunchDirection": 0.8, "SideSpin": -186},
+    }).encode("utf-8"))
+    sock.sendall(json.dumps({"Type": "SetClubData", "ClubData": {"ClubHeadSpeed": 0.0}}).encode("utf-8"))
+    sock.sendall(json.dumps({"Type": "SendShot"}).encode("utf-8"))
+
+    assert _read_json(sock)["Type"] == "ShotAccepted"
+    _wait_for(lambda: len(e6_chain.mock.received) == 4, "the full sequence did not arrive")
+    assert [m["Type"] for m in e6_chain.mock.received] == [
+        "Handshake", "SetBallData", "SetClubData", "SendShot"
+    ]
+    sock.close()
+
+
+def test_one_e6_shot_is_counted_once_not_four_times(e6_chain):
+    # PiTrac sends four messages per E6 shot. Counting each one would tell the
+    # user they hit four balls.
+    sock = e6_chain.pitrac_socket()
+    sock.sendall(json.dumps({"Type": "Handshake"}).encode("utf-8"))
+    _read_json(sock)
+    for message in (
+        {"Type": "SetBallData", "BallData": {"BallSpeed": 100}},
+        {"Type": "SetClubData", "ClubData": {}},
+        {"Type": "SendShot"},
+    ):
+        sock.sendall(json.dumps(message).encode("utf-8"))
+    _read_json(sock)
+
+    _wait_for(lambda: e6_chain.relay.shots_forwarded == 1, "the shot was not counted")
+    status = e6_chain.relay.status()
+    assert status["shotsForwarded"] == 1
+    assert status["messagesForwarded"] == 4
+    sock.close()
+
+
+def test_a_gspro_heartbeat_is_not_counted_as_a_shot(chain):
+    sock = chain.pitrac_socket()
+    sock.sendall(json.dumps({
+        "DeviceID": "PiTrac", "ShotDataOptions": {"ContainsBallData": False, "IsHeartBeat": True},
+    }).encode("utf-8"))
+    time.sleep(0.4)
+    assert chain.relay.shots_forwarded == 0
+    assert chain.relay.status()["messagesForwarded"] == 1
+    sock.close()
+
+
+def test_e6_reconnects_and_still_works_after_the_link_drops(e6_chain):
+    old_session = e6_chain.server.session
+    old_session.close()
+    _wait_for(
+        lambda: e6_chain.server.session is not None
+        and e6_chain.server.session is not old_session
+        and e6_chain.relay.companion_attached,
+        "the Companion never came back",
+        timeout=10,
+    )
+
+    sock = e6_chain.pitrac_socket()
+    sock.sendall(json.dumps({"Type": "Handshake"}).encode("utf-8"))
+    assert _read_json(sock)["Type"] in {"Handshake", "HandshakeAck"}
+    sock.close()

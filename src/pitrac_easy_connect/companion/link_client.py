@@ -36,6 +36,7 @@ class CompanionLinkClient:
         computer_name: str,
         on_shot: Callable[[int, str, Dict[str, Any]], Dict[str, Any]],
         on_state: Optional[Callable[[], None]] = None,
+        on_enclosure_status: Optional[Callable[[Dict[str, Any]], None]] = None,
         reconnect_seconds: float = RECONNECT_SECONDS,
     ):
         self.host = host
@@ -46,6 +47,7 @@ class CompanionLinkClient:
         self.computer_name = computer_name
         self.on_shot = on_shot
         self.on_state = on_state
+        self.on_enclosure_status = on_enclosure_status
         self.reconnect_seconds = reconnect_seconds
 
         self._lock = threading.RLock()
@@ -173,9 +175,15 @@ class CompanionLinkClient:
                 stream.send(link.pong(frame.get("at", time.time())))
             elif kind == "commandResult":
                 self._resolve_command(frame)
-            elif kind == "status":
+            elif kind == "enclosureStatus":
+                payload = frame.get("status") or {}
                 with self._lock:
-                    self._device.update(frame.get("device") or {})
+                    self._device.update(payload.get("device") or {})
+                if self.on_enclosure_status is not None:
+                    try:
+                        self.on_enclosure_status(payload)
+                    except Exception:
+                        pass
                 self._notify()
             elif kind == "error":
                 self._set_error(frame.get("error") or {})

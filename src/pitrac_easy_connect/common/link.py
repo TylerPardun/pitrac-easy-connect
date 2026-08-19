@@ -198,6 +198,18 @@ def simulator_status(status: Dict[str, Any]) -> Dict[str, Any]:
     return {"type": "simulatorStatus", "status": status}
 
 
+def enclosure_status(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """The enclosure's own view, pushed to the Companion as it changes.
+
+    The enclosure is authoritative about shots: the relay sees every one PiTrac
+    sends, including those that never reached the computer at all. Without this,
+    the Companion could only count what arrived, and would under-report losses
+    to the one person who needs to know about them.
+    """
+
+    return {"type": "enclosureStatus", "status": payload}
+
+
 def command(request_id: int, name: str, arguments: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     return {"type": "command", "id": request_id, "command": name, "arguments": arguments or {}}
 

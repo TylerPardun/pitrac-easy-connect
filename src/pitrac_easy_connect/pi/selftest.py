@@ -132,6 +132,7 @@ class SelfTest:
         companion_connected: Callable[[], bool],
         simulator_status: Callable[[], Optional[Dict[str, Any]]],
         config_problems: Callable[[], List[str]],
+        relay_listening: Optional[Callable[[], bool]] = None,
     ):
         self.backend = backend
         self.pitrac = pitrac
@@ -140,6 +141,7 @@ class SelfTest:
         self.companion_connected = companion_connected
         self.simulator_status = simulator_status
         self.config_problems = config_problems
+        self.relay_listening = relay_listening
 
     def run(self) -> SelfTestReport:
         report = SelfTestReport()
@@ -312,20 +314,31 @@ class SelfTest:
         )
 
     def _pitrac_target(self) -> CheckResult:
-        if self.pitrac.points_at_relay(self.relay_ports):
-            return CheckResult(
-                "pitracTarget", "Shot delivery", PASS, "PiTrac is sending shots to Easy Connect"
-            )
-        from ..common.errors import PI_MEASURE_STOPPED as _unused  # noqa: F401
         from ..common.errors import CFG_WRITE_FAILED
 
+        # Both halves have to hold. PiTrac pointed at a port nothing is
+        # listening on loses every shot silently, which is the worst possible
+        # way for this to fail.
+        if self.relay_listening is not None and not self.relay_listening():
+            return CheckResult(
+                "pitracTarget",
+                "Shot delivery",
+                FAIL,
+                "Easy Connect is not listening for shots",
+                CFG_WRITE_FAILED,
+                critical=True,
+            )
+        if not self.pitrac.points_at_relay(self.relay_ports):
+            return CheckResult(
+                "pitracTarget",
+                "Shot delivery",
+                FAIL,
+                "PiTrac is not pointed at Easy Connect",
+                CFG_WRITE_FAILED,
+                critical=True,
+            )
         return CheckResult(
-            "pitracTarget",
-            "Shot delivery",
-            FAIL,
-            "PiTrac is not pointed at Easy Connect",
-            CFG_WRITE_FAILED,
-            critical=True,
+            "pitracTarget", "Shot delivery", PASS, "PiTrac is sending shots to Easy Connect"
         )
 
     # --- The path to the simulator ---------------------------------------
@@ -409,16 +422,24 @@ def state_for(report: SelfTestReport, network: Dict[str, Any], companion: bool) 
 
     blocking = {check.key for check in report.blocking}
     connection = network.get("connection") or {}
-    if connection.get("isHotspot") and not network.get("directMode"):
-        return State.SETUP_REQUIRED
-    if not connection:
-        return State.SETUP_REQUIRED
+
     if network.get("awaitingConfirmation"):
         return State.CONNECTING
+
+    # "Setup required" is about not being reachable yet, so it only applies
+    # while no computer has managed to connect. Once one has — even over the
+    # enclosure's own hotspot — setup is over, and the honest thing to report is
+    # whatever is actually still wrong.
+    if not companion:
+        if not connection:
+            return State.SETUP_REQUIRED
+        if connection.get("isHotspot") and not network.get("directMode"):
+            return State.SETUP_REQUIRED
+
     if blocking & {"hardware", "cameras", "calibration", "pitracMeasurement", "pitracTarget"}:
         return State.RECOVERY_REQUIRED
     if blocking & {"companion"}:
-        return State.CONNECTED if companion else State.SETUP_REQUIRED
+        return State.SETUP_REQUIRED
     if blocking & {"simulator"}:
         return State.SIMULATOR_ACTION_REQUIRED
     return State.RECOVERY_REQUIRED

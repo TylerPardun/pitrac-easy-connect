@@ -282,3 +282,50 @@ def test_every_state_has_words_a_person_can_read():
     for state in State:
         assert len(state.headline) > 3
         assert len(state.detail) > 20
+
+
+# --- A relay that is not listening is the worst silent failure -------------
+
+
+def test_a_relay_that_failed_to_bind_removes_readiness(tmp_path):
+    # PiTrac pointed at a port with nothing behind it loses every shot without
+    # any error, so this must be caught explicitly.
+    _backend, _pitrac, selftest = build(tmp_path)
+    selftest.relay_listening = lambda: False
+    report = selftest.run()
+    assert report.ready is False
+    assert find(report, "pitracTarget").status == FAIL
+    assert "not listening" in find(report, "pitracTarget").detail
+
+
+def test_a_listening_relay_and_correct_config_together_pass(tmp_path):
+    _backend, _pitrac, selftest = build(tmp_path)
+    selftest.relay_listening = lambda: True
+    assert find(selftest.run(), "pitracTarget").status == PASS
+
+
+def test_a_connected_computer_ends_the_setup_phase_even_on_the_hotspot(tmp_path):
+    # A user who paired over the enclosure's own signal is set up. Continuing to
+    # say SETUP REQUIRED hides whatever is actually still wrong.
+    _backend, _pitrac, selftest = build(
+        tmp_path,
+        simulator_status=lambda: {"connected": False, "ready": False, "errorCode": "PT-SIM-001"},
+    )
+    report = selftest.run()
+    network = {"connection": {"ssid": "PiTrac-X", "isHotspot": True}, "directMode": False}
+    assert state_for(report, network, companion=True) is State.SIMULATOR_ACTION_REQUIRED
+
+
+def test_hardware_problems_outrank_the_simulator_once_a_computer_is_connected(tmp_path):
+    backend, _pitrac, selftest = build(tmp_path)
+    backend.camera_count = 0
+    report = selftest.run()
+    network = {"connection": {"ssid": "PiTrac-X", "isHotspot": True}, "directMode": False}
+    assert state_for(report, network, companion=True) is State.RECOVERY_REQUIRED
+
+
+def test_with_no_computer_the_hotspot_still_means_setup_required(tmp_path):
+    _backend, _pitrac, selftest = build(tmp_path, companion_connected=lambda: False)
+    report = selftest.run()
+    network = {"connection": {"ssid": "PiTrac-X", "isHotspot": True}, "directMode": False}
+    assert state_for(report, network, companion=False) is State.SETUP_REQUIRED
