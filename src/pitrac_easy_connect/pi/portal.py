@@ -1,0 +1,258 @@
+"""The web server behind the enclosure's setup page.
+
+This is the one part of Easy Connect that listens on the network before any
+pairing exists, so it is also the part with the least to offer an attacker. It
+can set the country, list and join networks, show a pairing code, and perform
+the maintenance actions a stranded owner needs. It cannot read a Wi-Fi password
+back out, cannot run a command, and cannot forward a shot.
+
+Three protections apply to every state-changing request:
+
+**A custom header is required.** A browser will not attach ``X-PiTrac-Portal``
+to a cross-origin request without a preflight, and the preflight is refused, so
+a malicious page the user happens to have open cannot post to the enclosure.
+
+**The Origin must match.** Any request that carries an ``Origin`` from somewhere
+else is rejected outright.
+
+**The Host must be one we recognise.** This blocks DNS rebinding, where a name
+under an attacker's control is made to resolve to the enclosure's address.
+"""
+
+import json
+import re
+from http import HTTPStatus
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from typing import Any, Callable, Dict, Optional
+from urllib.parse import urlparse
+
+from ..common.errors import EasyConnectError
+from .portal_page import PAGE
+
+PORTAL_PORT = 80
+MAX_BODY_BYTES = 64 * 1024
+GUARD_HEADER = "X-PiTrac-Portal"
+
+#: Host values the portal answers to. Anything else is refused so a name an
+#: attacker controls cannot be pointed at the enclosure and then scripted.
+_ALLOWED_HOST = re.compile(
+    r"^(?:"
+    r"\d{1,3}(?:\.\d{1,3}){3}"          # any bare IPv4 literal, including 10.42.0.1
+    r"|\[?[0-9a-fA-F:]+\]?"             # IPv6 literal
+    r"|localhost"
+    r"|[a-z0-9-]+\.local"               # pitrac-<id>.local
+    r"|pitrac(?:\.setup)?"
+    r")(?::\d+)?$"
+)
+
+
+class PortalServer(ThreadingHTTPServer):
+    daemon_threads = True
+    allow_reuse_address = True
+
+    def __init__(self, address, service, extra_hosts=()):
+        self.service = service
+        self.extra_hosts = {host.lower() for host in extra_hosts}
+        super().__init__(address, PortalHandler)
+
+
+class PortalHandler(BaseHTTPRequestHandler):
+    server: PortalServer
+    server_version = "PiTracEasyConnect"
+    sys_version = ""
+
+    # --- Routing ----------------------------------------------------------
+
+    def do_GET(self) -> None:
+        if not self._host_allowed():
+            return
+        path = urlparse(self.path).path
+        if path in ("/", "/index.html", "/setup"):
+            self._send_html(PAGE)
+            return
+        if path == "/api/status":
+            self._json(HTTPStatus.OK, self.server.service.status())
+            return
+        if path == "/api/networks":
+            self._guarded(lambda: {"networks": [n.as_dict() for n in self._service().provisioner.scan()]})
+            return
+        if path == "/api/pairing-code":
+            self._guarded(self._pairing_code)
+            return
+        if path == "/api/pair-hello":
+            self._guarded(self._pair_hello)
+            return
+        if path == "/api/owner-card":
+            self._guarded(lambda: {"text": self._service().identity.owner_card()})
+            return
+        self._json(HTTPStatus.NOT_FOUND, {"error": {"failed": "That page does not exist"}})
+
+    def do_POST(self) -> None:
+        if not self._host_allowed() or not self._request_allowed():
+            return
+        path = urlparse(self.path).path
+        routes: Dict[str, Callable[[Dict[str, Any]], Any]] = {
+            "/api/country": lambda body: self._service().command(
+                "setCountry", {"country": body.get("country", "")}
+            ),
+            "/api/join": lambda body: self._service().command(
+                "joinNetwork",
+                {
+                    "ssid": body.get("ssid", ""),
+                    "password": body.get("password") or None,
+                    "hidden": bool(body.get("hidden")),
+                },
+            ),
+            "/api/direct-mode": lambda body: self._service().command(
+                "setDirectMode", {"enabled": bool(body.get("enabled"))}
+            ),
+            "/api/pairing-code": lambda body: self._pairing_code(bool(body.get("refresh"))),
+            "/api/pair": lambda body: self._service().pairings.complete_exchange(
+                str(body.get("sessionId", "")),
+                str(body.get("clientPublic", "")),
+                str(body.get("code", "")),
+                str(body.get("proof", "")),
+                str(body.get("computerName", "")),
+            ),
+            "/api/restart-pitrac": lambda body: self._service().command("restartPitrac"),
+            "/api/reset-network": lambda body: self._service().command("resetNetwork"),
+            "/api/shutdown": lambda body: self._service().command("shutdown"),
+            "/api/reboot": lambda body: self._service().command("reboot"),
+        }
+        handler = routes.get(path)
+        if handler is None:
+            self._json(HTTPStatus.NOT_FOUND, {"error": {"failed": "That action does not exist"}})
+            return
+        try:
+            body = self._read_json()
+        except ValueError as exc:
+            self._json(HTTPStatus.BAD_REQUEST, {"error": {"failed": str(exc)}})
+            return
+        self._guarded(lambda: handler(body))
+
+    def do_OPTIONS(self) -> None:
+        # Refusing the preflight is what stops a cross-origin page from being
+        # able to send the guarded header at all.
+        self.send_response(HTTPStatus.FORBIDDEN)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+    # --- Guards -----------------------------------------------------------
+
+    def _service(self):
+        return self.server.service
+
+    def _host_allowed(self) -> bool:
+        host = (self.headers.get("Host") or "").strip().lower()
+        if not host or _ALLOWED_HOST.match(host) or host in self.server.extra_hosts:
+            return True
+        self._json(
+            HTTPStatus.MISDIRECTED_REQUEST,
+            {"error": {"failed": "PiTrac does not answer to that address"}},
+        )
+        return False
+
+    def _request_allowed(self) -> bool:
+        if self.headers.get(GUARD_HEADER) is None:
+            self._json(
+                HTTPStatus.FORBIDDEN,
+                {"error": {"failed": "This request did not come from the PiTrac setup page"}},
+            )
+            return False
+        origin = self.headers.get("Origin")
+        if origin:
+            host = (self.headers.get("Host") or "").strip().lower()
+            if urlparse(origin).netloc.lower() != host:
+                self._json(
+                    HTTPStatus.FORBIDDEN,
+                    {"error": {"failed": "This request came from another website"}},
+                )
+                return False
+        return True
+
+    def _guarded(self, work: Callable[[], Any]) -> None:
+        try:
+            result = work()
+        except EasyConnectError as exc:
+            self._json(HTTPStatus.BAD_REQUEST, {"error": exc.as_dict()})
+        except ValueError as exc:
+            self._json(HTTPStatus.BAD_REQUEST, {"error": {"failed": str(exc)}})
+        except Exception as exc:
+            self._json(
+                HTTPStatus.INTERNAL_SERVER_ERROR,
+                {
+                    "error": {
+                        "failed": "PiTrac could not complete that: {}".format(exc),
+                        "stillSafe": "Nothing was changed.",
+                        "nextStep": "Try again. If it keeps failing, restart PiTrac.",
+                    }
+                },
+            )
+        else:
+            self._json(HTTPStatus.OK, result if isinstance(result, dict) else {"result": result})
+
+    def _pair_hello(self) -> Dict[str, Any]:
+        service = self._service()
+        started = service.pairings.begin_exchange()
+        started.update(
+            {
+                "deviceId": service.identity.device_id,
+                "displayName": service.identity.display_name,
+                "linkPort": service.link_server.port,
+                "version": service.version,
+            }
+        )
+        return started
+
+    def _pairing_code(self, refresh: bool = False) -> Dict[str, Any]:
+        pairings = self._service().pairings
+        code = pairings.issue_code() if refresh else pairings.code_for_display()
+        return code.as_dict(pairings.clock())
+
+    # --- Wire -------------------------------------------------------------
+
+    def _read_json(self) -> Dict[str, Any]:
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+        except ValueError as exc:
+            raise ValueError("The request length was not valid") from exc
+        if length > MAX_BODY_BYTES:
+            raise ValueError("The request was too large")
+        if length <= 0:
+            return {}
+        try:
+            value = json.loads(self.rfile.read(length).decode("utf-8"))
+        except (UnicodeDecodeError, ValueError) as exc:
+            raise ValueError("The request was not valid JSON") from exc
+        if not isinstance(value, dict):
+            raise ValueError("The request must be a JSON object")
+        return value
+
+    def _headers(self, content_type: str, length: int, status: HTTPStatus) -> None:
+        self.send_response(status)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(length))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("X-Frame-Options", "DENY")
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header(
+            "Content-Security-Policy",
+            "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; "
+            "connect-src 'self'; form-action 'none'; frame-ancestors 'none'",
+        )
+        self.end_headers()
+
+    def _send_html(self, markup: str) -> None:
+        body = markup.encode("utf-8")
+        self._headers("text/html; charset=utf-8", len(body), HTTPStatus.OK)
+        self.wfile.write(body)
+
+    def _json(self, status: HTTPStatus, value: Dict[str, Any]) -> None:
+        body = json.dumps(value, separators=(",", ":"), default=str).encode("utf-8")
+        self._headers("application/json; charset=utf-8", len(body), status)
+        self.wfile.write(body)
+
+    def log_message(self, format: str, *args: Any) -> None:
+        # Request lines can contain a network name. Nothing here goes to a log.
+        return

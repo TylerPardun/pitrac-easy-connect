@@ -1,63 +1,132 @@
 # PiTrac Easy Connect
 
-PiTrac Easy Connect is a beginner-facing connection layer for PiTrac, GSPro,
-and E6 Connect. The current milestone is a desktop prototype: it provides a
-local setup screen, simulator profiles, connection checks, test shots, and
-mock GSPro/E6 servers that can run on macOS without golf-simulator software.
+PiTrac Easy Connect lets someone with no Linux, networking, or software
+experience move a PiTrac enclosure to a new house, get it onto the Wi-Fi, pair a
+Windows simulator PC, and start playing — without a terminal, an SSH session, an
+IP address, or a port number.
 
-This README is the product requirements document and project handoff source of
+It is two programs that talk to each other:
+
+- a **service on the Raspberry Pi** inside the enclosure, which owns Wi-Fi
+  setup, the recovery hotspot, discovery, pairing, the startup self-test, and a
+  relay that carries shots off the Pi;
+- a **Companion on the Windows simulator PC**, which finds the enclosure, pairs
+  with it, and hands shots to GSPro or E6 Connect.
+
+Easy Connect is a separate service. It does not modify, patch, or link against
+PiTrac. It reads PiTrac's state and writes four values into PiTrac's own
+settings file to point its simulator output at the local relay.
+
+This README is the product requirements document and the project's source of
 truth. A feature listed as a requirement is not necessarily implemented; the
 project checkpoint below records the current implementation state.
 
-Nothing in this repository currently modifies a Raspberry Pi or microSD card.
+## How a shot reaches the simulator
 
-## Run the prototype on macOS
+`pitrac_lm` is a TCP *client*: it dials out to whatever address is configured as
+its simulator. Easy Connect points it at `127.0.0.1` once, at install time, and
+then stands in for the simulator:
 
-The simplest complete demo starts both the fake simulator and Companion:
+```text
+pitrac_lm  ->  Pi relay        ==  paired link  ==>  Companion  ->  GSPro 127.0.0.1:921
+(127.0.0.1:9210 / :9248)          (encrypted Wi-Fi)                 E6    127.0.0.1:2483
+```
 
-```sh
+Two consequences make this the right shape:
+
+- **Moving house never touches PiTrac's configuration.** The relay address is
+  loopback, so it is correct in every house, on every network, forever.
+- **The Companion dials out to the enclosure, never the reverse.** Windows
+  permits outbound connections by default, so no firewall rule is ever needed,
+  and the PC's address can change without breaking anything.
+
+The simulator's own protocol travels the link untouched in both directions. The
+relay counts messages; it does not rewrite them.
+
+## Try it on a Mac, with no hardware at all
+
+One command starts a fake golf simulator, a simulated Raspberry Pi running the
+real Easy Connect service, and the real Companion, then pairs them:
+
+```bash
 PYTHONPATH=src python3 -m pitrac_easy_connect.demo gspro
 ```
 
-Use `e6` instead of `gspro` to run the E6 workflow.
+Use `e6` instead of `gspro` for the E6 workflow. Two tabs open: the enclosure's
+setup page and the Companion. Everything except the fake Pi hardware and the
+fake simulator is the code that ships.
 
-On this Mac, the same demos can be opened by double-clicking `Run GSPro
-Demo.command` or `Run E6 Demo.command` in Finder.
+To walk through first-run setup by hand instead of having it done for you:
 
-To run the pieces separately, start a fake GSPro server in one terminal:
-
-```sh
-PYTHONPATH=src python3 -m pitrac_easy_connect.mock_simulators gspro
+```bash
+PYTHONPATH=src python3 -m pitrac_easy_connect.demo gspro --no-network --no-pair
 ```
 
-Start the Companion in another terminal:
+The `Run GSPro Demo.command` and `Run E6 Demo.command` files do the same thing
+from Finder.
 
-```sh
-PYTHONPATH=src python3 -m pitrac_easy_connect --gspro-port 19210
+## Install on the Raspberry Pi
+
+Copy this directory to the Pi, then:
+
+```bash
+sudo ./packaging/pi/install.sh
 ```
 
-The Companion opens `http://127.0.0.1:8787`. Select GSPro, check the
-connection, and send a test shot.
+The installer checks the Pi model, architecture, Python version, and
+NetworkManager, installs the service, starts it, and prints the owner card that
+belongs with the enclosure. It is safe to run again to upgrade: the device
+identity, saved networks, pairings, and PiTrac's calibration are never touched.
 
-For E6, replace `gspro` with `e6` when starting the mock and run the Companion
-without the `--gspro-port` override. The real Windows GSPro default remains port
-921. macOS development uses 19210 because macOS restricts ports below 1024.
+It leaves the hostname alone by default, because renaming would change the
+`.local` address the owner already uses. Pass `--set-hostname` when a second
+enclosure joins the same network. `--uninstall` removes the service and keeps
+the settings.
+
+## Run the Companion on the simulator PC
+
+```bash
+python3 -m pitrac_easy_connect.companion.app
+```
+
+It opens `http://127.0.0.1:8787`, bound to loopback only. On Windows the
+packaged executable is built by `packaging/PiTracCompanion.spec`.
 
 ## Tests
 
-```sh
-python3 -m pytest
+```bash
+python3 -m pytest -q
 ```
 
-## Current boundary
+The suite runs on macOS, Linux, and Windows, and on the Raspberry Pi itself.
+Every failure path that would otherwise strand a user — a wrong password, a
+router that never hands out an address, an isolated guest network, the power
+cut mid-change — is driven through a simulated Raspberry Pi rather than by hand.
 
-This prototype validates the user flow and simulator message formats. It does
-not yet provide Raspberry Pi Wi-Fi provisioning, device pairing, a Windows
-installer, or live PiTrac shot forwarding. Those are deliberately gated behind
-the documented recovery and integration tests.
+## Security notes
 
-See [docs/product-specification.md](docs/product-specification.md) and
-[docs/test-plan.md](docs/test-plan.md).
+- The Companion binds to loopback only.
+- The setup page can set a country, join a network, show a pairing code, and
+  perform recovery actions. It has no route that executes a command, and it
+  cannot read a Wi-Fi password back out.
+- State-changing requests to the setup page require a custom header, a matching
+  `Origin`, and a recognised `Host`, which together block cross-site requests
+  and DNS rebinding.
+- Pairing runs an ephemeral Diffie-Hellman exchange authenticated by the
+  six-digit code, so **the pairing secret is never transmitted**. A passive
+  listener on the network learns nothing reusable.
+- After pairing, each side proves it holds the secret by answering a fresh
+  random challenge. The secret itself never crosses the wire again.
+- Every paired computer gets its own secret. There is no fleet-wide password.
+- The setup hotspot is never open and its password is unique per enclosure.
+- The Pi service runs as root because it drives NetworkManager, sets the
+  hostname, and halts the machine. The systemd unit narrows what that root can
+  reach, and the browser-facing code has no command execution path.
+
+Known limitation: an attacker who is already on the network and who guesses the
+six-digit code during its five-minute life could pair. That is what the rate
+limit exists for — five wrong attempts stop the enclosure answering for ten
+minutes.
 
 ## Product requirements document
 
@@ -485,112 +554,115 @@ The first release must be exercised against:
 - Keyboard navigation, display scaling, and instructions tested by someone who
   did not build the system.
 
-## Project checkpoint — August 18, 2026
+## Project checkpoint — August 19, 2026
 
-Development is intentionally paused until the PiTrac enclosure is assembled and
-the Raspberry Pi can be powered safely. The microSD card has not been modified
-by this project.
+Easy Connect is installed and running on the assembled Raspberry Pi as a systemd
+service. The enclosure itself is not finished — no cameras are attached yet — so
+the self-test correctly refuses to report `READY TO PLAY` on the hardware.
 
-The initial prototype is stored in a local Git repository. Commit `4073e10`
-contains the first complete desktop milestone.
+- **Version:** 0.2.0
+- **Tests:** 165 passing on macOS and on the Raspberry Pi (Python 3.13.5, arm64)
+- **Dependencies:** none. Standard library only, so the Pi install needs no pip
+  packages.
 
-### Completed
+### Verified on the real Raspberry Pi
 
-- Written product specification, architecture, and test plan.
-- Beginner-facing Companion screen that runs on macOS.
-- GSPro and E6 simulator profiles.
-- GSPro Open Connect test-shot formatting.
-- E6 handshake, ball-data, club-data, and send-shot sequence.
-- Local fake GSPro and E6 servers for development without simulator software.
-- Simulator connection check.
-- Test-shot acknowledgement.
-- Separate `CONNECTED` and `READY` states. `READY` requires an accepted test
-  shot.
-- Saved simulator selection.
-- One-step macOS demo launchers.
-- Python package build.
-- Windows executable build configuration.
-- Nine passing automated tests.
-- Visual and interactive browser validation of both simulator workflows.
+Recorded against the assembled Pi 5 running Debian 13 and NetworkManager 1.52.1.
+See [docs/pi-baseline-audit.md](docs/pi-baseline-audit.md) for the read-only
+audit taken before anything was installed.
+
+- The service installs, enables, starts, and survives a restart.
+- It listens on port 80 (setup page), 39877 (Companion), 39876/udp (discovery),
+  and loopback 9210/9248 (the relay).
+- It read the real network through the netplan-owned profile without modifying
+  it, as required.
+- A real Wi-Fi scan returned the surrounding networks with the right bands,
+  signal bars, and password/open classification.
+- NetworkManager checkpoints are created and destroyed through the real D-Bus
+  API.
+- The setup hotspot brings `wlan0` up in AP mode at **10.42.0.1** with DHCP
+  serving — the exact address printed on the owner card — and restores the
+  previous network cleanly afterwards.
+- PiTrac's `user_settings.json` was created pointing at the relay, merged
+  without disturbing other settings, and left owned by `pitracuser` so PiTrac's
+  own dashboard can still write it.
+- This Mac discovered the enclosure over the house network, paired with a
+  six-digit code, and reached `READY TO PLAY`.
+- **The full shot path works.** A shot injected at `127.0.0.1:9210` on the Pi —
+  exactly where `pitrac_lm` sends — travelled through the relay, over the
+  authenticated link, into a simulator on this Mac, and the simulator's reply
+  came back to the Pi unchanged.
+
+### Implemented
+
+- Stable user-facing error catalogue: 39 codes, each with what failed, what is
+  still safe, and what to do next.
+- Power-loss-safe configuration storage: atomic writes, `fsync`, automatic
+  backup, recovery from a damaged file, schema versions and migrations.
+- Permanent device identity, per-device setup password, and the printed owner
+  card.
+- Wi-Fi provisioning with a journal, a NetworkManager checkpoint, and
+  confirm-or-roll-back. A wrong password, a router that gives no address, an
+  isolated guest network, or a power cut mid-change all leave the enclosure
+  reachable and the previous settings intact.
+- Direct Mode, hidden networks, the wireless-country gate, and honest refusal of
+  WPA-Enterprise and WEP networks.
+- Setup portal with cross-site and DNS-rebinding protections.
+- Discovery by UDP beacon and by a static avahi mDNS service file.
+- Pairing with an authenticated Diffie-Hellman exchange, six-digit codes that
+  expire and work once, rate limiting, per-computer secrets, and immediate
+  revocation.
+- Authenticated, mutually-proved link with automatic reconnection and a
+  version-mismatch message that names the side to update.
+- Shot relay that carries GSPro and E6 traffic untouched in both directions,
+  reports undelivered shots honestly in the simulator's own vocabulary, and
+  never replays a missed shot.
+- Startup self-test: 14 checks, distinguishing pass, fail, warning, and
+  genuinely unavailable, with readiness recomputed rather than latched.
+- Companion with discovery, pairing, the four-hop chain, the warned test shot,
+  and enclosure maintenance actions.
+- Separate reset paths: reset network, revoke one computer, prepare for a new
+  owner — each stating what it keeps and what it removes.
+- Safe shutdown with a clear safe-to-unplug message.
+- Raspberry Pi installer, hardened systemd unit, and Windows executable build.
 
 ### Not implemented yet
 
-- Raspberry Pi operating-system and PiTrac installation audit.
-- Backup image of the working microSD card.
-- Pi-side Easy Connect service.
-- Wi-Fi fallback state machine.
-- Encrypted `PiTrac-<device-id>` setup hotspot.
-- Browser-based residence Wi-Fi selection.
-- Automatic rollback after incorrect Wi-Fi credentials.
-- Direct Play Mode.
-- Pi discovery from the Windows Companion.
-- Multiple-enclosure discovery and collision testing.
-- Six-digit device pairing and authentication.
-- Trusted-PC management, revocation, and ownership transfer.
-- Persistent Pi-to-Companion connection.
-- Forwarding live PiTrac shots through the Companion.
-- Complete startup self-test and readiness invalidation.
-- Beginner maintenance screen and safe-shutdown control.
-- Calibration/configuration backup, restore, and migrations.
-- Separate network, simulator, ownership, and factory reset paths.
-- Power-loss-safe configuration storage and interruption testing.
+- Signed update packages, staged installation, health checks, and automatic
+  rollback.
+- Stable and beta update channels; offline and USB update paths.
+- Calibration backup, restore, and pre-restore snapshots.
 - Redacted diagnostic support-package export.
-- Stable user-facing error-code catalog.
-- Versioned releases shared by every enclosure.
-- Signed Pi and Windows update packages.
-- Stable and beta update channels.
-- One-click updates, health checks, and automatic rollback.
-- Offline Pi updates transferred through the Windows Companion.
-- Security hardening and pairing-abuse tests.
-- Easy Connect license, third-party notices, and software bill of materials.
-- Windows auto-start behavior.
-- Finished Windows installer and code signing.
-- Testing on Windows 10 and Windows 11.
-- Testing with real GSPro.
-- Testing with real E6 Connect and its armed-state behavior.
-- Keyboard, display-scaling, and beginner usability testing.
-- Illustrated beginner user guide.
+- Camera and calibration verification against real cameras — none are attached
+  yet, so those checks have only been exercised in their failing state.
+- Testing with real GSPro and real E6 Connect.
+- Testing on Windows 10 and Windows 11, and the code-signed installer.
+- Two enclosures on one network.
+- Keyboard-navigation, display-scaling, and beginner usability testing.
+- The illustrated beginner guide.
+- Easy Connect licence, third-party notices, and software bill of materials.
 
-## Resume point after enclosure assembly
+## Resume point
 
-Do not install Easy Connect immediately. First establish the Pi's known-good
-baseline so any later problem can be separated from the existing PiTrac setup.
+The enclosure hardware is the gate on most of what remains.
 
-1. Finish the enclosure and electrical safety checks.
-2. Insert the existing microSD card and power the Raspberry Pi.
-3. Confirm that PiTrac still starts and that its dashboard is reachable.
-4. Connect the Mac and Pi to the same trusted network.
-5. Record the following without changing the system:
-   - Raspberry Pi OS release and whether it is 64-bit.
-   - PiTrac version or Git commit.
-   - NetworkManager version and active connection.
-   - Pi hostname and current address.
-   - Status of the `pitrac-web` service.
-   - Existing PiTrac simulator configuration.
-   - Camera device identities and calibration-file locations.
-   - Free storage, CPU temperature, throttling, and under-voltage status.
-   - Current hostname, wireless country, clock synchronization, and mDNS
-     behavior.
-6. Create a backup image of the working microSD card.
-7. Run the existing desktop tests on the Mac.
-8. Implement and install the Pi bridge as a separate service.
-9. Test device discovery and pairing on the current network.
-10. Add the setup hotspot and failed-connection rollback.
-11. Test moving between saved Wi-Fi networks and Direct Mode.
-12. Add the self-test, maintenance, backup, and support-report foundations.
-13. Run the power-interruption and automatic-recovery tests.
-14. Validate the Windows Companion on a real Windows PC.
-15. Validate GSPro first, then E6 Connect.
+1. Finish the enclosure and attach both cameras.
+2. Re-run the self-test; the camera and calibration checks should turn green.
+3. Run PiTrac's calibration wizard, then confirm the calibration check passes.
+4. Install the Companion on the Windows PC and pair it there.
+5. Validate against real GSPro, then real E6 Connect, including restarting each
+   simulator mid-session.
+6. Hit real balls and confirm measured shots score correctly.
+7. Move the enclosure to a second network and repeat setup from the hotspot.
+8. Add calibration backup and restore, then the support-package export.
+9. Add signed updates with staged installation and rollback.
 
-The first commands to run in this repository when development resumes are:
+The first commands to run when development resumes:
 
-```sh
-git status
-git log -1 --oneline
+```bash
 python3 -m pytest -q
+PYTHONPATH=src python3 -m pitrac_easy_connect.demo gspro
 ```
-
-Expected test result at this checkpoint: `9 passed`.
 
 ## Planned software updates for multiple enclosures
 

@@ -1,0 +1,47 @@
+[Unit]
+Description=PiTrac Easy Connect
+Documentation=https://github.com/PiTracLM/PiTrac
+# NetworkManager is what this service drives, so it must be up first.
+After=network.target NetworkManager.service avahi-daemon.service
+Wants=NetworkManager.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 -m pitrac_easy_connect.pi.app \
+    --state-dir /var/lib/pitrac-easy-connect \
+    --pitrac-config-dir __PITRAC_CONFIG_DIR__ \
+    --portal-port 80 __HOSTNAME_FLAG__
+Environment=PYTHONPATH=/usr/lib/pitrac-easy-connect
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONDONTWRITEBYTECODE=1
+WorkingDirectory=/var/lib/pitrac-easy-connect
+
+# This service reconfigures Wi-Fi, sets the hostname, and halts the machine, so
+# it runs as root. Everything below narrows what that root can reach. The
+# browser-facing code has no route that executes a command; see pi/portal.py.
+User=root
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=true
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+
+# Restart on failure, but back off rather than spinning, so a persistent crash
+# does not keep the radio flapping.
+Restart=always
+RestartSec=5
+StartLimitIntervalSec=300
+StartLimitBurst=10
+
+# Bounded logging. This runs on a microSD card that must survive years of it.
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=pitrac-easy-connect
+
+[Install]
+WantedBy=multi-user.target

@@ -1,4 +1,3 @@
-"""PiTrac Easy Connect desktop prototype."""
+"""PiTrac Easy Connect: beginner-facing networking and simulator link for PiTrac."""
 
-__version__ = "0.1.0"
-
+__version__ = "0.2.0"
