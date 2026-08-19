@@ -144,6 +144,11 @@ class CompanionService:
 
         enclosure = self._found_by_id(device_id)
         if enclosure is None:
+            # The caller may not have searched through this object, or the list
+            # may be stale. Look again before refusing.
+            self.search(timeout=3.0)
+            enclosure = self._found_by_id(device_id)
+        if enclosure is None:
             raise EasyConnectError(LINK_NOT_FOUND, "that enclosure was not found on this network")
 
         cleaned = "".join(character for character in str(code) if character.isdigit())
@@ -219,6 +224,9 @@ class CompanionService:
         # Discovery is authoritative for the address; the stored one is only a
         # fallback for when the beacon is blocked.
         enclosure = self._found_by_id(device_id)
+        if enclosure is None:
+            self.search(timeout=3.0)
+            enclosure = self._found_by_id(device_id)
         host = enclosure.address if enclosure else record.get("address", "")
         port = (enclosure.link_port if enclosure else 0) or record.get("linkPort") or link.LINK_PORT
         if not host:
@@ -376,17 +384,16 @@ class CompanionService:
         pi_status = self._pi_status if linked else {}
         simulator = self.simulator_status()
 
-        measuring = bool(pi_status.get("pitrac", {}).get("measurementRunning", linked))
+        # Only the enclosure knows whether its cameras are attached, its
+        # calibration is present, and its measurement program is running, so
+        # this step is answered from the enclosure's own self-test.
+        measuring, measuring_detail = self._enclosure_measuring(linked, pi_status)
         steps = [
             {
                 "key": "pitrac",
                 "title": "PiTrac is measuring",
-                "ok": linked and measuring,
-                "detail": (
-                    "The launch monitor is running"
-                    if linked and measuring
-                    else "Waiting for the enclosure"
-                ),
+                "ok": measuring,
+                "detail": measuring_detail,
             },
             {
                 "key": "link",
@@ -419,18 +426,57 @@ class CompanionService:
             step["blocking"] = not step["ok"]
         return steps
 
+    #: Enclosure self-test checks this computer cannot evaluate for itself.
+    ENCLOSURE_CHECKS = ("hardware", "cameras", "calibration", "pitracMeasurement", "pitracTarget")
+
+    def _enclosure_measuring(self, linked: bool, pi_status: Dict[str, Any]):
+        """Whether the enclosure says it can actually measure a shot."""
+
+        if not linked:
+            return False, "Not connected to PiTrac"
+
+        report = pi_status.get("selfTest")
+        if not report:
+            # The enclosure pushes its state on connecting; until it arrives,
+            # this is genuinely unknown and must not be shown as fine.
+            return False, "Waiting for the enclosure"
+
+        failing = [
+            check
+            for check in report.get("checks", [])
+            if check.get("key") in self.ENCLOSURE_CHECKS and check.get("status") != "pass"
+        ]
+        if failing:
+            return False, failing[0].get("detail") or failing[0].get("title", "")
+        return True, "The launch monitor is running"
+
     def state(self) -> State:
+        """The one word shown on this computer, derived from the chain.
+
+        The chain is the single source of truth, so the headline can never
+        disagree with the steps printed underneath it. In particular this cannot
+        say READY TO PLAY while the enclosure is reporting that it has no
+        cameras — which is exactly the stale readiness this product exists to
+        avoid.
+        """
+
         client = self._link
         if client is None:
             return State.SETUP_REQUIRED
         if not client.connected:
             return State.CONNECTING if client.last_error is None else State.SETUP_REQUIRED
-        simulator = self.simulator_status()
-        if simulator["ready"]:
+
+        steps = {step["key"]: step["ok"] for step in self.chain()}
+        if all(steps.values()):
             return State.READY_TO_PLAY
-        if simulator["connected"]:
-            return State.CONNECTED
-        return State.SIMULATOR_ACTION_REQUIRED
+        if not steps.get("link", False):
+            return State.SETUP_REQUIRED
+        if not steps.get("pitrac", False):
+            return State.RECOVERY_REQUIRED
+        if not steps.get("simulator", False):
+            return State.SIMULATOR_ACTION_REQUIRED
+        # Everything works except an acknowledged test shot.
+        return State.CONNECTED
 
     def enclosure_status(self, refresh: bool = False) -> Dict[str, Any]:
         client = self._link

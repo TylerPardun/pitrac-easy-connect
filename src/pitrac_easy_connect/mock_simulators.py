@@ -12,8 +12,11 @@ class MockTCPServer(socketserver.ThreadingTCPServer):
     allow_reuse_address = True
     daemon_threads = True
 
-    def __init__(self, address: Tuple[str, int], simulator: Simulator):
+    def __init__(self, address: Tuple[str, int], simulator: Simulator, quiet: bool = False):
         self.simulator = simulator
+        #: When something else is presenting the traffic to a person, this
+        #: server's own running commentary is just noise.
+        self.quiet = quiet
         self.received: List[Dict[str, Any]] = []
         self.received_lock = threading.Lock()
         super().__init__(address, MockHandler)
@@ -53,7 +56,8 @@ class MockHandler(socketserver.BaseRequestHandler):
                 if not isinstance(message, dict):
                     return
                 self.server.record(message)
-                print("{} mock received: {}".format(self.server.simulator.label, message))
+                if not self.server.quiet:
+                    print("{} mock received: {}".format(self.server.simulator.label, message))
 
                 if self.server.simulator is Simulator.GSPRO:
                     self._send({"Code": 200, "Message": "Shot received successfully"})
@@ -75,8 +79,10 @@ class MockHandler(socketserver.BaseRequestHandler):
 
 
 class RunningMock:
-    def __init__(self, simulator: Simulator, host: str = "127.0.0.1", port: int = 0):
-        self.server = MockTCPServer((host, port), simulator)
+    def __init__(
+        self, simulator: Simulator, host: str = "127.0.0.1", port: int = 0, quiet: bool = False
+    ):
+        self.server = MockTCPServer((host, port), simulator, quiet=quiet)
         self.thread: Optional[threading.Thread] = None
 
     @property

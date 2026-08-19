@@ -411,3 +411,58 @@ def test_the_companion_learns_the_enclosure_state_without_asking(rig):
     enclosure = rig.companion.status()["enclosure"]
     assert enclosure["device"]["deviceId"] == rig.pi.identity.device_id
     assert enclosure["selfTest"]["checks"], "the enclosure's checks should arrive unprompted"
+
+
+def test_the_companion_never_claims_ready_while_a_step_is_unfinished(rig):
+    """The invariant: READY TO PLAY and an unticked step cannot both be true."""
+
+    rig.pair()
+    assert rig.wait_linked() is True
+
+    # The enclosure has no cameras in this rig's default state? Force it, so the
+    # enclosure genuinely cannot measure while the simulator is perfectly happy.
+    rig.pi.backend.camera_count = 0
+    rig.pi.refresh()
+    rig.companion.send_test_shot()
+
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        status = rig.companion.status()
+        if status["enclosure"].get("state") == "RECOVERY REQUIRED":
+            break
+        time.sleep(0.1)
+
+    status = rig.companion.status()
+    assert status["simulatorStatus"]["ready"] is True, "the simulator side is fine"
+    assert status["ready"] is False, "but the enclosure cannot measure, so this is not ready"
+    assert status["state"] == "RECOVERY REQUIRED"
+
+
+def test_a_healthy_enclosure_still_reaches_ready(rig):
+    rig.pair()
+    assert rig.wait_linked() is True
+    rig.companion.send_test_shot()
+
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        if rig.companion.status()["ready"]:
+            break
+        time.sleep(0.1)
+
+    status = rig.companion.status()
+    assert status["ready"] is True
+    assert all(hop["ok"] for hop in status["chain"]), [h for h in status["chain"] if not h["ok"]]
+
+
+def test_pairing_works_even_if_the_caller_did_not_search_first(rig):
+    """A caller that discovered the enclosure some other way must still be able
+    to pair, rather than being told nothing was found."""
+
+    code = rig.pi.pairings.code_for_display().code
+    # Deliberately do not call rig.find() first.
+    assert rig.companion._found == []
+    result = rig.companion.pair(
+        rig.pi.identity.device_id, code, portal_port=rig.portal_port
+    )
+    assert result["deviceId"] == rig.pi.identity.device_id
+    assert rig.wait_linked() is True
