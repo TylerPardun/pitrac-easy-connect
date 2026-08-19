@@ -27,7 +27,8 @@ from typing import Any, Callable, Dict, Optional
 from urllib.parse import urlparse
 
 from ..common.errors import EasyConnectError
-from .portal_page import PAGE
+from .downloads import CompanionDownloads
+from .portal_page import PAGE, downloads_page
 
 PORTAL_PORT = 80
 MAX_BODY_BYTES = 64 * 1024
@@ -52,9 +53,12 @@ class PortalServer(ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
 
-    def __init__(self, address, service, extra_hosts=()):
+    def __init__(self, address, service, extra_hosts=(), downloads_dir=None):
         self.service = service
         self.extra_hosts = {host.lower() for host in extra_hosts}
+        self.downloads = CompanionDownloads(
+            downloads_dir if downloads_dir is not None else service.paths.downloads
+        )
         super().__init__(address, PortalHandler)
 
 
@@ -72,8 +76,24 @@ class PortalHandler(BaseHTTPRequestHandler):
         if path in ("/", "/index.html", "/setup"):
             self._send_html(PAGE)
             return
+        if path in ("/companion", "/companion/"):
+            self._send_html(downloads_page(
+                [item.as_dict() for item in self.server.downloads.available()],
+                self.server.service.identity.display_name,
+                self.server.service.version,
+            ))
+            return
+        if path.startswith("/companion/"):
+            self._send_download(path[len("/companion/"):])
+            return
         if path == "/api/status":
             self._json(HTTPStatus.OK, self.server.service.status())
+            return
+        if path == "/api/downloads":
+            self._json(
+                HTTPStatus.OK,
+                {"downloads": [item.as_dict() for item in self.server.downloads.available()]},
+            )
             return
         if path == "/api/networks":
             self._guarded(lambda: {"networks": [n.as_dict() for n in self._service().provisioner.scan()]})
@@ -201,6 +221,34 @@ class PortalHandler(BaseHTTPRequestHandler):
             )
         else:
             self._json(HTTPStatus.OK, result if isinstance(result, dict) else {"result": result})
+
+    def _send_download(self, name: str) -> None:
+        """Serve one Companion build. The name is validated before it is used."""
+
+        from urllib.parse import unquote
+
+        resolved = self.server.downloads.resolve(unquote(name))
+        if resolved is None:
+            self._json(HTTPStatus.NOT_FOUND, {"error": {"failed": "That download does not exist"}})
+            return
+        try:
+            payload = resolved.read_bytes()
+        except OSError:
+            self._json(
+                HTTPStatus.INTERNAL_SERVER_ERROR,
+                {"error": {"failed": "That download could not be read"}},
+            )
+            return
+
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "application/octet-stream")
+        self.send_header("Content-Length", str(len(payload)))
+        self.send_header(
+            "Content-Disposition", 'attachment; filename="{}"'.format(resolved.name)
+        )
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.end_headers()
+        self.wfile.write(payload)
 
     def _download_backup(self) -> None:
         """Hand the browser a backup file to save."""

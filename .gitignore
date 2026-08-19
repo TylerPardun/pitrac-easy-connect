@@ -7,3 +7,6 @@ dist/
 *.spec.bak
 .DS_Store
 
+
+# Built Companion artifacts
+dist/

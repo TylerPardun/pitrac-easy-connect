@@ -190,7 +190,9 @@ PAGE = r"""<!doctype html>
     <!-- Pairing -->
     <div id="viewPair" class="hidden">
       <h2>Pair your Windows PC</h2>
-      <p class="hint">Open PiTrac Easy Connect on your PC and type this code.</p>
+      <p class="hint">Open PiTrac Easy Connect on your PC and type this code.
+        <span id="needSoftware" class="hidden">Do not have it yet?
+        <a href="/companion" style="color:var(--accent)">Get it from this PiTrac</a>.</span></p>
       <div class="pairing" id="pairCode">------</div>
       <p class="hint" style="text-align:center" id="pairTimer"></p>
       <div class="actions"><button class="secondary" id="newCode">New code</button></div>
@@ -419,7 +421,16 @@ function openPassword(){
 
 // --- pairing ------------------------------------------------------------
 
+async function showSoftwareLinkIfAvailable(){
+  // Only offer the link when this enclosure is actually carrying a build.
+  try{
+    const data=await api("/api/downloads");
+    $("needSoftware").classList.toggle("hidden", !(data.downloads && data.downloads.length));
+  }catch(error){ /* the link is a convenience, not a requirement */ }
+}
+
 async function loadCode(){
+  showSoftwareLinkIfAvailable();
   try{
     const data=await api("/api/pairing-code");
     $("pairCode").textContent=data.code.replace(/(\d{3})(\d{3})/,"$1 $2");
@@ -580,3 +591,83 @@ setInterval(refresh, 4000);
 </body>
 </html>
 """
+
+
+def downloads_page(downloads, enclosure_name: str, version: str) -> str:
+    """The page a PC lands on to fetch the Companion from the enclosure itself."""
+
+    def escape(value):
+        return (
+            str(value).replace("&", "&amp;").replace("<", "&lt;")
+            .replace(">", "&gt;").replace('"', "&quot;")
+        )
+
+    if downloads:
+        items = "".join(
+            """
+      <a class="dl" href="{url}" download>
+        <span><strong>{label}</strong><small>{note}</small></span>
+        <span class="pill">{size}</span>
+      </a>""".format(
+                url=escape(item["url"]), label=escape(item["label"]),
+                note=escape(item["note"]), size=escape(item["sizeText"]),
+            )
+            for item in downloads
+        )
+        body = """
+    <h2>Install Easy Connect on your computer</h2>
+    <p class="hint">This is the program that connects PiTrac to GSPro or E6 Connect.
+      Version {version}, the same version this enclosure is running.</p>
+    {items}
+    <p class="hint" style="margin-top:18px">Windows may warn that it does not recognise the
+      program. Choose <strong>More info</strong>, then <strong>Run anyway</strong>.</p>""".format(
+            version=escape(version), items=items
+        )
+    else:
+        body = """
+    <h2>No computer software is stored on this enclosure</h2>
+    <p class="hint">Whoever set this PiTrac up did not put a copy of Easy Connect on it.
+      Ask them for the installer for your computer.</p>"""
+
+    return """<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Easy Connect for your computer</title>
+<style>
+  :root{{color-scheme:dark;--bg:#0c1210;--panel:#151d19;--line:#2b3931;--text:#f4f7f5;
+    --muted:#9eada5;--green:#58d68d;--accent:#dff86d;--accent-text:#172008}}
+  *{{box-sizing:border-box}}
+  body{{margin:0;background:radial-gradient(circle at 15% -10%,#22372b 0,#0c1210 38%);
+    color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;
+    line-height:1.5}}
+  main{{width:min(620px,calc(100% - 28px));margin:44px auto 64px}}
+  .eyebrow{{color:var(--green);font-weight:700;letter-spacing:.12em;text-transform:uppercase;
+    font-size:.72rem}}
+  h1{{margin:.3rem 0 .3rem;font-size:clamp(1.8rem,5vw,2.6rem);line-height:1.05}}
+  h2{{margin:0 0 6px;font-size:1.15rem}}
+  .hint{{color:var(--muted);font-size:.94rem;margin:0}}
+  .panel{{margin-top:24px;padding:22px;border:1px solid var(--line);border-radius:18px;
+    background:rgba(21,29,25,.94)}}
+  .dl{{display:grid;grid-template-columns:1fr auto;gap:14px;align-items:center;
+    margin-top:12px;padding:16px 18px;border:1px solid var(--line);border-radius:12px;
+    background:#101713;color:var(--text);text-decoration:none}}
+  .dl:hover{{border-color:var(--green)}}
+  .dl strong{{display:block;font-size:1.04rem}}
+  .dl small{{display:block;color:var(--muted);margin-top:4px}}
+  .pill{{border-radius:99px;padding:6px 11px;font-weight:750;font-size:.78rem;
+    background:rgba(223,248,109,.14);color:var(--accent)}}
+  a.back{{display:inline-block;margin-top:22px;color:var(--muted);font-size:.9rem}}
+</style>
+</head>
+<body>
+<main>
+  <div class="eyebrow">{name}</div>
+  <h1>Easy Connect</h1>
+  <section class="panel">{body}</section>
+  <a class="back" href="/">&larr; Back to PiTrac setup</a>
+</main>
+</body>
+</html>
+""".format(name=escape(enclosure_name), body=body)

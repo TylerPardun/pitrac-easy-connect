@@ -74,6 +74,9 @@ from Finder.
 - **[Operator guide](docs/operator-guide.md)** &mdash; installing on a new Raspberry Pi 5,
   setting up simulator PCs, building a second enclosure, upgrading, and
   diagnosing a misbehaving unit.
+- **[Distribution](docs/distribution.md)** &mdash; getting the Companion onto a PC when
+  everything is stored locally, what to build and where, and what still has to
+  be true before an enclosure goes to someone else.
 - **[Pi baseline audit](docs/pi-baseline-audit.md)** &mdash; what the target Pi actually
   looks like, and the integration constraints that follow from it.
 

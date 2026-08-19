@@ -59,6 +59,12 @@ class ServicePaths:
     def backups(self) -> Path:
         return self.root / "backups"
 
+    @property
+    def downloads(self) -> Path:
+        """Where Companion builds live, to be handed to the owner's PC."""
+
+        return self.root / "companion"
+
 
 class PiService:
     def __init__(
