@@ -31,6 +31,8 @@ from .portal_page import PAGE
 
 PORTAL_PORT = 80
 MAX_BODY_BYTES = 64 * 1024
+#: A restore carries a whole backup file in its body, so it gets its own limit.
+MAX_RESTORE_BYTES = 9 * 1024 * 1024
 GUARD_HEADER = "X-PiTrac-Portal"
 
 #: Host values the portal answers to. Anything else is refused so a name an
@@ -82,6 +84,9 @@ class PortalHandler(BaseHTTPRequestHandler):
         if path == "/api/pair-hello":
             self._guarded(self._pair_hello)
             return
+        if path == "/api/backup":
+            self._download_backup()
+            return
         if path == "/api/owner-card":
             self._guarded(lambda: {"text": self._service().identity.owner_card()})
             return
@@ -114,6 +119,10 @@ class PortalHandler(BaseHTTPRequestHandler):
                 str(body.get("proof", "")),
                 str(body.get("computerName", "")),
             ),
+            "/api/backup/inspect": lambda body: self._service().command(
+                "inspectBackup", {"file": body.get("file", "")}
+            ),
+            "/api/backup/restore": lambda body: self._service().command("restoreBackup", body),
             "/api/restart-pitrac": lambda body: self._service().command("restartPitrac"),
             "/api/reset-network": lambda body: self._service().command("resetNetwork"),
             "/api/shutdown": lambda body: self._service().command("shutdown"),
@@ -124,7 +133,9 @@ class PortalHandler(BaseHTTPRequestHandler):
             self._json(HTTPStatus.NOT_FOUND, {"error": {"failed": "That action does not exist"}})
             return
         try:
-            body = self._read_json()
+            body = self._read_json(
+                MAX_RESTORE_BYTES if path.startswith("/api/backup/") else MAX_BODY_BYTES
+            )
         except ValueError as exc:
             self._json(HTTPStatus.BAD_REQUEST, {"error": {"failed": str(exc)}})
             return
@@ -191,6 +202,36 @@ class PortalHandler(BaseHTTPRequestHandler):
         else:
             self._json(HTTPStatus.OK, result if isinstance(result, dict) else {"result": result})
 
+    def _download_backup(self) -> None:
+        """Hand the browser a backup file to save."""
+
+        from urllib.parse import parse_qs
+
+        query = parse_qs(urlparse(self.path).query)
+        try:
+            made = self._service().command(
+                "createBackup",
+                {
+                    "includeIdentity": query.get("identity", ["0"])[0] == "1",
+                    "includePairings": query.get("pairings", ["0"])[0] == "1",
+                },
+            )
+        except EasyConnectError as exc:
+            self._json(HTTPStatus.BAD_REQUEST, {"error": exc.as_dict()})
+            return
+
+        body = (json.dumps(made["backup"], indent=2, sort_keys=True) + "\n").encode("utf-8")
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header(
+            "Content-Disposition", 'attachment; filename="{}"'.format(made["filename"])
+        )
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.end_headers()
+        self.wfile.write(body)
+
     def _pair_hello(self) -> Dict[str, Any]:
         service = self._service()
         started = service.pairings.begin_exchange()
@@ -211,12 +252,12 @@ class PortalHandler(BaseHTTPRequestHandler):
 
     # --- Wire -------------------------------------------------------------
 
-    def _read_json(self) -> Dict[str, Any]:
+    def _read_json(self, limit: int = MAX_BODY_BYTES) -> Dict[str, Any]:
         try:
             length = int(self.headers.get("Content-Length", "0"))
         except ValueError as exc:
             raise ValueError("The request length was not valid") from exc
-        if length > MAX_BODY_BYTES:
+        if length > limit:
             raise ValueError("The request was too large")
         if length <= 0:
             return {}

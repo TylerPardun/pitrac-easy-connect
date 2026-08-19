@@ -16,6 +16,7 @@ from .page import PAGE
 from .service import CompanionService
 
 MAX_BODY_BYTES = 64 * 1024
+MAX_RESTORE_BYTES = 9 * 1024 * 1024
 
 
 class CompanionHTTPServer(ThreadingHTTPServer):
@@ -40,6 +41,9 @@ class CompanionHandler(BaseHTTPRequestHandler):
         if path == "/api/status":
             self._guarded(self.server.service.status)
             return
+        if path == "/api/backup":
+            self._download_backup()
+            return
         self._json(HTTPStatus.NOT_FOUND, {"error": {"failed": "That page does not exist"}})
 
     def do_POST(self) -> None:
@@ -55,6 +59,10 @@ class CompanionHandler(BaseHTTPRequestHandler):
             "/api/simulator": lambda body: service.select_simulator(str(body.get("simulator", ""))),
             "/api/check": lambda body: service.check_simulator(),
             "/api/test-shot": lambda body: service.send_test_shot(),
+            "/api/backup/inspect": lambda body: service.command(
+                "inspectBackup", {"file": body.get("file", "")}
+            ),
+            "/api/backup/restore": lambda body: service.command("restoreBackup", body),
             "/api/enclosure": lambda body: service.command(
                 str(body.get("command", "")), body.get("arguments") or {}
             ),
@@ -64,11 +72,50 @@ class CompanionHandler(BaseHTTPRequestHandler):
             self._json(HTTPStatus.NOT_FOUND, {"error": {"failed": "That action does not exist"}})
             return
         try:
-            body = self._read_json()
+            body = self._read_json(
+                MAX_RESTORE_BYTES if path.startswith("/api/backup/") else MAX_BODY_BYTES
+            )
         except ValueError as exc:
             self._json(HTTPStatus.BAD_REQUEST, {"error": {"failed": str(exc)}})
             return
         self._guarded(lambda: handler(body))
+
+    def _download_backup(self) -> None:
+        """Ask the enclosure for a backup and hand it to the browser to save.
+
+        Saving it on the PC is the point: a backup that lives only on the
+        enclosure's memory card cannot help when the memory card is the problem.
+        """
+
+        from urllib.parse import parse_qs
+
+        query = parse_qs(urlparse(self.path).query)
+        try:
+            made = self.server.service.command(
+                "createBackup",
+                {
+                    "includeIdentity": query.get("identity", ["0"])[0] == "1",
+                    "includePairings": query.get("pairings", ["0"])[0] == "1",
+                },
+            )
+        except Exception as exc:
+            self._json(
+                HTTPStatus.BAD_REQUEST,
+                {"error": getattr(exc, "as_dict", lambda: {"failed": str(exc)})()},
+            )
+            return
+
+        body = (json.dumps(made["backup"], indent=2, sort_keys=True) + "\n").encode("utf-8")
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header(
+            "Content-Disposition", 'attachment; filename="{}"'.format(made["filename"])
+        )
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.end_headers()
+        self.wfile.write(body)
 
     # --- Wire -------------------------------------------------------------
 
@@ -93,12 +140,12 @@ class CompanionHandler(BaseHTTPRequestHandler):
         else:
             self._json(HTTPStatus.OK, result if isinstance(result, dict) else {"result": result})
 
-    def _read_json(self) -> Dict[str, Any]:
+    def _read_json(self, limit: int = MAX_BODY_BYTES) -> Dict[str, Any]:
         try:
             length = int(self.headers.get("Content-Length", "0"))
         except ValueError as exc:
             raise ValueError("The request length was not valid") from exc
-        if length > MAX_BODY_BYTES:
+        if length > limit:
             raise ValueError("The request was too large")
         if length <= 0:
             return {}

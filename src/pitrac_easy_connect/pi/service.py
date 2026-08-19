@@ -23,6 +23,7 @@ from ..common.identity import IdentityStore
 from ..common.states import State
 from ..models import Simulator
 from .backend import BackendError, PiBackend
+from .backup import BackupManager
 from .link_server import CompanionLinkServer, CompanionSession
 from .pairing import PairingManager
 from .pitrac import PitracInstallation
@@ -53,6 +54,10 @@ class ServicePaths:
     @property
     def pairings(self) -> Path:
         return self.root / "pairings.json"
+
+    @property
+    def backups(self) -> Path:
+        return self.root / "backups"
 
 
 class PiService:
@@ -94,6 +99,14 @@ class PiService:
             on_detach=self._on_companion_detach,
             on_frame=self._on_companion_frame,
             port=link_port,
+        )
+        self.backups = BackupManager(
+            self.identity_store,
+            self.settings,
+            self.pitrac,
+            self.pairings,
+            self.paths.backups,
+            version=version,
         )
         self.discovery = discovery.DiscoveryResponder(self.describe, port=discovery_port)
 
@@ -412,6 +425,9 @@ class PiService:
             "reboot": lambda a: self._reboot(),
             "shutdown": lambda a: self._shutdown(),
             "ownerCard": lambda a: {"text": self.identity.owner_card()},
+            "createBackup": lambda a: self._create_backup(a),
+            "inspectBackup": lambda a: self.backups.inspect(str(a.get("file", ""))).as_dict(),
+            "restoreBackup": lambda a: self._restore_backup(a),
         }
 
     def _rerun_self_test(self) -> Dict[str, Any]:
@@ -481,6 +497,36 @@ class PiService:
             "ownerCard": self.identity.owner_card(),
             "network": result.as_dict(),
         }
+
+    def _create_backup(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
+        document = self.backups.create(
+            include_identity=bool(arguments.get("includeIdentity")),
+            include_pairings=bool(arguments.get("includePairings")),
+        )
+        return {
+            "filename": self.backups.suggested_filename(),
+            "backup": document,
+            "info": self.backups.inspect(document).as_dict(),
+        }
+
+    def _restore_backup(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
+        result = self.backups.restore(
+            str(arguments.get("file", "")),
+            calibration=bool(arguments.get("calibration", True)),
+            preferences=bool(arguments.get("preferences", True)),
+            identity=bool(arguments.get("identity", False)),
+            pairings=bool(arguments.get("pairings", False)),
+            confirm_different_device=bool(arguments.get("confirmDifferentDevice", False)),
+        )
+        # A restore can change the enclosure's name, identity, and the settings
+        # PiTrac reads, so everything downstream is rebuilt from disk.
+        self.identity = self.identity_store.identity
+        self.provisioner.setup_ssid = self.identity.setup_ssid
+        self.provisioner.setup_password = self.identity.setup_password
+        self.settings.load()
+        self._publish_mdns()
+        self.refresh()
+        return result.as_dict()
 
     def _restart_pitrac(self) -> Dict[str, Any]:
         from .pitrac import PITRAC_WEB_SERVICE

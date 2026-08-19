@@ -157,6 +157,28 @@ PAGE = r"""<!doctype html>
       <dl class="kv" id="advanced"></dl>
     </details>
   </section>
+
+  <section class="panel" id="panelBackup">
+    <h2>Backup and restore</h2>
+    <p class="hint">Calibration is the part worth keeping. Save the file on this computer, not
+      on PiTrac&mdash;a backup stored on the memory card cannot help you when the memory card
+      is the problem.</p>
+    <div class="row" style="display:flex;gap:8px;align-items:center;color:var(--muted);font-size:.92rem">
+      <input type="checkbox" id="bkSecrets" style="width:auto">
+      <label for="bkSecrets" style="margin:0;font-weight:400">Also include the enclosure's
+        identity and paired computers</label>
+    </div>
+    <div class="note" id="bkSecretNote" style="display:none">Include these only if you might
+      replace the memory card in this enclosure. The file will then contain the setup Wi-Fi
+      password and your pairing keys.</div>
+    <div class="actions">
+      <button class="primary" id="makeBackup">Save a backup</button>
+      <label class="secondary" for="bkFile" style="display:inline-block;cursor:pointer">Restore from a file</label>
+      <input type="file" id="bkFile" accept=".pitracbackup,.json,application/json" style="display:none">
+    </div>
+    <div id="bkPreview"></div>
+    <div id="bkNote"></div>
+  </section>
 </main>
 
 <script>
@@ -204,6 +226,7 @@ function render(data){
   $("panelSim").classList.toggle("hidden", !linked);
   $("panelChain").classList.toggle("hidden", !linked);
   $("panelPi").classList.toggle("hidden", !linked);
+  $("panelBackup").classList.toggle("hidden", !linked);
 
   if(!linked && data.link && data.link.lastError && !pairing){
     showError($("stateError"), {message:data.link.lastError.failed, info:data.link.lastError});
@@ -302,6 +325,63 @@ $("piForget").addEventListener("click",e=>run(e.target, async()=>{
   if(!confirm("Unpair this computer from PiTrac?\n\nREMOVED: this computer's access.\nKEPT: PiTrac's Wi-Fi networks, calibration, and other paired computers.\n\nYou can pair again with a new code.")) return;
   await api("/api/forget",{deviceId:status.activeDeviceId});
 }));
+
+// --- backup and restore --------------------------------------------------
+
+let pendingBackup=null;
+
+$("bkSecrets").addEventListener("change",e=>{
+  $("bkSecretNote").style.display = e.target.checked ? "" : "none";
+});
+
+$("makeBackup").addEventListener("click",e=>run(e.target,async()=>{
+  window.location.href="/api/backup"+($("bkSecrets").checked?"?identity=1&pairings=1":"");
+  $("bkNote").innerHTML='<div class="note good">Your backup is being saved to this computer.</div>';
+}));
+
+$("bkFile").addEventListener("change",async event=>{
+  const file=event.target.files && event.target.files[0];
+  if(!file) return;
+  $("bkPreview").innerHTML=""; $("bkNote").innerHTML="";
+  try{
+    const text=await file.text();
+    const info=await api("/api/backup/inspect",{file:text});
+    pendingBackup=text;
+    renderBackupPreview(info);
+  }catch(error){ pendingBackup=null; showError($("stateError"),error); }
+  event.target.value="";
+});
+
+function renderBackupPreview(info){
+  const differs=!info.sameDevice;
+  $("bkPreview").innerHTML=`
+    <div class="note">
+      <strong>${esc(info.displayName)}</strong> &middot; made ${esc(info.createdText)}
+      &middot; Easy Connect ${esc(info.createdBy)}
+      <div style="margin-top:8px">Contains: ${info.sectionLabels.map(esc).join(" &middot; ")}</div>
+      ${differs?'<div style="margin-top:8px;color:var(--amber)">This backup came from a different '+
+        'enclosure. Camera calibration only matches the cameras it was made with.</div>':""}
+    </div>
+    <div class="actions">
+      <button class="primary" id="doRestore">Restore</button>
+      <button class="secondary" id="cancelRestore">Cancel</button>
+    </div>`;
+  $("cancelRestore").addEventListener("click",()=>{pendingBackup=null;$("bkPreview").innerHTML="";});
+  $("doRestore").addEventListener("click",e=>run(e.target,async()=>{
+    if(differs&&!confirm("This backup is from a different enclosure.\n\nCamera calibration only "+
+      "matches the cameras it was made with. Restore it anyway?")) return;
+    const result=await api("/api/backup/restore",{
+      file:pendingBackup, calibration:true, preferences:true,
+      identity:info.sections.includes("identity"),
+      pairings:info.sections.includes("pairings"),
+      confirmDifferentDevice:true,
+    });
+    pendingBackup=null; $("bkPreview").innerHTML="";
+    $("bkNote").innerHTML='<div class="note good">Restored: '+
+      (result.restored.map(esc).join(", ")||"nothing")+
+      (result.needsRestart?". Press Restart PiTrac so it picks up the restored settings.":"")+'</div>';
+  }));
+}
 
 async function refresh(){
   try{ render(await api("/api/status")); }

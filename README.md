@@ -573,7 +573,7 @@ service. The enclosure itself is not finished — no cameras are attached yet �
 the self-test correctly refuses to report `READY TO PLAY` on the hardware.
 
 - **Version:** 0.2.0
-- **Tests:** 231 passing on macOS and on the Raspberry Pi (Python 3.13.5, arm64)
+- **Tests:** 258 passing on macOS and on the Raspberry Pi (Python 3.13.5, arm64)
 - **Dependencies:** none. Standard library only, so the Pi install needs no pip
   packages.
 
@@ -638,6 +638,10 @@ audit taken before anything was installed.
 - Separate reset paths: reset network, revoke one computer, prepare for a new
   owner — each stating what it keeps and what it removes.
 - Safe shutdown with a clear safe-to-unplug message.
+- Checksummed backup and restore of calibration and preferences, with the
+  enclosure identity and pairings as an opt-in for replacing a memory card, an
+  automatic pre-restore snapshot, and refusal of altered files or another
+  enclosure's calibration.
 - Raspberry Pi installer, hardened systemd unit, and Windows executable build.
 - An illustrated setup guide for owners and an operator guide for whoever builds
   and maintains enclosures, both tested against the code so a quoted timeout or
@@ -671,7 +675,6 @@ backslashes, and CJK survive scanning, joining, and display.
 - Signed update packages, staged installation, health checks, and automatic
   rollback.
 - Stable and beta update channels; offline and USB update paths.
-- Calibration backup, restore, and pre-restore snapshots.
 - Redacted diagnostic support-package export.
 - Camera and calibration verification against real cameras — none are attached
   yet, so those checks have only been exercised in their failing state.

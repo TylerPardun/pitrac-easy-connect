@@ -220,6 +220,35 @@ PAGE = r"""<!doctype html>
       <button class="danger" id="shutdown">Shut down safely</button>
     </div>
     <div id="maintNote"></div>
+  </section>
+
+  <section class="panel">
+    <h2>Backup and restore</h2>
+    <p class="hint">Calibration is the part worth keeping. Everything else takes a minute to
+      set up again; calibration means setting up a rig.</p>
+
+    <h3 style="font-size:1rem;margin:16px 0 6px">Save a backup</h3>
+    <p class="hint">Saves your camera calibration, your simulator choice, and this enclosure's
+      name.</p>
+    <div class="row">
+      <input type="checkbox" id="bkSecrets" style="width:auto">
+      <label for="bkSecrets" style="margin:0;font-weight:400">Also include the enclosure's
+        identity and paired computers</label>
+    </div>
+    <div class="note" id="bkSecretNote" style="display:none">Include these only if you might
+      replace the memory card in this enclosure. The file will then contain the setup Wi-Fi
+      password and your pairing keys, so keep it as carefully as the owner card.</div>
+    <div class="actions"><button class="primary" id="makeBackup">Save a backup file</button></div>
+
+    <h3 style="font-size:1rem;margin:22px 0 6px">Restore from a backup</h3>
+    <p class="hint">Choose a backup file. PiTrac checks it and tells you what it contains
+      before anything is changed.</p>
+    <div class="actions">
+      <label class="secondary" for="bkFile" style="display:inline-block;cursor:pointer">Choose a backup file</label>
+      <input type="file" id="bkFile" accept=".pitracbackup,.json,application/json" style="display:none">
+    </div>
+    <div id="bkPreview"></div>
+    <div id="bkNote"></div>
 
     <details class="advanced">
       <summary>Advanced details</summary>
@@ -457,6 +486,88 @@ $("shutdown").addEventListener("click",e=>run(e.target,async()=>{
   await api("/api/shutdown",{});
   $("maintNote").innerHTML='<div class="note busy">Shutting down. Wait until the green light on the Raspberry Pi stops blinking, then it is safe to unplug.</div>';
 }));
+
+// --- backup and restore --------------------------------------------------
+
+let pendingBackup=null;
+
+$("bkSecrets").addEventListener("change",e=>{
+  $("bkSecretNote").style.display = e.target.checked ? "" : "none";
+});
+
+$("makeBackup").addEventListener("click",e=>run(e.target,async()=>{
+  const secrets=$("bkSecrets").checked ? "?identity=1&pairings=1" : "";
+  // Let the browser save it, so the file lands wherever downloads normally go.
+  window.location.href="/api/backup"+secrets;
+  $("bkNote").innerHTML='<div class="note good">Your backup is being saved. Keep it somewhere '+
+    'other than this enclosure&mdash;a backup stored only on the memory card cannot help you '+
+    'when the memory card is the problem.</div>';
+}));
+
+$("bkFile").addEventListener("change",async event=>{
+  const file=event.target.files && event.target.files[0];
+  if(!file) return;
+  $("bkPreview").innerHTML=""; $("bkNote").innerHTML="";
+  let text;
+  try{ text=await file.text(); }
+  catch(error){ showError($("actionError"),error); return; }
+  try{
+    const info=await api("/api/backup/inspect",{file:text});
+    pendingBackup=text;
+    renderBackupPreview(info);
+  }catch(error){ pendingBackup=null; showError($("actionError"),error); }
+  event.target.value="";
+});
+
+function renderBackupPreview(info){
+  const differs=!info.sameDevice;
+  $("bkPreview").innerHTML=`
+    <div class="note">
+      <strong>${esc(info.displayName)}</strong> &middot; made ${esc(info.createdText)}
+      &middot; Easy Connect ${esc(info.createdBy)}
+      <div style="margin-top:8px">Contains: ${info.sectionLabels.map(esc).join(" &middot; ")}</div>
+      ${differs?'<div style="margin-top:8px;color:var(--amber)">This backup came from a '+
+        'different enclosure. Camera calibration only matches the cameras it was made with, '+
+        'so restoring it here would give wrong shot data unless this is the same enclosure '+
+        'with a replaced memory card.</div>':""}
+    </div>
+    <div class="row"><input type="checkbox" id="rsCal" checked style="width:auto">
+      <label for="rsCal" style="margin:0;font-weight:400">Camera calibration</label></div>
+    <div class="row"><input type="checkbox" id="rsPrefs" checked style="width:auto">
+      <label for="rsPrefs" style="margin:0;font-weight:400">Simulator choice and enclosure name</label></div>
+    ${info.sections.includes("identity")?'<div class="row"><input type="checkbox" id="rsId" style="width:auto">'+
+      '<label for="rsId" style="margin:0;font-weight:400">Enclosure identity &mdash; makes this the '+
+      'same enclosure again, so the printed owner card keeps working</label></div>':""}
+    ${info.sections.includes("pairings")?'<div class="row"><input type="checkbox" id="rsPair" style="width:auto">'+
+      '<label for="rsPair" style="margin:0;font-weight:400">Paired computers</label></div>':""}
+    <div class="actions"><button class="primary" id="doRestore">Restore</button>
+      <button class="secondary" id="cancelRestore">Cancel</button></div>`;
+
+  $("cancelRestore").addEventListener("click",()=>{
+    pendingBackup=null; $("bkPreview").innerHTML=""; showError($("actionError"),null);
+  });
+  $("doRestore").addEventListener("click",e=>run(e.target,async()=>{
+    const identity=$("rsId")&&$("rsId").checked;
+    if(differs&&$("rsCal").checked&&!identity){
+      if(!confirm("This backup is from a different enclosure.\n\nCamera calibration only "+
+        "matches the cameras it was made with. Restoring it here will give wrong shot data "+
+        "unless this is the same enclosure with a new memory card.\n\nRestore it anyway?")) return;
+    }
+    const result=await api("/api/backup/restore",{
+      file:pendingBackup,
+      calibration:$("rsCal").checked, preferences:$("rsPrefs").checked,
+      identity:!!identity, pairings:!!($("rsPair")&&$("rsPair").checked),
+      confirmDifferentDevice:true,
+    });
+    pendingBackup=null; $("bkPreview").innerHTML="";
+    $("bkNote").innerHTML='<div class="note good">Restored: '+
+      (result.restored.map(esc).join(", ")||"nothing")+
+      (result.skipped.length?". Not in this backup: "+result.skipped.map(esc).join(", "):"")+
+      (result.needsRestart?". Press Restart PiTrac so it picks up the restored settings.":"")+
+      '</div>';
+    await refresh();
+  }));
+}
 
 async function refresh(){
   try{ render(await api("/api/status")); }

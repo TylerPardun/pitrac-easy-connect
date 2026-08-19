@@ -151,6 +151,34 @@ class IdentityStore:
         self._store.set("displayName", cleaned)
         return self.identity
 
+    def restore(self, section: Dict[str, Any]) -> DeviceIdentity:
+        """Adopt a saved identity, so a rebuilt card is the same enclosure again.
+
+        This is what keeps a printed owner card correct after the memory card is
+        replaced. Every field has to be present and sane, or nothing is changed:
+        a half-restored identity would leave the enclosure answering to a name
+        whose password no longer works.
+        """
+
+        device_id = str(section.get("deviceId", "")).strip().upper()
+        setup_password = str(section.get("setupPassword", ""))
+        display_name = " ".join(str(section.get("displayName", "")).split())
+
+        if not device_id or not all(character in _ID_ALPHABET for character in device_id):
+            raise ValueError("The backup does not contain a usable device ID")
+        if len(setup_password) < 8:
+            raise ValueError("The backup does not contain a usable setup password")
+
+        self._store.update(
+            {
+                "deviceId": device_id,
+                "setupPassword": setup_password,
+                "displayName": display_name or "PiTrac {}".format(device_id[-4:]),
+                "hardwareProfile": str(section.get("hardwareProfile") or self.hardware_profile),
+            }
+        )
+        return self.identity
+
     def regenerate_setup_password(self) -> DeviceIdentity:
         self._store.set("setupPassword", new_setup_password())
         return self.identity

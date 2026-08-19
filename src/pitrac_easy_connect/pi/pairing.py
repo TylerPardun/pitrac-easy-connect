@@ -354,6 +354,29 @@ class PairingManager:
             self._store.set("pairings", {})
             self._code = None
 
+    def export(self) -> Dict[str, Any]:
+        """The full pairing records, secrets included, for a backup.
+
+        Only ever called when the owner has explicitly asked to include paired
+        computers, because the result is as sensitive as the pairings themselves.
+        """
+
+        with self._lock:
+            return {"pairings": dict(self._store.get("pairings") or {})}
+
+    def restore(self, section: Dict[str, Any]) -> None:
+        pairings = section.get("pairings")
+        if not isinstance(pairings, dict):
+            return
+        cleaned = {
+            str(pairing_id): record
+            for pairing_id, record in pairings.items()
+            if isinstance(record, dict) and record.get("secret")
+        }
+        with self._lock:
+            self._store.set("pairings", cleaned)
+            self._code = None
+
     @property
     def count(self) -> int:
         return len(self._store.get("pairings") or {})
