@@ -42,6 +42,10 @@ def main(argv=None) -> int:
     parser.add_argument(
         "--no-network", action="store_true", help="leave the enclosure on its setup hotspot"
     )
+    parser.add_argument(
+        "--no-country", action="store_true",
+        help="start with no wireless country set, as a brand new enclosure would",
+    )
     args = parser.parse_args(argv)
 
     simulator = Simulator(args.simulator)
@@ -61,7 +65,7 @@ def main(argv=None) -> int:
 
     with RunningMock(simulator) as mock:
         service = PiService(
-            home_network_pi(country="US"),
+            home_network_pi(country="" if args.no_country else "US"),
             paths=ServicePaths(state_dir / "pi"),
             pitrac=PitracInstallation(
                 pitrac_dir / "user_settings.json", pitrac_dir / "calibration_data.json"
@@ -69,6 +73,7 @@ def main(argv=None) -> int:
             relay_ports={Simulator.GSPRO: 0, Simulator.E6: 0},
             link_port=0,
             discovery_port=0,
+            portal_port=args.portal_port,
             manage_hostname=False,
         )
         service.start()

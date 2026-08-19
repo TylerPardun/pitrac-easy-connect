@@ -102,6 +102,7 @@ def main(argv=None) -> int:
         },
         link_port=args.link_port,
         discovery_port=args.discovery_port,
+        portal_port=args.portal_port,
         manage_hostname=not args.no_hostname and not args.simulate,
     )
     service.start()

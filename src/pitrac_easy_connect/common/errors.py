@@ -259,6 +259,13 @@ LINK_NO_COMPUTER = _define(
     "Everything on the enclosure is working and nothing was changed.",
     "Open PiTrac Easy Connect on your Windows PC. It will find this enclosure and connect.",
 )
+LINK_PORTAL_UNREACHABLE = _define(
+    "PT-LINK-006",
+    "PiTrac was found, but its setup page did not answer.",
+    "Nothing was changed on the enclosure.",
+    "Wait a few seconds and try again. If it repeats, restart PiTrac by unplugging it, "
+    "waiting ten seconds, and plugging it back in.",
+)
 LINK_BUSY = _define(
     "PT-LINK-004",
     "Another computer is already connected to that PiTrac.",

@@ -89,7 +89,9 @@ def test_the_page_says_so_when_the_enclosure_carries_nothing(tmp_path, served):
         item.unlink()
     status, body, _headers = fetch(base + "/companion")
     assert status == 200
-    assert "No computer software is stored" in body.decode("utf-8")
+    text = body.decode("utf-8")
+    assert "Nothing stored here" in text
+    assert "Ask whoever set it up" in text, "it should say what to do about it"
 
 
 def test_a_build_can_actually_be_downloaded(served):

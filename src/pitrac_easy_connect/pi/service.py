@@ -75,12 +75,14 @@ class PiService:
         relay_ports: Optional[Dict[Simulator, int]] = None,
         link_port: int = link.LINK_PORT,
         discovery_port: int = discovery.DISCOVERY_PORT,
+        portal_port: int = 80,
         version: str = __version__,
         manage_hostname: bool = True,
     ):
         self.backend = backend
         self.paths = paths or ServicePaths()
         self.version = version
+        self.portal_port = portal_port
         self.manage_hostname = manage_hostname
         self.paths.root.mkdir(parents=True, exist_ok=True)
 
@@ -313,6 +315,7 @@ class PiService:
             "detail": state.detail,
             "version": self.version,
             "device": self.identity.as_dict(),
+            "dashboardUrl": self.dashboard_url(),
             "network": self.provisioner.status(),
             "relay": self.relay.status(),
             "pitrac": self.pitrac.status(self.backend, self.relay.ports).as_dict(),
@@ -333,6 +336,12 @@ class PiService:
         value["protocol"] = link.PROTOCOL_VERSION
         return value
 
+    def dashboard_url(self) -> str:
+        from .pitrac import dashboard_url
+
+        connection = self.backend.active_connection()
+        return dashboard_url(connection.ipv4 if connection else "")
+
     def describe(self) -> Dict[str, Any]:
         connection = self.backend.active_connection()
         return {
@@ -340,14 +349,18 @@ class PiService:
             "displayName": self.identity.display_name,
             "hostname": self.identity.hostname,
             "linkPort": self.link_server.port,
+            "portalPort": self.portal_port,
             "version": self.version,
             "state": self.state.value,
             "address": (connection.ipv4.split("/")[0] if connection and connection.ipv4 else ""),
+            "dashboardUrl": self.dashboard_url(),
         }
 
     def _on_companion_attach(self, session: CompanionSession) -> None:
         self.relay.attach_companion(session.send)
         self._note("{} connected".format(session.computer_name))
+        if not self.settings.get("setupCompleted"):
+            self.settings.set("setupCompleted", True)
         # A Companion arriving on a network the enclosure just moved to is
         # proof the move worked. This is what closes the confirmation window.
         if self.provisioner.awaiting_confirmation:
@@ -574,6 +587,8 @@ class PiService:
             "detail": state.detail,
             "ready": state is State.READY_TO_PLAY,
             "device": self.identity.as_dict(),
+            "dashboardUrl": self.dashboard_url(),
+            "setupComplete": bool(self.settings.get("setupCompleted")),
             "network": self.provisioner.status(),
             "pairedComputer": session.as_dict() if session else None,
             "trustedComputerCount": self.pairings.count,

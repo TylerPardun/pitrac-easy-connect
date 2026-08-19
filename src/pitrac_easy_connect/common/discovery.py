@@ -44,6 +44,9 @@ class FoundEnclosure:
     version: str
     state: str
     hostname: str = ""
+    #: Where this enclosure serves its setup page. Advertised rather than
+    #: assumed, because the installer allows it to be moved off port 80.
+    portal_port: int = 80
     last_seen: float = 0.0
     #: The address the enclosure believes it has. Kept for display and for
     #: diagnosing the case where the two disagree, but never dialled: an
@@ -65,6 +68,7 @@ class FoundEnclosure:
             "version": self.version,
             "state": self.state,
             "hostname": self.hostname,
+            "portalPort": self.portal_port,
             "lastSeen": self.last_seen,
             "reportedAddress": self.reported_address,
         }
@@ -194,5 +198,6 @@ def _parse(data: bytes, address: str) -> Optional[FoundEnclosure]:
         version=str(payload.get("version", "")),
         state=str(payload.get("state", "")),
         hostname=str(payload.get("hostname", "")),
+        portal_port=int(payload.get("portalPort") or 80),
         last_seen=time.time(),
     )

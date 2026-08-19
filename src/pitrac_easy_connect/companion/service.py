@@ -135,7 +135,7 @@ class CompanionService:
 
     # --- Pairing ----------------------------------------------------------
 
-    def pair(self, device_id: str, code: str, portal_port: int = 80) -> Dict[str, Any]:
+    def pair(self, device_id: str, code: str, portal_port: Optional[int] = None) -> Dict[str, Any]:
         """Redeem a six-digit code and store the resulting secret for this PC.
 
         The secret is derived from a key exchange rather than received, so it is
@@ -155,7 +155,10 @@ class CompanionService:
         if len(cleaned) != 6:
             raise EasyConnectError(PAIR_CODE_INVALID, "a pairing code is six digits")
 
-        base = "http://{}:{}".format(enclosure.address, portal_port)
+        # The enclosure says where its setup page is; only fall back to the
+        # default when an older enclosure did not advertise one.
+        port = portal_port or enclosure.portal_port or 80
+        base = "http://{}:{}".format(enclosure.address, port)
         hello = _post(base + "/api/pair-hello", None)
         private, public = exchange.client_start()
         key = exchange.shared_key(hello["serverPublic"], private)
@@ -552,8 +555,21 @@ class CompanionService:
                 for key, value in sorted(self.paired_enclosures.items())
             ],
             "activeDeviceId": self.store.get("activeDeviceId", ""),
+            "dashboardUrl": self._dashboard_url(),
             "shots": shots,
         }
+
+    def _dashboard_url(self) -> str:
+        """PiTrac's own dashboard, for anyone who wants the raw shot data."""
+
+        from ..pi.pitrac import dashboard_url
+
+        with self._lock:
+            reported = (self._pi_status or {}).get("dashboardUrl")
+        if reported:
+            return reported
+        client = self._link
+        return dashboard_url(client.host) if client else ""
 
     def close(self) -> None:
         self.disconnect()
@@ -589,4 +605,10 @@ def _post(url: str, body: Optional[Dict[str, Any]], timeout: float = 10.0) -> Di
             found or PAIR_CODE_INVALID, str(info.get("failed", "PiTrac refused that request"))
         ) from error
     except urllib.error.URLError as error:
-        raise EasyConnectError(LINK_NOT_FOUND, str(error.reason)) from error
+        # The enclosure was found, so this is not "no PiTrac on the network" —
+        # it answered discovery but its setup page did not answer this request.
+        from ..common.errors import LINK_PORTAL_UNREACHABLE
+
+        raise EasyConnectError(
+            LINK_PORTAL_UNREACHABLE, "{} at {}".format(error.reason, url)
+        ) from error

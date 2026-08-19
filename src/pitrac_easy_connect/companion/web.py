@@ -25,7 +25,13 @@ class CompanionHTTPServer(ThreadingHTTPServer):
 
     def __init__(self, address, service: CompanionService):
         self.service = service
+        #: Set when the user asks the program to stop from the page.
+        self.stopped = __import__("threading").Event()
         super().__init__(address, CompanionHandler)
+
+    def request_stop(self) -> None:
+        self.stopped.set()
+        self.shutdown()
 
 
 class CompanionHandler(BaseHTTPRequestHandler):
@@ -63,6 +69,7 @@ class CompanionHandler(BaseHTTPRequestHandler):
                 "inspectBackup", {"file": body.get("file", "")}
             ),
             "/api/backup/restore": lambda body: service.command("restoreBackup", body),
+            "/api/quit": lambda body: self._quit(),
             "/api/enclosure": lambda body: service.command(
                 str(body.get("command", "")), body.get("arguments") or {}
             ),
@@ -79,6 +86,14 @@ class CompanionHandler(BaseHTTPRequestHandler):
             self._json(HTTPStatus.BAD_REQUEST, {"error": {"failed": str(exc)}})
             return
         self._guarded(lambda: handler(body))
+
+    def _quit(self) -> Dict[str, Any]:
+        """Stop Easy Connect, so nothing is left running after a session."""
+
+        import threading
+
+        threading.Timer(0.4, self.server.request_stop).start()
+        return {"stopping": True}
 
     def _download_backup(self) -> None:
         """Ask the enclosure for a backup and hand it to the browser to save.

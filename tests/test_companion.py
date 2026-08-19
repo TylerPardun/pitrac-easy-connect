@@ -43,6 +43,9 @@ class Rig:
         self.portal = PortalServer(("127.0.0.1", 0), self.pi)
         threading.Thread(target=self.portal.serve_forever, daemon=True).start()
         self.portal_port = self.portal.server_port
+        # The enclosure advertises where its setup page is, and the beacon reads
+        # this live, so it can be set once the port is actually known.
+        self.pi.portal_port = self.portal_port
 
         self.companion = CompanionService(
             config_path=tmp_path / "companion.json",
@@ -466,3 +469,35 @@ def test_pairing_works_even_if_the_caller_did_not_search_first(rig):
     )
     assert result["deviceId"] == rig.pi.identity.device_id
     assert rig.wait_linked() is True
+
+
+def test_pairing_uses_the_port_the_enclosure_advertises(rig):
+    """The setup page is not always on port 80; the installer can move it."""
+
+    found = rig.find()
+    entry = next(e for e in found if e["deviceId"] == rig.pi.identity.device_id)
+    assert entry["portalPort"] == rig.portal_port, "the enclosure must say where its page is"
+
+    # No portal_port passed: it has to come from discovery.
+    code = rig.pi.pairings.code_for_display().code
+    result = rig.companion.pair(rig.pi.identity.device_id, code)
+    assert result["deviceId"] == rig.pi.identity.device_id
+
+
+def test_an_unreachable_setup_page_is_not_reported_as_a_missing_enclosure(rig):
+    """Found but unreachable is a different problem, and needs different advice."""
+
+    rig.find()
+    # Point the cached entry at a port nothing is listening on.
+    import dataclasses
+
+    with rig.companion._lock:
+        rig.companion._found = [
+            dataclasses.replace(item, portal_port=9) for item in rig.companion._found
+        ]
+
+    code = rig.pi.pairings.code_for_display().code
+    with pytest.raises(EasyConnectError) as caught:
+        rig.companion.pair(rig.pi.identity.device_id, code)
+    assert caught.value.info.code == "PT-LINK-006"
+    assert "did not answer" in caught.value.info.failed

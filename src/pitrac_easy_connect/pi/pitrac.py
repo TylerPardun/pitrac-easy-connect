@@ -34,6 +34,17 @@ USER_SETTINGS = PITRAC_HOME / "config" / "user_settings.json"
 CALIBRATION_DATA = PITRAC_HOME / "config" / "calibration_data.json"
 PITRAC_WEB_SERVICE = "pitrac-web.service"
 PITRAC_WEB_PORT = 8080
+
+
+def dashboard_url(address: str = "") -> str:
+    """Where PiTrac's own Launch Monitor dashboard lives.
+
+    Easy Connect deliberately does not reproduce any of it. Shot data,
+    calibration, and logs already have a good home; this just points there.
+    """
+
+    host = (address or "").split("/")[0]
+    return "http://{}:{}".format(host, PITRAC_WEB_PORT) if host else ""
 PITRAC_PROCESS = "pitrac_lm"
 
 SIMULATOR_KEYS = {

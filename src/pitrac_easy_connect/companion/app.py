@@ -26,6 +26,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--config", type=Path, default=None, help="settings file location")
     parser.add_argument("--computer-name", default=None, help="name shown on the enclosure")
     parser.add_argument("--no-browser", action="store_true", help="do not open a browser")
+    parser.add_argument(
+        "--hidden", action="store_true",
+        help="start without opening a window; use the shortcut before a golf session",
+    )
     parser.add_argument("--version", action="version", version=__version__)
     return parser
 
@@ -50,8 +54,10 @@ def main(argv=None) -> int:
     if service.store.get("activeDeviceId"):
         # Reconnect to the enclosure this PC used last, without being asked.
         threading.Thread(target=_reconnect, args=(service,), daemon=True).start()
-    if not args.no_browser:
+    if not args.no_browser and not args.hidden:
         threading.Timer(0.4, lambda: webbrowser.open(url)).start()
+    if args.hidden:
+        print("Running in the background. Open {} to see it.".format(url))
 
     try:
         server.serve_forever()
