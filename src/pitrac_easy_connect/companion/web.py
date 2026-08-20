@@ -69,6 +69,11 @@ class CompanionHandler(BaseHTTPRequestHandler):
                 "inspectBackup", {"file": body.get("file", "")}
             ),
             "/api/backup/restore": lambda body: service.command("restoreBackup", body),
+            "/api/club": lambda body: service.set_club(str(body.get("club", ""))),
+            "/api/shots/clear": lambda body: service.clear_shots(),
+            "/api/cameras": lambda body: service.cameras(),
+            "/api/update/check": lambda body: service.check_for_updates(),
+            "/api/update/apply": lambda body: service.apply_update(),
             "/api/quit": lambda body: self._quit(),
             "/api/enclosure": lambda body: service.command(
                 str(body.get("command", "")), body.get("arguments") or {}

@@ -10,7 +10,7 @@ part that was missing: **getting the thing on the network and talking to your
 PC.** It deliberately does not reimplement anything PiTrac already does.
 
 - **Status:** working on real hardware, not yet released
-- **Version:** 0.2.0 · **Tests:** 290, passing on macOS and on the Raspberry Pi
+- **Version:** 0.2.0 · **Tests:** 356, passing on macOS and on the Raspberry Pi
 - **Dependencies:** none — Python standard library only
 - **Licence:** [MIT](LICENSE) · see [NOTICE.md](NOTICE.md) for how this relates
   to PiTrac's GPL
@@ -87,6 +87,8 @@ More in [docs/architecture.md](docs/architecture.md).
 | Backup | Checksummed, with identity as an opt-in for card replacement |
 | App window | One window, three tabs, PiTrac's dashboard embedded |
 | Software delivery | The enclosure hands out the PC app over its own signal |
+| Shot history | Every shot kept with the club, and averages per club |
+| Updates | Checks on launch, installs for source builds, points to the download otherwise |
 
 ### Proven end to end
 
@@ -100,17 +102,14 @@ simulator on another machine, and the reply came back unchanged.
 
 ### Next up
 
-- [ ] **Auto-update.** Prompt on launch when a newer version exists, so every
-      enclosure and PC converges on one release. Git-based for source installs,
-      GitHub Releases for packaged ones. Design in
-      [docs/update-plan.md](docs/update-plan.md).
 - [ ] **Windows and macOS builds.** A native window and a real signed installer,
       rather than the current application-mode window. Needs a Windows machine
       to build the `.exe`; see [docs/distribution.md](docs/distribution.md).
-- [ ] **Cameras tab.** PiTrac exposes camera detection, per-shot images
-      (`/api/images/{filename}`), and shot history (`/api/history`). A tab can
-      show all of it. **Swing video is not possible** — PiTrac is a ball tracker
-      using strobed stills and has no video or playback endpoint.
+- [ ] **Shot images in the Shots tab.** PiTrac announces each shot's images
+      over its WebSocket and serves them from `/api/images/{filename}`. The tab
+      shows camera status and club history today; the images are the next piece.
+      **Swing video is not possible** — PiTrac is a ball tracker using strobed
+      stills and has no video or playback endpoint.
 - [ ] **Public repo and download page.** GitHub Pages for the site, Releases for
       the download.
 
@@ -124,6 +123,7 @@ simulator on another machine, and the reply came back unchanged.
 
 ### Later
 
+- [ ] Update the enclosure from the app, not just the PC
 - [ ] Signed update packages with staged installation and rollback
 - [ ] Redacted support-report export
 - [ ] Keyboard navigation and display-scaling testing

@@ -21,6 +21,7 @@ from ..common.configstore import ConfigStore
 from ..common.errors import EasyConnectError, PAIR_NOT_PAIRED
 from ..common.identity import IdentityStore
 from ..common.states import State
+from ..common.updates import Updater
 from ..models import Simulator
 from .backend import BackendError, PiBackend
 from .backup import BackupManager
@@ -116,6 +117,7 @@ class PiService:
             self.paths.backups,
             version=version,
         )
+        self.updates = Updater(version)
         self.discovery = discovery.DiscoveryResponder(self.describe, port=discovery_port)
 
         self._lock = threading.RLock()
@@ -446,6 +448,8 @@ class PiService:
             "reboot": lambda a: self._reboot(),
             "shutdown": lambda a: self._shutdown(),
             "ownerCard": lambda a: {"text": self.identity.owner_card()},
+            "checkForUpdates": lambda a: self.updates.check(force=True).as_dict(),
+            "applyUpdate": lambda a: self.updates.apply(),
             "createBackup": lambda a: self._create_backup(a),
             "inspectBackup": lambda a: self.backups.inspect(str(a.get("file", ""))).as_dict(),
             "restoreBackup": lambda a: self._restore_backup(a),

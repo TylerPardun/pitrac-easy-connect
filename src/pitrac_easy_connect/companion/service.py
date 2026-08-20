@@ -31,8 +31,10 @@ from ..common.errors import (
     lookup,
 )
 from ..common.states import State
+from ..common.updates import Updater
 from ..models import TEST_SHOT, Simulator
 from .link_client import CompanionLinkClient
+from .shotlog import ShotLog
 from .simulator_session import SimulatorSession
 
 
@@ -92,6 +94,13 @@ class CompanionService:
         self._shots_delivered = 0
         self._shots_lost = 0
         self._pi_status: Dict[str, Any] = {}
+        self.shots = ShotLog(
+            (config_path or default_config_path()).with_name("shots.json")
+        )
+        self.updates = Updater(version)
+        # Off the startup path, and silent on failure: a GitHub outage must not
+        # stop anyone playing golf.
+        self.updates.check_in_background()
 
     # --- Simulator selection ---------------------------------------------
 
@@ -296,6 +305,12 @@ class CompanionService:
         return connected
 
     def _on_simulator_message(self, payload: Dict[str, Any]) -> None:
+        # The simulator tells the launch monitor when the player changes club.
+        # That message is already going past, so the club comes for free.
+        try:
+            self.shots.note_simulator_message(payload)
+        except Exception:
+            pass
         client = self._link
         if client is not None:
             client.send_simulator_message(payload)
@@ -321,13 +336,23 @@ class CompanionService:
             with self._lock:
                 self._shots_lost += 1
                 self._last_simulator_error = SIM_NOT_RUNNING.as_dict(str(exc))
+            self._record_shot(payload, simulator, delivered=False)
             self._report_simulator_state()
             return {"accepted": False, "code": SIM_NOT_RUNNING.code, "message": str(exc)}
 
         with self._lock:
             self._shots_delivered += 1
             self._last_shot_at = time.time()
+        self._record_shot(payload, simulator, delivered=True)
         return {"accepted": True, "message": "delivered to {}".format(self.simulator.label)}
+
+    def _record_shot(self, payload: Dict[str, Any], simulator: str, delivered: bool) -> None:
+        """Keep the shot, with the club. Never let logging break shot delivery."""
+
+        try:
+            self.shots.record(payload, simulator or self.simulator.value, delivered=delivered)
+        except Exception:
+            pass
 
     def check_simulator(self) -> Dict[str, Any]:
         self.connect_simulator()
@@ -556,8 +581,30 @@ class CompanionService:
             ],
             "activeDeviceId": self.store.get("activeDeviceId", ""),
             "dashboardUrl": self._dashboard_url(),
+            "update": self._update_status(),
+            "shotLog": self.shots.status(),
             "shots": shots,
         }
+
+    def _update_status(self) -> Dict[str, Any]:
+        """What is installed here and on the enclosure, and whether either is behind."""
+
+        with self._lock:
+            enclosure_version = (self._pi_status or {}).get("version", "")
+        status = self.updates.check().as_dict()
+        status["enclosureVersion"] = enclosure_version
+        # The two halves are meant to move together. Saying so is more useful
+        # than letting someone update one and wonder why the other complains.
+        status["versionsMatch"] = (
+            not enclosure_version or enclosure_version == self.version
+        )
+        return status
+
+    def check_for_updates(self) -> Dict[str, Any]:
+        return self.updates.check(force=True).as_dict()
+
+    def apply_update(self) -> Dict[str, Any]:
+        return self.updates.apply()
 
     def _dashboard_url(self) -> str:
         """PiTrac's own dashboard, for anyone who wants the raw shot data."""
@@ -570,6 +617,32 @@ class CompanionService:
             return reported
         client = self._link
         return dashboard_url(client.host) if client else ""
+
+    def set_club(self, club: str) -> Dict[str, Any]:
+        return {"club": self.shots.set_club(club)}
+
+    def clear_shots(self) -> Dict[str, Any]:
+        self.shots.clear()
+        return self.shots.status()
+
+    def cameras(self) -> Dict[str, Any]:
+        """Camera detection, straight from PiTrac. Nothing here interprets it."""
+
+        import json
+        import urllib.error
+        import urllib.request
+
+        base = self._dashboard_url()
+        if not base:
+            return {"available": False, "message": "Not connected to PiTrac."}
+        try:
+            with urllib.request.urlopen(base + "/api/cameras/detect", timeout=8) as response:
+                detected = json.loads(response.read().decode("utf-8"))
+        except (urllib.error.URLError, ValueError, OSError) as exc:
+            return {"available": False, "message": "PiTrac did not answer: {}".format(exc)}
+        detected["available"] = True
+        detected["dashboardUrl"] = base
+        return detected
 
     def close(self) -> None:
         self.disconnect()

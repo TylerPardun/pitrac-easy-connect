@@ -42,6 +42,32 @@ PAGE = r"""<!doctype html>
   main{width:min(440px,calc(100% - 40px));padding:40px 0}
   .framehint{padding:14px 18px;color:var(--faint);font-size:.85rem;text-align:center}
 
+  /* Shots: a table you can actually read, not a dashboard. */
+  .shots{width:min(560px,calc(100% - 40px));margin-inline:auto;padding:26px 0 40px}
+  .clubrow{display:flex;gap:12px;align-items:center;flex-wrap:wrap}
+  .clublabel{color:var(--muted);font-size:.88rem;font-weight:650}
+  .shots select{flex:1;min-width:150px;padding:11px 13px;border-radius:10px;
+    border:1px solid var(--line);background:var(--panel);color:var(--text);font:inherit}
+  .clubnote{color:var(--faint);font-size:.8rem;flex-basis:100%}
+  .sech{margin:26px 0 10px;font-size:.72rem;font-weight:800;letter-spacing:.13em;
+    text-transform:uppercase;color:var(--faint)}
+  .empty{color:var(--faint);font-size:.87rem}
+  table.shot{width:100%;border-collapse:collapse;font-size:.87rem;
+    font-variant-numeric:tabular-nums}
+  table.shot th{text-align:left;font-size:.68rem;font-weight:800;letter-spacing:.09em;
+    text-transform:uppercase;color:var(--faint);padding:0 8px 7px 0;
+    border-bottom:1px solid var(--line)}
+  table.shot td{padding:8px 8px 8px 0;border-bottom:1px solid var(--line-soft);color:var(--muted)}
+  table.shot td:first-child{color:var(--text);font-weight:600}
+  table.shot td.num{text-align:right;padding-right:14px}
+  table.shot tr.lost td{color:var(--red);opacity:.75}
+  .scroller{overflow-x:auto}
+  .camrow{display:flex;justify-content:space-between;gap:12px;padding:9px 0;
+    border-bottom:1px solid var(--line-soft);font-size:.87rem}
+  .camrow span:first-child{color:var(--muted)}
+  .shotactions{margin-top:26px}
+  .shotactions button{width:auto;padding:9px 15px;font-size:.85rem}
+
   .brand{font-size:.68rem;font-weight:800;letter-spacing:.22em;color:var(--faint);
     text-transform:uppercase;text-align:center;margin-bottom:28px}
 
@@ -78,6 +104,12 @@ PAGE = r"""<!doctype html>
   .err p{margin:0;color:var(--muted);font-size:.88rem}
   .err .code{margin-top:8px;color:var(--faint);font-size:.74rem;letter-spacing:.07em;
     font-family:ui-monospace,Menlo,Consolas,monospace}
+
+  /* An update is worth mentioning, never worth interrupting for. */
+  .update{margin-top:22px;padding:13px 15px;border-radius:11px;border:1px solid var(--line);
+    background:var(--panel);display:flex;gap:12px;align-items:center;justify-content:space-between}
+  .update span{color:var(--muted);font-size:.87rem}
+  .update button{width:auto;padding:8px 14px;font-size:.84rem;flex:none}
 
   /* Pairing: only ever seen once. */
   .pick{margin-top:22px;display:flex;flex-direction:column;gap:8px}
@@ -123,6 +155,7 @@ PAGE = r"""<!doctype html>
 <body>
 <nav class="tabs hidden" id="tabs">
   <button data-pane="play" class="on">Play</button>
+  <button data-pane="shots">Shots</button>
   <button data-pane="pitrac">PiTrac</button>
   <button data-pane="setup">Setup</button>
 </nav>
@@ -143,6 +176,8 @@ PAGE = r"""<!doctype html>
   <div id="err"></div>
 
   <div class="do" id="do"></div>
+
+  <div id="update"></div>
 
   <div class="pick hidden" id="pick"></div>
 
@@ -185,6 +220,27 @@ PAGE = r"""<!doctype html>
     </div>
   </details>
 </main>
+</div></div>
+
+<div class="pane" id="pane-shots"><div class="shots">
+  <div class="clubrow">
+    <label class="clublabel" for="club">Club</label>
+    <select id="club"></select>
+    <span class="clubnote" id="clubNote"></span>
+  </div>
+
+  <h3 class="sech">By club</h3>
+  <div id="byClub" class="empty">No shots recorded yet.</div>
+
+  <h3 class="sech">Recent shots</h3>
+  <div id="recent" class="empty"></div>
+
+  <h3 class="sech">Cameras</h3>
+  <div id="cameras" class="empty">Checking…</div>
+
+  <div class="shotactions">
+    <button class="quiet" id="clearShots">Clear shot history</button>
+  </div>
 </div></div>
 
 <div class="pane frame" id="pane-pitrac">
@@ -294,6 +350,8 @@ function render(data){
     if(view.find) findDevices(); else $("pick").classList.add("hidden");
   }
 
+  renderUpdate(data.update);
+  renderShots(data.shotLog);
   $("adv").classList.toggle("hidden", !data.pairedEnclosures.length);
   // The other tabs only mean anything once there is an enclosure to show.
   $("tabs").classList.toggle("hidden", !(data.link && data.link.connected));
@@ -321,17 +379,40 @@ function doAction(id, button){
   }
 }
 
+function renderUpdate(update){
+  const host=$("update");
+  if(!update || !update.available){ host.innerHTML=""; return; }
+  // Offer to install only when this copy can actually install it; otherwise
+  // send them to the download rather than promising something that will fail.
+  const action = update.canApply
+    ? '<button class="quiet" id="doUpdate">Update</button>'
+    : '<button class="quiet" id="getUpdate">Get it</button>';
+  host.innerHTML=`<div class="update"><span>${esc(update.detail)}</span>${action}</div>`;
+  const install=$("doUpdate");
+  if(install) install.addEventListener("click",e=>run(e.target, async()=>{
+    const result=await api("/api/update/apply",{});
+    host.innerHTML=`<div class="update"><span>${esc(result.detail)}</span></div>`;
+  }));
+  const get=$("getUpdate");
+  if(get) get.addEventListener("click",()=>{
+    if(update.downloadUrl) window.open(update.downloadUrl,"_blank","noopener");
+  });
+}
+
 function renderDetails(data){
   const device=(data.link&&data.link.device)||{};
   const enclosure=data.enclosure||{};
   const network=enclosure.network||{};
   const shots=data.shots||{};
+  const update=data.update||{};
   const rows=[["Enclosure",device.displayName||"-"],["Device",device.deviceId||"-"],
     ["Address",(data.link&&data.link.address)||"-"],
     ["Wi-Fi",(network.connection&&network.connection.ssid)||"-"],
     ["Shots sent",shots.delivered!=null?shots.delivered:"-"],
     ["Not delivered",shots.lost!=null?shots.lost:"-"],
-    ["PiTrac",device.version||"-"],["This computer",data.version]];
+    ["PiTrac",device.version||"-"],["This computer",data.version],
+    ["Versions match",update.enclosureVersion?(update.versionsMatch?"yes":"no — update both"):"-"],
+    ["Updates",update.detail||"-"]];
   $("kv").innerHTML=rows.map(([k,v])=>`<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join("");
 }
 
@@ -439,10 +520,86 @@ function showPane(name){
 document.querySelectorAll("#tabs button").forEach(button=>
   button.addEventListener("click",()=>showPane(button.dataset.pane)));
 
+// --- shots ---------------------------------------------------------------
+
+const CLUBS=["Driver","3 wood","5 wood","3 hybrid","4 hybrid","3 iron","4 iron","5 iron",
+  "6 iron","7 iron","8 iron","9 iron","Pitching wedge","Gap wedge","Sand wedge","Lob wedge",
+  "Putter"];
+let clubReady=false, camerasAsked=false;
+
+function fillClubs(current){
+  const select=$("club");
+  if(!clubReady){
+    select.innerHTML='<option value="">Not recorded</option>'+
+      CLUBS.map(c=>`<option value="${esc(c)}">${esc(c)}</option>`).join("");
+    select.addEventListener("change",e=>run(null,()=>api("/api/club",{club:e.target.value})));
+    clubReady=true;
+  }
+  if(document.activeElement!==select) select.value=current||"";
+}
+
+function renderShots(log){
+  if(!log) return;
+  fillClubs(log.club);
+  $("clubNote").textContent = log.club
+    ? "Your simulator sets this automatically when you change club."
+    : "Your simulator will set this when you change club, or choose it here.";
+
+  const summary=log.byClub||[];
+  $("byClub").className = summary.length ? "scroller" : "empty";
+  $("byClub").innerHTML = summary.length ? `<table class="shot">
+    <thead><tr><th>Club</th><th class="num">Shots</th><th class="num">Ball speed</th>
+      <th class="num">Launch</th><th class="num">Back spin</th></tr></thead>
+    <tbody>${summary.map(row=>`<tr><td>${esc(row.club)}</td>
+      <td class="num">${row.shots}</td>
+      <td class="num">${row.speed==null?"-":row.speed+" mph"}</td>
+      <td class="num">${row.launch==null?"-":row.launch+"&deg;"}</td>
+      <td class="num">${row.backSpin==null?"-":row.backSpin}</td></tr>`).join("")}
+    </tbody></table>` : "No shots recorded yet.";
+
+  const recent=log.recent||[];
+  $("recent").className = recent.length ? "scroller" : "empty";
+  $("recent").innerHTML = recent.length ? `<table class="shot">
+    <thead><tr><th>Time</th><th>Club</th><th class="num">Speed</th><th class="num">Launch</th>
+      <th class="num">Spin</th></tr></thead>
+    <tbody>${recent.map(s=>`<tr class="${s.delivered?"":"lost"}">
+      <td>${esc(s.timeText)}</td><td>${esc(s.club||"-")}</td>
+      <td class="num">${s.speed==null?"-":s.speed}</td>
+      <td class="num">${s.launch==null?"-":s.launch}</td>
+      <td class="num">${s.backSpin==null?"-":s.backSpin}</td></tr>`).join("")}
+    </tbody></table>` : "Shots appear here as you hit them.";
+}
+
+async function loadCameras(){
+  if(camerasAsked) return;
+  camerasAsked=true;
+  try{
+    const data=await api("/api/cameras",{});
+    if(!data.available){ $("cameras").className="empty";
+      $("cameras").textContent=data.message||"Not available."; return; }
+    const found=(data.cameras||[]).length;
+    const rows=[["Detected", found ? found+" camera"+(found===1?"":"s") : "none"],
+      ["Raspberry Pi", data.pi_model||"-"]];
+    (data.warnings||[]).slice(0,3).forEach((w,i)=>rows.push(["Note "+(i+1), w]));
+    if(data.message) rows.push(["PiTrac says", data.message]);
+    $("cameras").className="";
+    $("cameras").innerHTML=rows.map(([k,v])=>
+      `<div class="camrow"><span>${esc(k)}</span><span>${esc(v)}</span></div>`).join("")+
+      `<div class="clubnote" style="margin-top:12px">Shot images and calibration are on the
+       PiTrac tab. PiTrac measures the ball with still images and does not record swing video.</div>`;
+  }catch(error){ $("cameras").className="empty"; $("cameras").textContent="Could not ask PiTrac."; }
+}
+
+$("clearShots").addEventListener("click",e=>run(e.target, async()=>{
+  if(!confirm("Clear the shot history kept on this computer?\n\nPiTrac's own history is not affected.")) return;
+  await api("/api/shots/clear",{});
+}));
+
 function loadFrames(){
   if(!status) return;
   // Load a frame the first time its tab is opened, so the enclosure is not
   // serving two extra pages to a window nobody has looked at.
+  if(pane==="shots") loadCameras();
   if(pane==="pitrac"){
     const url=status.dashboardUrl;
     frameInto("pitracFrame","pitracHint",url,
