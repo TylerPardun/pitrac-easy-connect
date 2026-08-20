@@ -65,6 +65,13 @@ PAGE = r"""<!doctype html>
   .camrow{display:flex;justify-content:space-between;gap:12px;padding:9px 0;
     border-bottom:1px solid var(--line-soft);font-size:.87rem}
   .camrow span:first-child{color:var(--muted)}
+  .shotgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:9px}
+  .shotgrid a{display:block;border:1px solid var(--line);border-radius:9px;overflow:hidden;
+    background:var(--panel);text-decoration:none}
+  .shotgrid a:hover{border-color:#3b4a42}
+  .shotgrid img{display:block;width:100%;height:88px;object-fit:cover;background:#0d1310}
+  .shotgrid small{display:block;padding:6px 8px;color:var(--faint);font-size:.7rem;
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .shotactions{margin-top:26px}
   .shotactions button{width:auto;padding:9px 15px;font-size:.85rem}
 
@@ -235,6 +242,9 @@ PAGE = r"""<!doctype html>
   <h3 class="sech">Recent shots</h3>
   <div id="recent" class="empty"></div>
 
+  <h3 class="sech">Shot images</h3>
+  <div id="images" class="empty">PiTrac saves an image of each shot it measures.</div>
+
   <h3 class="sech">Cameras</h3>
   <div id="cameras" class="empty">Checking…</div>
 
@@ -352,6 +362,7 @@ function render(data){
 
   renderUpdate(data.update);
   renderShots(data.shotLog);
+  renderImages(data.enclosure);
   $("adv").classList.toggle("hidden", !data.pairedEnclosures.length);
   // The other tabs only mean anything once there is an enclosure to show.
   $("tabs").classList.toggle("hidden", !(data.link && data.link.connected));
@@ -546,18 +557,29 @@ function renderShots(log){
     : "Your simulator will set this when you change club, or choose it here.";
 
   const summary=log.byClub||[];
+  if(!changed($("byClub"), JSON.stringify(summary))) return renderRecent(log);
   $("byClub").className = summary.length ? "scroller" : "empty";
   $("byClub").innerHTML = summary.length ? `<table class="shot">
     <thead><tr><th>Club</th><th class="num">Shots</th><th class="num">Ball speed</th>
-      <th class="num">Launch</th><th class="num">Back spin</th></tr></thead>
+      <th class="num">Spread</th><th class="num">Launch</th><th class="num">Back spin</th></tr></thead>
     <tbody>${summary.map(row=>`<tr><td>${esc(row.club)}</td>
       <td class="num">${row.shots}</td>
       <td class="num">${row.speed==null?"-":row.speed+" mph"}</td>
+      <td class="num" title="${row.worstSpeed==null?"":"from "+row.worstSpeed+" to "+row.bestSpeed+" mph"}">${
+        row.spread==null?"-":"&plusmn;"+(row.spread/2).toFixed(1)}</td>
       <td class="num">${row.launch==null?"-":row.launch+"&deg;"}</td>
       <td class="num">${row.backSpin==null?"-":row.backSpin}</td></tr>`).join("")}
-    </tbody></table>` : "No shots recorded yet.";
+    </tbody></table>
+    <div class="clubnote" style="margin-top:9px">Spread is how far your strikes vary in ball
+    speed. A tight spread means you are finding the middle of the face consistently.</div>`
+    : "No shots recorded yet.";
 
+  renderRecent(log);
+}
+
+function renderRecent(log){
   const recent=log.recent||[];
+  if(!changed($("recent"), JSON.stringify(recent))) return;
   $("recent").className = recent.length ? "scroller" : "empty";
   $("recent").innerHTML = recent.length ? `<table class="shot">
     <thead><tr><th>Time</th><th>Club</th><th class="num">Speed</th><th class="num">Launch</th>
@@ -568,6 +590,40 @@ function renderShots(log){
       <td class="num">${s.launch==null?"-":s.launch}</td>
       <td class="num">${s.backSpin==null?"-":s.backSpin}</td></tr>`).join("")}
     </tbody></table>` : "Shots appear here as you hit them.";
+}
+
+// The page polls every few seconds. Rewriting a list that has not changed
+// destroys and recreates every element in it, which restarts image loading,
+// re-fetches pictures that were already fetched, and loses scroll position.
+function changed(host, signature){
+  if(host.dataset.sig === signature) return false;
+  host.dataset.sig = signature;
+  return true;
+}
+
+function renderImages(enclosure){
+  const host=$("images");
+  const images=(enclosure && enclosure.images) || [];
+  const base=(enclosure && enclosure.dashboardUrl) || (status && status.dashboardUrl) || "";
+  if(!changed(host, base + "|" + images.map(i=>i.name).join(","))) return;
+  if(!images.length || !base){
+    host.className="empty";
+    host.textContent = base
+      ? "No shot images yet. PiTrac saves one for each shot it measures."
+      : "Connect to PiTrac to see shot images.";
+    return;
+  }
+  // The pictures are served by PiTrac itself; nothing is copied to this computer.
+  // Deliberately not lazy: these tiles are built while the tab is still hidden,
+  // and a lazy image in a display:none subtree is deferred and never retried
+  // once the tab is shown. There are at most a dozen, and they are small.
+  host.className="shotgrid";
+  host.innerHTML=images.map(image=>{
+    const url=base+image.url;
+    return `<a href="${esc(url)}" target="_blank" rel="noopener" title="${esc(image.name)}">
+      <img src="${esc(url)}" alt="${esc(image.name)}" decoding="async">
+      <small>${esc(image.name)}</small></a>`;
+  }).join("");
 }
 
 async function loadCameras(){

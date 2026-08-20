@@ -394,3 +394,71 @@ def test_the_mdns_advertisement_is_valid_xml(tmp_path, monkeypatch):
     assert document.getElementsByTagName("type")[0].firstChild.data == "_pitrac._tcp"
     # A name with characters that are special in XML must survive escaping.
     assert 'PiTrac & "Garage" <Bay>' == document.getElementsByTagName("name")[0].firstChild.data
+
+
+def test_recent_shot_images_are_listed_for_the_app(tmp_path):
+    """Names only. The pictures are always fetched from PiTrac's own server."""
+
+    import time as _time
+
+    images = tmp_path / "Images"
+    images.mkdir()
+    for name in ("shot_a.png", "shot_b.jpg"):
+        (images / name).write_bytes(b"\x89PNG")
+        _time.sleep(0.01)
+    (images / "notes.txt").write_text("not an image")
+    (images / ".hidden.png").write_bytes(b"x")
+
+    pitrac = PitracInstallation(tmp_path / "s.json", tmp_path / "c.json", images_dir=images)
+    listed = pitrac.recent_images()
+
+    assert [item["name"] for item in listed] == ["shot_b.jpg", "shot_a.png"], "newest first"
+    assert all(item["url"].startswith("/api/images/") for item in listed)
+    assert "notes.txt" not in repr(listed)
+    assert ".hidden.png" not in repr(listed)
+
+
+def test_a_missing_images_directory_is_not_an_error(tmp_path):
+    pitrac = PitracInstallation(
+        tmp_path / "s.json", tmp_path / "c.json", images_dir=tmp_path / "nope"
+    )
+    assert pitrac.recent_images() == []
+
+
+def test_image_listing_is_capped(tmp_path):
+    images = tmp_path / "Images"
+    images.mkdir()
+    for index in range(40):
+        (images / "shot_{}.png".format(index)).write_bytes(b"x")
+    pitrac = PitracInstallation(tmp_path / "s.json", tmp_path / "c.json", images_dir=images)
+    assert len(pitrac.recent_images(limit=12)) == 12
+
+
+def test_the_images_directory_follows_pitracs_user_not_roots(tmp_path):
+    """The service runs as root, so "~" is the wrong home to look in."""
+
+    from pitrac_easy_connect.pi.app import build_parser, build_pitrac
+
+    pitrac_home = tmp_path / "home" / "pitracuser"
+    config = pitrac_home / ".pitrac" / "config"
+    args = build_parser().parse_args(
+        ["--state-dir", str(tmp_path / "state"), "--pitrac-config-dir", str(config)]
+    )
+    installation = build_pitrac(args)
+
+    assert installation.images_dir == pitrac_home / "LM_Shares" / "Images"
+    assert "root" not in str(installation.images_dir)
+
+
+def test_the_images_directory_can_be_set_explicitly(tmp_path):
+    from pitrac_easy_connect.pi.app import build_parser, build_pitrac
+
+    elsewhere = tmp_path / "somewhere" / "else"
+    args = build_parser().parse_args(
+        [
+            "--state-dir", str(tmp_path / "state"),
+            "--pitrac-config-dir", str(tmp_path / "cfg"),
+            "--pitrac-images-dir", str(elsewhere),
+        ]
+    )
+    assert build_pitrac(args).images_dir == elsewhere

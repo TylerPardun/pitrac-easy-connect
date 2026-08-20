@@ -22,6 +22,7 @@ configuration manager builds from a dotted key.
 
 import json
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -46,6 +47,19 @@ def dashboard_url(address: str = "") -> str:
     host = (address or "").split("/")[0]
     return "http://{}:{}".format(host, PITRAC_WEB_PORT) if host else ""
 PITRAC_PROCESS = "pitrac_lm"
+
+#: Where PiTrac writes the images it measured a shot from. Its own web server
+#: serves these at /api/images/<name>, so listing them here is enough — the
+#: pictures themselves are always fetched from PiTrac, never copied.
+IMAGES_DIR = Path(
+    os.environ.get("PITRAC_IMAGES_DIR", os.path.expanduser("~/LM_Shares/Images"))
+)
+
+#: Only these are offered as shot images.
+IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
+
+#: A deliberately narrow filename, checked before it is ever put in a URL.
+SAFE_IMAGE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,120}$")
 
 SIMULATOR_KEYS = {
     Simulator.GSPRO: (
@@ -115,9 +129,11 @@ class PitracInstallation:
         self,
         settings_path: Path = USER_SETTINGS,
         calibration_path: Path = CALIBRATION_DATA,
+        images_dir: Path = IMAGES_DIR,
     ):
         self.settings_path = Path(settings_path)
         self.calibration_path = Path(calibration_path)
+        self.images_dir = Path(images_dir)
 
     # --- Reading ----------------------------------------------------------
 
@@ -178,6 +194,48 @@ class PitracInstallation:
             if configured != int(port):
                 return False
         return True
+
+    def recent_images(self, limit: int = 12) -> List[Dict[str, Any]]:
+        """The most recent shot images PiTrac has written, newest first.
+
+        Only names are returned. The pictures are fetched from PiTrac's own web
+        server by the app, so nothing is copied and nothing has to be kept in
+        step with what PiTrac deletes.
+        """
+
+        try:
+            entries = [
+                entry
+                for entry in self.images_dir.iterdir()
+                if entry.is_file()
+                and entry.suffix.lower() in IMAGE_SUFFIXES
+                and SAFE_IMAGE_NAME.match(entry.name)
+            ]
+        except OSError:
+            return []
+
+        def when(entry):
+            try:
+                return entry.stat().st_mtime
+            except OSError:
+                return 0.0
+
+        entries.sort(key=when, reverse=True)
+        found = []
+        for entry in entries[: max(0, limit)]:
+            try:
+                size = entry.stat().st_size
+            except OSError:
+                continue
+            found.append(
+                {
+                    "name": entry.name,
+                    "at": when(entry),
+                    "sizeBytes": size,
+                    "url": "/api/images/{}".format(entry.name),
+                }
+            )
+        return found
 
     # --- Writing ----------------------------------------------------------
 

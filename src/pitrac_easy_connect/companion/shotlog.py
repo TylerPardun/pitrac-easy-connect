@@ -191,6 +191,7 @@ class ShotLog:
 
         summary = []
         for club, entries in grouped.items():
+            speeds = _values(entries, "speed")
             summary.append(
                 {
                     "club": club,
@@ -198,6 +199,14 @@ class ShotLog:
                     "speed": _average(entries, "speed"),
                     "launch": _average(entries, "launch"),
                     "backSpin": _average(entries, "backSpin"),
+                    "sideSpin": _average(entries, "sideSpin"),
+                    "direction": _average(entries, "direction"),
+                    "bestSpeed": round(max(speeds), 1) if speeds else None,
+                    "worstSpeed": round(min(speeds), 1) if speeds else None,
+                    # How tightly the strikes cluster. A driver at 148, 149, 150
+                    # is a different player from one at 130, 148, 168, and the
+                    # average alone hides that entirely.
+                    "spread": round(max(speeds) - min(speeds), 1) if len(speeds) > 1 else None,
                     "lastAt": max(entry.get("at") or 0 for entry in entries),
                 }
             )
@@ -217,8 +226,12 @@ class ShotLog:
         }
 
 
+def _values(entries: List[Dict[str, Any]], key: str) -> List[float]:
+    return [entry[key] for entry in entries if isinstance(entry.get(key), (int, float))]
+
+
 def _average(entries: List[Dict[str, Any]], key: str) -> Optional[float]:
-    values = [entry[key] for entry in entries if isinstance(entry.get(key), (int, float))]
+    values = _values(entries, key)
     if not values:
         return None
     return round(sum(values) / len(values), 1)

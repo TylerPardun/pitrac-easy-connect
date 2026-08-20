@@ -321,6 +321,7 @@ class PiService:
             "network": self.provisioner.status(),
             "relay": self.relay.status(),
             "pitrac": self.pitrac.status(self.backend, self.relay.ports).as_dict(),
+            "images": self.pitrac.recent_images(),
             "selfTest": report.as_dict() if report else None,
         }
 

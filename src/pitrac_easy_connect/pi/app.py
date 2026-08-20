@@ -43,6 +43,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="PiTrac's config directory (default ~/.pitrac/config)",
     )
     parser.add_argument(
+        "--pitrac-images-dir", type=Path, default=None,
+        help="where PiTrac writes shot images (default <pitrac home>/LM_Shares/Images)",
+    )
+    parser.add_argument(
         "--sudo", action="store_true",
         help="run privileged commands through sudo instead of directly as root",
     )
@@ -66,17 +70,28 @@ def build_pitrac(args) -> "PitracInstallation":
     ``~/.pitrac`` that belongs to something else.
     """
 
-    from .pitrac import CALIBRATION_DATA, USER_SETTINGS, PitracInstallation
+    from .pitrac import CALIBRATION_DATA, IMAGES_DIR, USER_SETTINGS, PitracInstallation
 
     directory = args.pitrac_config_dir
     if directory is None and args.simulate:
         directory = Path(args.state_dir) / "pitrac-config"
     if directory is None:
-        return PitracInstallation(USER_SETTINGS, CALIBRATION_DATA)
+        return PitracInstallation(
+            USER_SETTINGS, CALIBRATION_DATA, args.pitrac_images_dir or IMAGES_DIR
+        )
+
     directory = Path(directory)
     directory.mkdir(parents=True, exist_ok=True)
+
+    # The service runs as root, so "~" is root's home, not the home of whoever
+    # runs PiTrac. Everything PiTrac owns is found relative to its config
+    # directory instead, which the installer passes in explicitly.
+    images = args.pitrac_images_dir
+    if images is None:
+        pitrac_home = directory.parent.parent
+        images = pitrac_home / "LM_Shares" / "Images"
     return PitracInstallation(
-        directory / "user_settings.json", directory / "calibration_data.json"
+        directory / "user_settings.json", directory / "calibration_data.json", Path(images)
     )
 
 

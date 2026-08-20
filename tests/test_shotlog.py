@@ -185,3 +185,50 @@ def test_ball_data_extraction_is_tolerant_of_rubbish():
     assert ball_from_shot({"BallData": {"Speed": "not a number"}})["speed"] is None
     assert ball_from_shot({"BallData": "not a dict"}) == {}
     assert ball_from_shot({}) == {}
+
+
+# --- The numbers that make it worth keeping -------------------------------
+
+
+def test_spread_shows_consistency_that_an_average_hides(log):
+    """148/149/150 and 130/148/168 average the same and are not the same player."""
+
+    log.set_club("Driver")
+    for speed in (148.0, 149.0, 150.0):
+        log.record({"BallData": {"Speed": speed}}, "gspro")
+    tight = log.by_club()[0]
+
+    log.clear()
+    log.set_club("Driver")
+    for speed in (130.0, 149.0, 168.0):
+        log.record({"BallData": {"Speed": speed}}, "gspro")
+    loose = log.by_club()[0]
+
+    assert tight["speed"] == loose["speed"], "the averages are the same"
+    assert tight["spread"] < loose["spread"], "but the spread tells them apart"
+    assert tight["spread"] == 2.0
+    assert loose["spread"] == 38.0
+
+
+def test_best_and_worst_are_reported(log):
+    log.set_club("7 iron")
+    for speed in (110.0, 125.0, 118.0):
+        log.record({"BallData": {"Speed": speed}}, "gspro")
+    row = log.by_club()[0]
+    assert row["bestSpeed"] == 125.0
+    assert row["worstSpeed"] == 110.0
+
+
+def test_a_single_shot_has_no_spread_rather_than_zero(log):
+    """One shot says nothing about consistency, and should not claim to."""
+
+    log.set_club("Driver")
+    log.record({"BallData": {"Speed": 148.0}}, "gspro")
+    assert log.by_club()[0]["spread"] is None
+
+
+def test_direction_is_averaged_so_a_persistent_miss_shows_up(log):
+    log.set_club("Driver")
+    for direction in (3.8, 4.2, 4.0):
+        log.record({"BallData": {"Speed": 148.0, "HLA": direction}}, "gspro")
+    assert log.by_club()[0]["direction"] == 4.0
