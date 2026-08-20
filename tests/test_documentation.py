@@ -128,3 +128,45 @@ def test_every_documented_error_code_can_actually_happen():
         if not re.search(r"\b%s\b" % re.escape(name), elsewhere) and code not in elsewhere
     ]
     assert not unreachable, "documented but never produced: {}".format(sorted(unreachable))
+
+
+# --- The packaged build -----------------------------------------------------
+
+
+def test_the_build_spec_names_every_module_the_app_loads_at_runtime():
+    """PyInstaller cannot see imports made through runtime lookups.
+
+    A module missing from hiddenimports builds fine and then fails on the user's
+    machine, which is the worst time to find out.
+    """
+
+    import re
+
+    spec = read(Path(__file__).resolve().parent.parent / "packaging" / "PiTracCompanion.spec")
+    hidden = set(re.findall(r'"(pitrac_easy_connect\.[A-Za-z_.]+)"', spec))
+
+    source_root = Path(__file__).resolve().parent.parent / "src" / "pitrac_easy_connect"
+    companion = source_root / "companion"
+    needed = {
+        "pitrac_easy_connect.companion." + path.stem
+        for path in companion.glob("*.py")
+        if path.stem not in ("__init__", "app")
+    }
+    missing = needed - hidden
+    assert not missing, "the packaged app would fail to import: {}".format(sorted(missing))
+
+
+def test_the_packaged_entry_point_opens_a_window():
+    """Double-clicking a packaged build must not open a browser tab."""
+
+    entry = read(Path(__file__).resolve().parent.parent / "packaging" / "companion_entry.py")
+    assert "frozen" in entry
+    assert '"--window"' in entry
+
+
+def test_the_release_notes_warn_about_the_unsigned_builds():
+    workflow = read(
+        Path(__file__).resolve().parent.parent / ".github" / "workflows" / "build.yml"
+    )
+    assert "Run anyway" in workflow, "Windows users need to be told about SmartScreen"
+    assert "right-click" in workflow.lower(), "macOS users need to be told about Gatekeeper"

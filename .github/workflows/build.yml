@@ -4,14 +4,19 @@ on:
   workflow_dispatch:
   push:
     branches: [main]
+    tags: ["v*"]
   pull_request:
+
+permissions:
+  contents: write
 
 jobs:
   test:
     strategy:
+      fail-fast: false
       matrix:
-        # macOS stands in for the Pi during development, Windows is the
-        # Companion's real target, and Linux is the closest runner to the Pi.
+        # macOS stands in for the Pi during development, Windows is the app's
+        # real target, and Linux is the closest runner to the enclosure itself.
         os: [macos-latest, windows-latest, ubuntu-latest]
         python: ["3.9", "3.13"]
     runs-on: ${{ matrix.os }}
@@ -26,19 +31,89 @@ jobs:
       - run: python -m pip install . pytest
       - run: python -m pytest -q
 
-  build-windows:
+  build:
     needs: test
-    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            artifact: PiTrac-windows
+            path: dist/PiTrac.exe
+          - os: macos-latest
+            artifact: PiTrac-macos
+            path: dist/PiTrac-macos.zip
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
-      - run: python -m pip install . pyinstaller
-      - run: python -m PyInstaller packaging/PiTracCompanion.spec
+      - run: python -m pip install --upgrade pip pyinstaller pillow
+
+      - name: Generate icons
+        run: python packaging/icon/make-icons.py packaging/icon
+
+      - name: Build the macOS icon
+        if: runner.os == 'macOS'
+        run: iconutil -c icns packaging/icon/PiTrac.iconset -o packaging/icon/PiTrac.icns
+
+      - name: Build the app
+        run: python -m PyInstaller --noconfirm --clean --distpath dist --workpath build packaging/PiTracCompanion.spec
+
+      # A .app is a directory, and uploading it directly loses the executable
+      # bit, which leaves a download that cannot be opened.
+      - name: Package the macOS app
+        if: runner.os == 'macOS'
+        run: ditto -c -k --keepParent dist/PiTrac.app dist/PiTrac-macos.zip
+
       - uses: actions/upload-artifact@v4
         with:
-          name: PiTracCompanion-windows-x64
-          path: dist/PiTracCompanion.exe
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.path }}
           if-no-files-found: error
 
+  portable:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      # The portable build is plain Python, so it is the same file everywhere.
+      - run: ./packaging/build-app.sh --pyz
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PiTrac-portable
+          path: dist/*.pyz
+          if-no-files-found: error
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [build, portable]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Publish the release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/**/*
+          generate_release_notes: true
+          # Neither build is signed yet, so say so where people download them.
+          body: |
+            Download the build for your computer.
+
+            **Windows** — `PiTrac.exe`. Windows will warn that it does not
+            recognise the program; choose **More info**, then **Run anyway**.
+
+            **macOS** — `PiTrac-macos.zip`. Unzip it, then right-click the app
+            and choose **Open** the first time.
+
+            **Any computer with Python 3.9+** — the `.pyz` runs without
+            installation.
+
+            Neither build is code-signed yet, which is why both operating
+            systems warn about them.
