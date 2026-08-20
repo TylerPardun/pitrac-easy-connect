@@ -147,6 +147,7 @@ simulator on another machine, and the reply came back unchanged.
 
 | | |
 | --- | --- |
+| [Quickstart](docs/quickstart.md) | Getting Easy Connect onto a Pi, opening the app, and changing Wi-Fi |
 | [Setting up PiTrac](docs/beginner-guide.html) | Illustrated, printable, for whoever owns an enclosure ([plain text](docs/beginner-guide.md)) |
 | [Operator guide](docs/operator-guide.md) | Installing on a new Pi 5, simulator PCs, upgrading, diagnosis |
 | [Distribution](docs/distribution.md) | Getting the app onto a PC, what to build, what ships in the box |
