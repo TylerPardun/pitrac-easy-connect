@@ -374,3 +374,23 @@ def test_a_read_only_state_directory_fails_loudly_not_silently(tmp_path):
             )
     finally:
         os.chmod(state, 0o700)
+
+
+def test_the_mdns_advertisement_is_valid_xml(tmp_path, monkeypatch):
+    """avahi reads this file directly, so malformed XML means no discovery."""
+
+    import xml.dom.minidom
+
+    import pitrac_easy_connect.pi.nmcli_backend as backend_module
+    from pitrac_easy_connect.pi.nmcli_backend import NmcliBackend
+
+    target = tmp_path / "pitrac.service"
+    monkeypatch.setattr(backend_module, "AVAHI_SERVICE_FILE", target)
+    NmcliBackend().publish_mdns_service(
+        'PiTrac & "Garage" <Bay>', 39877, {"deviceId": "925WFDMR", "version": "0.2.0"}
+    )
+
+    document = xml.dom.minidom.parseString(target.read_text())
+    assert document.getElementsByTagName("type")[0].firstChild.data == "_pitrac._tcp"
+    # A name with characters that are special in XML must survive escaping.
+    assert 'PiTrac & "Garage" <Bay>' == document.getElementsByTagName("name")[0].firstChild.data

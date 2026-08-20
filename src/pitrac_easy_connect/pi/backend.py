@@ -207,6 +207,18 @@ class PiBackend:
 
     # --- The rest of the machine -----------------------------------------
 
+    def can_reach_gateway(self) -> Optional[bool]:
+        """Whether the router itself answers.
+
+        This is what separates the two reasons a network change fails to be
+        confirmed. If the router answers but no computer ever reached the
+        enclosure, the network is working and is blocking devices from seeing
+        each other, which is what a guest network does. ``None`` means the
+        question could not be answered.
+        """
+
+        raise NotImplementedError
+
     def system_facts(self) -> SystemFacts:
         raise NotImplementedError
 

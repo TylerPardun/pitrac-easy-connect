@@ -189,11 +189,14 @@ def test_an_isolated_guest_network_rolls_back_when_nothing_can_reach_the_pi(tmp_
     joined = provisioner.join("Ferndale-Guest", "guest")
     assert joined.ok is True and joined.awaiting_confirmation is True
 
-    # The PC can never reach the enclosure, so confirmation never arrives.
+    # The PC can never reach the enclosure, so confirmation never arrives. The
+    # router still answers, which is what distinguishes an isolating guest
+    # network from a connection that simply never came good.
     clock.advance(151)
     result = provisioner.poll()
     assert result.ok is False
-    assert result.error["code"] == "PT-NET-009"
+    assert result.error["code"] == "PT-NET-004", "a guest network needs its own advice"
+    assert "guest network" in result.error["nextStep"]
     assert backend.active_connection().ssid == "Ferndale", "rolled back to what worked"
 
 
@@ -204,8 +207,37 @@ def test_a_failed_confirmation_with_no_previous_network_restores_the_hotspot(tmp
 
     clock.advance(151)
     result = provisioner.poll()
-    assert result.error["code"] == "PT-NET-009"
+    assert result.error["code"] in ("PT-NET-004", "PT-NET-009")
     assert backend.active_connection().is_hotspot is True
+
+
+def test_a_network_whose_router_never_answers_is_not_blamed_on_isolation(tmp_path):
+    """Isolation and a dead connection look the same until you ask the router."""
+
+    backend = home_network_pi(country="US")
+    quiet = backend.add_network("QuietRouter", password="pw12345678")
+    backend, provisioner, clock = build(backend, tmp_path=tmp_path)
+    provisioner.start_setup_hotspot()
+    provisioner.join("QuietRouter", "pw12345678")
+
+    # Make the router stop answering, so this is not an isolation case.
+    backend.can_reach_gateway = lambda: False
+    clock.advance(151)
+    result = provisioner.poll()
+    assert result.error["code"] == "PT-NET-009"
+
+
+def test_a_backend_that_cannot_answer_falls_back_to_the_general_message(tmp_path):
+    backend, provisioner, clock = build(tmp_path=tmp_path)
+    provisioner.start_setup_hotspot()
+    provisioner.join("Ferndale", "GoodPassword1")
+
+    def explode():
+        raise RuntimeError("no idea")
+
+    backend.can_reach_gateway = explode
+    clock.advance(151)
+    assert provisioner.poll().error["code"] == "PT-NET-009"
 
 
 def test_polling_before_the_deadline_changes_nothing(tmp_path):

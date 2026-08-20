@@ -38,10 +38,11 @@ from ..common.errors import (
     NET_CONFIRM_TIMEOUT,
     NET_COUNTRY_INVALID,
     NET_COUNTRY_REQUIRED,
-    NET_INVALID_DETAILS,
     NET_ENTERPRISE,
     NET_HOTSPOT_FAILED,
     NET_INTERRUPTED,
+    NET_INVALID_DETAILS,
+    NET_ISOLATED,
     NET_NO_ADDRESS,
     NET_NOT_FOUND,
     NET_WRONG_PASSWORD,
@@ -235,14 +236,16 @@ class WifiProvisioner:
             raise EasyConnectError(NET_INVALID_DETAILS, "the network name is too long")
         if any(ord(character) < 32 or ord(character) == 127 for character in ssid):
             raise EasyConnectError(
-                NET_INVALID_DETAILS, "the network name contains a line break or control character"
+                NET_INVALID_DETAILS,
+                "the network name contains a line break or control character",
             )
         if password is not None:
             if len(password) > 63:
                 raise EasyConnectError(NET_INVALID_DETAILS, "the password is too long")
             if any(ord(character) < 32 or ord(character) == 127 for character in password):
                 raise EasyConnectError(
-                    NET_INVALID_DETAILS, "the password contains a line break or control character"
+                    NET_INVALID_DETAILS,
+                    "the password contains a line break or control character",
                 )
 
     def scan(self) -> List[WifiNetwork]:
@@ -384,10 +387,23 @@ class WifiProvisioner:
             if self._pending_deadline is None or self.clock() < self._pending_deadline:
                 return None
             pending = self._journal.get("pending") or {}
+            ssid = pending.get("ssid", "the new network")
+
+            # Two different problems look identical from here, and they need
+            # different advice. If the router answers, the network is working
+            # and is keeping devices from reaching each other — a guest network.
+            # If it does not, the connection itself never came good.
+            try:
+                router_answers = self.backend.can_reach_gateway()
+            except Exception:
+                router_answers = None
+            info = NET_ISOLATED if router_answers else NET_CONFIRM_TIMEOUT
             error = EasyConnectError(
-                NET_CONFIRM_TIMEOUT,
-                "nothing reached PiTrac on {} within {:.0f} seconds".format(
-                    pending.get("ssid", "the new network"), self.confirmation_seconds
+                info,
+                "nothing reached PiTrac on {} within {:.0f} seconds{}".format(
+                    ssid, self.confirmation_seconds,
+                    "; the router answered, so the network is blocking devices"
+                    if router_answers else "",
                 ),
             )
             self._last_error = error
@@ -398,11 +414,7 @@ class WifiProvisioner:
             if restored:
                 self.mode = NetworkMode.RESIDENCE
                 return ProvisioningResult(
-                    False,
-                    self.mode,
-                    NET_CONFIRM_TIMEOUT.failed,
-                    error=error.as_dict(),
-                    ssid=restored.ssid,
+                    False, self.mode, info.failed, error=error.as_dict(), ssid=restored.ssid
                 )
             return self._fall_back_to_hotspot(error)
 

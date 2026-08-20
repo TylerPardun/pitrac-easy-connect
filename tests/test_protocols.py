@@ -1,14 +1,13 @@
+"""The wire formats GSPro and E6 expect.
+
+Sending and receiving is covered end to end in test_end_to_end_relay.py against
+the mock simulators. These tests pin the shape of the messages themselves.
+"""
+
 import math
 
-from pitrac_easy_connect.mock_simulators import RunningMock
-from pitrac_easy_connect.models import Simulator, TEST_SHOT
-from pitrac_easy_connect.protocols import (
-    check_socket,
-    e6_ball_message,
-    gspro_message,
-    send_e6_test_shot,
-    send_gspro_test_shot,
-)
+from pitrac_easy_connect.models import TEST_SHOT
+from pitrac_easy_connect.protocols import e6_ball_message, e6_club_message, gspro_message
 
 
 def test_gspro_message_contains_required_ball_data():
@@ -20,6 +19,16 @@ def test_gspro_message_contains_required_ball_data():
     expected_spin = math.hypot(TEST_SHOT.back_spin_rpm, TEST_SHOT.side_spin_rpm)
     assert message["BallData"]["TotalSpin"] == round(expected_spin, 1)
     assert message["ShotDataOptions"]["ContainsBallData"] is True
+
+
+def test_gspro_spin_axis_carries_the_direction_of_curve():
+    """A negative side spin has to read as a draw, not just a magnitude."""
+
+    from dataclasses import replace
+
+    left = gspro_message(replace(TEST_SHOT, side_spin_rpm=-500))
+    right = gspro_message(replace(TEST_SHOT, side_spin_rpm=500))
+    assert left["BallData"]["SpinAxis"] < 0 < right["BallData"]["SpinAxis"]
 
 
 def test_e6_message_matches_pitrac_field_names():
@@ -34,30 +43,19 @@ def test_e6_message_matches_pitrac_field_names():
     }
 
 
-def test_gspro_mock_accepts_test_shot():
-    with RunningMock(Simulator.GSPRO) as mock:
-        result = send_gspro_test_shot(*mock.address, TEST_SHOT)
-        assert result.accepted is True
-        assert result.response["Code"] == 200
-        assert mock.received[0]["DeviceID"] == "PiTrac Easy Connect"
+def test_e6_club_data_is_sent_even_when_empty():
+    """E6 expects the club message in the sequence whether or not we measure it."""
+
+    message = e6_club_message()
+    assert message["Type"] == "SetClubData"
+    assert "ClubData" in message
 
 
-def test_e6_mock_accepts_required_message_sequence():
-    with RunningMock(Simulator.E6) as mock:
-        result = send_e6_test_shot(*mock.address, TEST_SHOT)
-        assert result.accepted is True
-        assert [message["Type"] for message in mock.received] == [
-            "Handshake",
-            "SetBallData",
-            "SetClubData",
-            "SendShot",
-        ]
+def test_an_impossible_shot_is_refused_before_it_reaches_a_simulator():
+    from dataclasses import replace
 
+    import pytest
 
-def test_connection_check_fails_when_no_server_is_listening():
-    with RunningMock(Simulator.GSPRO) as mock:
-        host, port = mock.address
-    result = check_socket(host, port, timeout=0.2)
-    assert result.accepted is False
-    assert "Could not reach" in result.message
-
+    for bad in (replace(TEST_SHOT, speed_mph=0), replace(TEST_SHOT, vertical_launch_deg=120)):
+        with pytest.raises(ValueError):
+            gspro_message(bad)

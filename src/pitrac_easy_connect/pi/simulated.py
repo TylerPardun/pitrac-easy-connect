@@ -237,6 +237,18 @@ class SimulatedPi(PiBackend):
         with self._lock:
             return sorted(self._checkpoints)
 
+    def can_reach_gateway(self) -> Optional[bool]:
+        with self._lock:
+            active = self._active
+        if active is None:
+            return None
+        access_point = self._find(active.ssid)
+        if access_point is None:
+            return None
+        # An isolating network is perfectly healthy from the enclosure's side;
+        # it just will not carry traffic between two devices on it.
+        return True if access_point.isolates_clients else bool(active.gateway)
+
     # --- The rest of the machine -----------------------------------------
 
     def system_facts(self) -> SystemFacts:

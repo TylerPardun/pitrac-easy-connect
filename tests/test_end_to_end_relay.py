@@ -302,7 +302,9 @@ def test_a_revoked_computer_cannot_reconnect(chain):
     hello = stream.receive(timeout=5)
     proof = PairingManager.client_proof(chain.pairing.secret, hello["challenge"])
     stream.send(link.auth(chain.pairing.pairing_id, proof, VERSION, "Sim Room PC"))
-    assert stream.receive(timeout=5)["error"]["code"] == "PT-PAIR-004"
+    # Specifically "your access was removed", not "who are you" — the revoked
+    # computer's owner needs to know which of those happened.
+    assert stream.receive(timeout=5)["error"]["code"] == "PT-PAIR-005"
     stream.close()
 
 

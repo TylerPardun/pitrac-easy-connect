@@ -1,21 +1,17 @@
-import json
-import socket
-import time
-from dataclasses import dataclass
-from typing import Any, Dict, Optional, Tuple
+"""The exact messages GSPro and E6 expect for a shot.
 
-from .models import ShotData, Simulator
+Only the message formats live here. Sending them is
+:mod:`pitrac_easy_connect.companion.simulator_session`, which holds one
+connection open for the life of a session rather than dialling per shot.
 
+These are also the formats PiTrac itself produces, so a message travelling
+through the relay is byte-for-byte what PiTrac sent. Nothing here rewrites it.
+"""
 
-class SimulatorConnectionError(RuntimeError):
-    pass
+import math
+from typing import Any, Dict
 
-
-@dataclass(frozen=True)
-class SimulatorResult:
-    accepted: bool
-    message: str
-    response: Optional[Dict[str, Any]] = None
+from .models import ShotData
 
 
 def gspro_message(shot: ShotData, shot_number: int = 1) -> Dict[str, Any]:
@@ -77,116 +73,3 @@ def e6_club_message() -> Dict[str, Any]:
             "ClubHeadSpeedMPH": 0.0,
         },
     }
-
-
-class JsonSocket:
-    def __init__(self, sock: socket.socket):
-        self.sock = sock
-        self.buffer = ""
-        self.decoder = json.JSONDecoder()
-
-    def send(self, message: Dict[str, Any]) -> None:
-        payload = json.dumps(message, separators=(",", ":")).encode("utf-8")
-        self.sock.sendall(payload)
-
-    def receive(self, timeout: float) -> Dict[str, Any]:
-        deadline = time.monotonic() + timeout
-        while True:
-            stripped = self.buffer.lstrip()
-            if stripped:
-                try:
-                    value, consumed = self.decoder.raw_decode(stripped)
-                    self.buffer = stripped[consumed:]
-                    if not isinstance(value, dict):
-                        raise SimulatorConnectionError("Simulator returned non-object JSON")
-                    return value
-                except json.JSONDecodeError:
-                    pass
-
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                raise SimulatorConnectionError("Simulator did not respond before the timeout")
-            self.sock.settimeout(remaining)
-            try:
-                chunk = self.sock.recv(8192)
-            except socket.timeout as exc:
-                raise SimulatorConnectionError("Simulator did not respond before the timeout") from exc
-            if not chunk:
-                raise SimulatorConnectionError("Simulator closed the connection without responding")
-            try:
-                self.buffer += chunk.decode("utf-8")
-            except UnicodeDecodeError as exc:
-                raise SimulatorConnectionError("Simulator returned invalid text") from exc
-
-
-def check_socket(host: str, port: int, timeout: float = 1.0) -> SimulatorResult:
-    try:
-        with socket.create_connection((host, port), timeout=timeout):
-            return SimulatorResult(True, "Simulator connection is available")
-    except OSError as exc:
-        return SimulatorResult(False, _friendly_socket_error(host, port, exc))
-
-
-def send_gspro_test_shot(
-    host: str, port: int, shot: ShotData, timeout: float = 2.0
-) -> SimulatorResult:
-    try:
-        with socket.create_connection((host, port), timeout=timeout) as sock:
-            stream = JsonSocket(sock)
-            stream.send(gspro_message(shot))
-            response = stream.receive(timeout)
-    except (OSError, SimulatorConnectionError) as exc:
-        return SimulatorResult(False, _friendly_socket_error(host, port, exc))
-
-    code = response.get("Code")
-    if code == 200:
-        return SimulatorResult(True, "GSPro accepted the test shot", response)
-    return SimulatorResult(False, "GSPro responded, but did not accept the test shot", response)
-
-
-def send_e6_test_shot(
-    host: str, port: int, shot: ShotData, timeout: float = 2.0
-) -> SimulatorResult:
-    try:
-        with socket.create_connection((host, port), timeout=timeout) as sock:
-            stream = JsonSocket(sock)
-            stream.send({"Type": "Handshake"})
-            handshake = stream.receive(timeout)
-            if handshake.get("Type") not in {"Handshake", "HandshakeAck"}:
-                return SimulatorResult(False, "E6 returned an unexpected handshake", handshake)
-
-            stream.send(e6_ball_message(shot))
-            time.sleep(0.05)
-            stream.send(e6_club_message())
-            time.sleep(0.05)
-            stream.send({"Type": "SendShot"})
-            response = stream.receive(timeout)
-    except (OSError, SimulatorConnectionError) as exc:
-        return SimulatorResult(False, _friendly_socket_error(host, port, exc))
-
-    if response.get("Type") in {"ShotComplete", "ShotAccepted"}:
-        return SimulatorResult(True, "E6 accepted the test shot", response)
-    return SimulatorResult(False, "E6 responded, but did not confirm the test shot", response)
-
-
-def send_test_shot(
-    simulator: Simulator,
-    endpoint: Tuple[str, int],
-    shot: ShotData,
-) -> SimulatorResult:
-    if simulator is Simulator.GSPRO:
-        return send_gspro_test_shot(endpoint[0], endpoint[1], shot)
-    return send_e6_test_shot(endpoint[0], endpoint[1], shot)
-
-
-def _friendly_socket_error(host: str, port: int, error: BaseException) -> str:
-    if isinstance(error, SimulatorConnectionError):
-        detail = str(error)
-    elif isinstance(error, ConnectionRefusedError):
-        detail = "nothing is listening at that address"
-    elif isinstance(error, socket.timeout):
-        detail = "the connection timed out"
-    else:
-        detail = str(error) or error.__class__.__name__
-    return "Could not reach the simulator at {}:{}: {}".format(host, port, detail)
-

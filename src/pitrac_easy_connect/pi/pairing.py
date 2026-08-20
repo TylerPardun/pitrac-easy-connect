@@ -34,6 +34,7 @@ from ..common.errors import (
     PAIR_CODE_INVALID,
     PAIR_NOT_PAIRED,
     PAIR_RATE_LIMITED,
+    PAIR_REVOKED,
     EasyConnectError,
 )
 
@@ -91,7 +92,7 @@ class PairingManager:
         self._lock = threading.RLock()
         self._store = ConfigStore(
             path,
-            defaults={"pairings": {}},
+            defaults={"pairings": {}, "revoked": []},
             schema_version=1,
             secret=True,
         )
@@ -263,6 +264,10 @@ class PairingManager:
         pairings = self._store.get("pairings") or {}
         record = pairings.get(pairing_id)
         if not record:
+            # "Your access was removed" and "I have never heard of you" are
+            # different situations for the person reading the message.
+            if pairing_id in (self._store.get("revoked") or []):
+                raise EasyConnectError(PAIR_REVOKED, "this pairing was revoked")
             raise EasyConnectError(PAIR_NOT_PAIRED, "unknown pairing")
         return record["secret"]
 
@@ -345,13 +350,20 @@ class PairingManager:
             pairings = dict(self._store.get("pairings") or {})
             if pairings.pop(pairing_id, None) is None:
                 raise EasyConnectError(PAIR_NOT_PAIRED, "unknown pairing")
-            self._store.set("pairings", pairings)
+            # Remembering the id, and nothing else about it, is what lets the
+            # revoked computer be told why rather than left guessing. The list
+            # is capped so it cannot grow without bound.
+            revoked = [item for item in (self._store.get("revoked") or []) if item != pairing_id]
+            revoked.append(pairing_id)
+            self._store.update({"pairings": pairings, "revoked": revoked[-50:]})
 
     def revoke_all(self) -> None:
         """Used by 'prepare for new owner'. Networking and calibration are untouched."""
 
         with self._lock:
-            self._store.set("pairings", {})
+            revoked = list(self._store.get("revoked") or [])
+            revoked.extend(self._store.get("pairings") or {})
+            self._store.update({"pairings": {}, "revoked": revoked[-50:]})
             self._code = None
 
     def export(self) -> Dict[str, Any]:

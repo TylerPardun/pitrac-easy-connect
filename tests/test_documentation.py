@@ -101,3 +101,30 @@ def test_the_illustrated_guide_defines_both_themes():
     assert ':root:not([data-theme="light"])' in text, "system dark mode is unhandled"
     assert ':root[data-theme="dark"]' in text, "an explicit dark choice is unhandled"
     assert "background:var(--paper)" in text, "the body must paint its own ground"
+
+
+def test_every_documented_error_code_can_actually_happen():
+    """A guide that describes an error the software never produces is a lie.
+
+    Every catalogue entry must be reachable: referenced by name somewhere in the
+    code, or produced by its literal code string.
+    """
+
+    import re
+
+    source_root = Path(__file__).resolve().parent.parent / "src" / "pitrac_easy_connect"
+    catalogue_file = source_root / "common" / "errors.py"
+    catalogue_text = read(catalogue_file)
+    elsewhere = "\n".join(
+        read(path)
+        for path in source_root.rglob("*.py")
+        if "__pycache__" not in str(path) and path != catalogue_file
+    )
+
+    names = dict(re.findall(r'(\w+) = _define\(\s*\n\s*"([A-Z0-9\-]+)"', catalogue_text))
+    unreachable = [
+        code
+        for name, code in names.items()
+        if not re.search(r"\b%s\b" % re.escape(name), elsewhere) and code not in elsewhere
+    ]
+    assert not unreachable, "documented but never produced: {}".format(sorted(unreachable))

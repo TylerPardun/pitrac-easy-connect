@@ -83,15 +83,14 @@ NET_NO_ADDRESS = _define(
 NET_ISOLATED = _define(
     "PT-NET-004",
     "PiTrac joined the network, but that network blocks devices from talking to each other.",
-    "Your settings and calibration were kept.",
-    "This is usually a guest network. Choose your normal home network, or use Direct Mode.",
+    "Your settings and calibration were kept, and PiTrac went back to what worked before.",
+    "This is usually a guest network, or a network that needs a web sign-in. Choose your "
+    "normal home network, or use Direct Mode.",
 )
-NET_CAPTIVE_PORTAL = _define(
-    "PT-NET-005",
-    "That network requires signing in through a web page, which PiTrac cannot do.",
-    "Your previous network was kept and the setup signal is available again.",
-    "Use Direct Mode instead, or choose a normal home network with a password.",
-)
+
+# PT-NET-005 was a separate code for captive portals. It was removed because
+# nothing could detect one, so it was documented but never shown. A captive
+# portal now produces PT-NET-004, which has the same remedy.
 NET_ENTERPRISE = _define(
     "PT-NET-006",
     "That network uses a business login that this release does not support.",

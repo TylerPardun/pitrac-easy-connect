@@ -23,6 +23,7 @@ import time
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence
 
+from ..common.discovery import SERVICE_TYPE
 from .backend import (
     ActiveConnection,
     BackendError,
@@ -407,6 +408,23 @@ class NmcliBackend(PiBackend):
             check=False,
         )
 
+    def can_reach_gateway(self) -> Optional[bool]:
+        connection = self.active_connection()
+        gateway = connection.gateway if connection else ""
+        if not gateway:
+            return None
+        # A refused or reset connection still proves the router answered, which
+        # is the only thing being asked here.
+        import socket
+
+        try:
+            with socket.create_connection((gateway, 80), timeout=2.0):
+                return True
+        except (ConnectionRefusedError, ConnectionResetError):
+            return True
+        except OSError:
+            return False
+
     # --- The rest of the machine -----------------------------------------
 
     def system_facts(self) -> SystemFacts:
@@ -517,13 +535,15 @@ class NmcliBackend(PiBackend):
             '<?xml version="1.0" standalone="no"?>\n'
             '<!DOCTYPE service-group SYSTEM "avahi-service.dtd">\n'
             "<service-group>\n"
-            "  <name replace-wildcards=\"no\">{}</name>\n"
+            "  <name replace-wildcards=\"no\">{name}</name>\n"
             "  <service>\n"
-            "    <type>_pitrac._tcp</type>\n"
-            "    <port>{}</port>{}\n"
+            "    <type>{service_type}</type>\n"
+            "    <port>{port}</port>{records}\n"
             "  </service>\n"
             "</service-group>\n"
-        ).format(_xml(name), int(port), entries)
+        ).format(
+            name=_xml(name), service_type=SERVICE_TYPE, port=int(port), records=entries
+        )
         try:
             AVAHI_SERVICE_FILE.parent.mkdir(parents=True, exist_ok=True)
             AVAHI_SERVICE_FILE.write_text(document, encoding="utf-8")

@@ -10,3 +10,6 @@ dist/
 
 # Built Companion artifacts
 dist/
+
+# macOS folder metadata
+.DS_Store

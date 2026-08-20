@@ -248,3 +248,43 @@ def test_the_stored_secret_is_never_in_the_trusted_list(tmp_path):
     manager, _ = build(tmp_path)
     pair_one(manager)
     assert "secret" not in repr(manager.trusted_computers())
+
+
+def test_a_revoked_computer_is_told_why_rather_than_treated_as_a_stranger(tmp_path):
+    manager, _clock = build(tmp_path)
+    pairing = pair_one(manager)
+    manager.revoke(pairing.pairing_id)
+
+    challenge = manager.new_challenge()
+    proof = PairingManager.client_proof(pairing.secret, challenge)
+    with pytest.raises(EasyConnectError) as caught:
+        manager.verify(pairing.pairing_id, challenge, proof)
+    assert caught.value.info.code == "PT-PAIR-005"
+    assert "removed" in caught.value.info.failed
+
+
+def test_a_computer_that_was_never_paired_is_still_just_unknown(tmp_path):
+    manager, _clock = build(tmp_path)
+    with pytest.raises(EasyConnectError) as caught:
+        manager.verify("never-seen", manager.new_challenge(), "0" * 64)
+    assert caught.value.info.code == "PT-PAIR-004"
+
+
+def test_preparing_for_a_new_owner_tells_the_old_owners_computers_why(tmp_path):
+    manager, _clock = build(tmp_path)
+    pairing = pair_one(manager)
+    manager.revoke_all()
+
+    challenge = manager.new_challenge()
+    with pytest.raises(EasyConnectError) as caught:
+        manager.verify(
+            pairing.pairing_id, challenge, PairingManager.client_proof(pairing.secret, challenge)
+        )
+    assert caught.value.info.code == "PT-PAIR-005"
+
+
+def test_the_revoked_list_cannot_grow_without_bound(tmp_path):
+    manager, _clock = build(tmp_path)
+    for _ in range(80):
+        manager.revoke(pair_one(manager).pairing_id)
+    assert len(manager._store.get("revoked")) <= 50
