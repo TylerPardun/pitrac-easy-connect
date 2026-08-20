@@ -20,10 +20,27 @@ PAGE = r"""<!doctype html>
     --green:#5ddc93;--amber:#f5c65c;--red:#ff7d73;
     --accent:#dff86d;--accent-text:#151d06}
   *{box-sizing:border-box}
-  body{margin:0;min-height:100vh;background:var(--bg);color:var(--text);
+  html,body{height:100%}
+  body{margin:0;background:var(--bg);color:var(--text);
     font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;
-    line-height:1.5;display:flex;align-items:center;justify-content:center}
+    line-height:1.5;display:flex;flex-direction:column;overflow:hidden}
+
+  /* The window's own tab strip. Hidden until there is more than one place to be. */
+  .tabs{display:flex;gap:2px;padding:10px 14px 0;border-bottom:1px solid var(--line-soft);
+    flex:none;background:var(--bg)}
+  .tabs button{width:auto;padding:9px 16px;border:0;background:transparent;color:var(--faint);
+    font-size:.88rem;font-weight:650;border-radius:9px 9px 0 0;border-bottom:2px solid transparent}
+  .tabs button:hover{color:var(--muted)}
+  .tabs button.on{color:var(--text);border-bottom-color:var(--accent)}
+  .tabs.hidden{display:none}
+
+  .pane{flex:1;min-height:0;overflow:auto;display:none}
+  .pane.on{display:block}
+  .pane.frame{overflow:hidden}
+  .pane iframe{width:100%;height:100%;border:0;display:block;background:var(--bg)}
+  .centre{min-height:100%;display:flex;align-items:center;justify-content:center}
   main{width:min(440px,calc(100% - 40px));padding:40px 0}
+  .framehint{padding:14px 18px;color:var(--faint);font-size:.85rem;text-align:center}
 
   .brand{font-size:.68rem;font-weight:800;letter-spacing:.22em;color:var(--faint);
     text-transform:uppercase;text-align:center;margin-bottom:28px}
@@ -104,6 +121,13 @@ PAGE = r"""<!doctype html>
 </style>
 </head>
 <body>
+<nav class="tabs hidden" id="tabs">
+  <button data-pane="play" class="on">Play</button>
+  <button data-pane="pitrac">PiTrac</button>
+  <button data-pane="setup">Setup</button>
+</nav>
+
+<div class="pane on" id="pane-play"><div class="centre">
 <main>
   <div class="brand">PiTrac</div>
 
@@ -161,6 +185,17 @@ PAGE = r"""<!doctype html>
     </div>
   </details>
 </main>
+</div></div>
+
+<div class="pane frame" id="pane-pitrac">
+  <div class="framehint" id="pitracHint">Connect to PiTrac to see shot data.</div>
+  <iframe id="pitracFrame" title="PiTrac dashboard"></iframe>
+</div>
+
+<div class="pane frame" id="pane-setup">
+  <div class="framehint" id="setupHint">Connect to PiTrac to change its settings.</div>
+  <iframe id="setupFrame" title="PiTrac setup"></iframe>
+</div>
 
 <script>
 "use strict";
@@ -260,6 +295,9 @@ function render(data){
   }
 
   $("adv").classList.toggle("hidden", !data.pairedEnclosures.length);
+  // The other tabs only mean anything once there is an enclosure to show.
+  $("tabs").classList.toggle("hidden", !(data.link && data.link.connected));
+  loadFrames();
   document.querySelectorAll("[data-sim]").forEach(b=>{
     b.classList.toggle("primary", b.dataset.sim===data.simulator);
     b.classList.toggle("quiet", b.dataset.sim!==data.simulator);
@@ -387,6 +425,43 @@ $("bkFile").addEventListener("change",async event=>{
   }catch(error){ showError(error); }
   event.target.value="";
 });
+
+// --- the window's tabs ---------------------------------------------------
+
+let pane="play";
+
+function showPane(name){
+  pane=name;
+  document.querySelectorAll(".pane").forEach(p=>p.classList.toggle("on", p.id==="pane-"+name));
+  document.querySelectorAll("#tabs button").forEach(b=>b.classList.toggle("on", b.dataset.pane===name));
+  loadFrames();
+}
+document.querySelectorAll("#tabs button").forEach(button=>
+  button.addEventListener("click",()=>showPane(button.dataset.pane)));
+
+function loadFrames(){
+  if(!status) return;
+  // Load a frame the first time its tab is opened, so the enclosure is not
+  // serving two extra pages to a window nobody has looked at.
+  if(pane==="pitrac"){
+    const url=status.dashboardUrl;
+    frameInto("pitracFrame","pitracHint",url,
+      "Connect to PiTrac to see shot data.");
+  }
+  if(pane==="setup"){
+    const address=status.link && status.link.address ? status.link.address.split(":")[0] : "";
+    const port=(status.link && status.link.device && status.link.device.portalPort) || 80;
+    frameInto("setupFrame","setupHint", address?("http://"+address+(port===80?"":":"+port)):"",
+      "Connect to PiTrac to change its settings.");
+  }
+}
+
+function frameInto(frameId, hintId, url, emptyText){
+  const frame=$(frameId), hint=$(hintId);
+  if(!url){ frame.style.display="none"; hint.style.display=""; hint.textContent=emptyText; return; }
+  hint.style.display="none"; frame.style.display="";
+  if(frame.dataset.src!==url){ frame.dataset.src=url; frame.src=url; }
+}
 
 async function refresh(){
   try{ render(await api("/api/status")); }

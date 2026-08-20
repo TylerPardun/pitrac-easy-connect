@@ -30,6 +30,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--hidden", action="store_true",
         help="start without opening a window; use the shortcut before a golf session",
     )
+    parser.add_argument(
+        "--window", action="store_true",
+        help="open as an application window rather than a browser tab",
+    )
     parser.add_argument("--version", action="version", version=__version__)
     return parser
 
@@ -55,7 +59,12 @@ def main(argv=None) -> int:
         # Reconnect to the enclosure this PC used last, without being asked.
         threading.Thread(target=_reconnect, args=(service,), daemon=True).start()
     if not args.no_browser and not args.hidden:
-        threading.Timer(0.4, lambda: webbrowser.open(url)).start()
+        if args.window:
+            from .window import open_window
+
+            threading.Timer(0.4, lambda: open_window(url)).start()
+        else:
+            threading.Timer(0.4, lambda: webbrowser.open(url)).start()
     if args.hidden:
         print("Running in the background. Open {} to see it.".format(url))
 

@@ -334,6 +334,8 @@ class PiService:
         value["version"] = self.version
         value["state"] = self.state.value
         value["protocol"] = link.PROTOCOL_VERSION
+        value["portalPort"] = self.portal_port
+        value["dashboardUrl"] = self.dashboard_url()
         return value
 
     def dashboard_url(self) -> str:
