@@ -76,11 +76,25 @@ def club_from_simulator_message(message: Dict[str, Any]) -> Optional[str]:
     return None
 
 
+#: What the protocol says a shot is measured in, and what everything
+#: downstream assumes. A launch monitor that declares anything else is not
+#: wrong -- it is telling us something we have never seen, and guessing at a
+#: conversion would be worse than saying so.
+EXPECTED_UNITS = "yards"
+
+
 def ball_from_shot(payload: Dict[str, Any]) -> Dict[str, Any]:
-    """The numbers worth keeping, from either simulator's shot format."""
+    """The numbers worth keeping, from either simulator's shot format.
+
+    Ball speed is mph, angles are degrees and spin is rpm. The ``Units`` field
+    in the message describes distances rather than these, but a monitor that
+    declares something unexpected is a monitor whose other conventions may also
+    differ, so it is recorded and surfaced rather than ignored.
+    """
 
     ball = payload.get("BallData")
     if isinstance(ball, dict) and ball:
+        declared = str(payload.get("Units", "") or "").strip().lower()
         return {
             "speed": _number(ball.get("Speed") or ball.get("BallSpeed")),
             "launch": _number(ball.get("VLA") or ball.get("LaunchAngle")),
@@ -88,6 +102,8 @@ def ball_from_shot(payload: Dict[str, Any]) -> Dict[str, Any]:
             "backSpin": _number(ball.get("BackSpin")),
             "sideSpin": _number(ball.get("SideSpin")),
             "totalSpin": _number(ball.get("TotalSpin")),
+            "units": declared or EXPECTED_UNITS,
+            "unitsUnexpected": bool(declared) and declared != EXPECTED_UNITS,
         }
     return {}
 

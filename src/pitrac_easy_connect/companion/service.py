@@ -34,6 +34,7 @@ from ..common.states import State
 from ..common.updates import Updater
 from ..models import TEST_SHOT, Simulator
 from .link_client import CompanionLinkClient
+from . import shotlog
 from .rangeplay import RangeSession
 from .shotlog import ShotLog
 from .simulator_session import SimulatorSession
@@ -101,6 +102,7 @@ class CompanionService:
         self._pi_status: Dict[str, Any] = {}
         #: The practice range. In memory only: a session is a bucket of balls.
         self.range = RangeSession()
+        self._raw_shots: List[Dict[str, Any]] = []
         self.shots = ShotLog(
             (config_path or default_config_path()).with_name("shots.json")
         )
@@ -209,6 +211,39 @@ class CompanionService:
 
         self.connect(device_id)
         return {"deviceId": device_id, "displayName": enclosure.display_name}
+
+    # --- What the launch monitor actually sent -----------------------------
+
+    #: How many raw shot messages to hold. In memory only: this is a window
+    #: onto what is arriving now, not a record.
+    RAW_SHOTS = 10
+
+    def _keep_raw(self, payload: Dict[str, Any]) -> None:
+        import copy
+
+        with self._lock:
+            self._raw_shots.append({"at": time.time(), "message": copy.deepcopy(payload)})
+            del self._raw_shots[: max(0, len(self._raw_shots) - self.RAW_SHOTS)]
+
+    def raw_shots(self) -> Dict[str, Any]:
+        """The last few messages exactly as the launch monitor sent them."""
+
+        with self._lock:
+            recent = list(self._raw_shots)
+        odd = [
+            entry for entry in recent
+            if str(entry["message"].get("Units", "") or "").strip().lower()
+            not in ("", shotlog.EXPECTED_UNITS)
+        ]
+        return {
+            "shots": recent,
+            "expectedUnits": shotlog.EXPECTED_UNITS,
+            "unitsUnexpected": bool(odd),
+            "declaredUnits": sorted({
+                str(e["message"].get("Units", "")) for e in recent
+                if e["message"].get("Units")
+            }),
+        }
 
     # --- The practice range ------------------------------------------------
 
@@ -431,6 +466,15 @@ class CompanionService:
         downstream of delivery raised.
         """
 
+        # Keep the last few shots exactly as they arrived. Every assumption
+        # downstream -- field names, units, which way a positive angle points --
+        # was made against the protocol and a stand-in, not against a real
+        # launch monitor. When one is finally attached, this is what says
+        # whether those assumptions were right.
+        try:
+            self._keep_raw(payload)
+        except Exception:
+            pass
         try:
             shot = self.shots.record(
                 payload, simulator or self.simulator.value, delivered=delivered

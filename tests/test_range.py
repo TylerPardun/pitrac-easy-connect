@@ -311,3 +311,26 @@ def test_the_animation_lasts_as_long_as_the_shot_did():
     frame = page.split("function frame(now){")[1].split("function schedule(")[0]
     assert "animation.progress += dt / animation.seconds" in frame
     assert "newest.flightSeconds" in page
+
+
+def test_the_range_pane_hides_like_every_other_pane():
+    """An id selector beats .pane{display:none} on specificity.
+
+    When it did, the range kept rendering underneath whichever tab was open,
+    and its HUD and controls showed through on top of the Play screen.
+    """
+
+    import pathlib
+    import re
+
+    page = (
+        pathlib.Path(__file__).resolve().parent.parent
+        / "src" / "pitrac_easy_connect" / "companion" / "page.py"
+    ).read_text()
+    style = re.search(r"<style>(.*?)</style>", page, re.S).group(1)
+    style = re.sub(r"/\*.*?\*/", "", style, flags=re.S)   # comments are not rules
+
+    for rule in re.findall(r"#pane-[\w-]+[^{]*\{[^}]*\}", style):
+        if "display:" in rule.replace(" ", ""):
+            assert ".on" in rule.split("{")[0], \
+                "a pane rule that sets display must be scoped to .on: " + rule[:70]

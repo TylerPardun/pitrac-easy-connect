@@ -5,10 +5,13 @@
 PiTrac Easy-Connect is a two-part system: a background service on the Raspberry Pi inside the enclosure, and a desktop app for macOS and Windows. The service puts the enclosure on your home Wi-Fi, announces itself on the network, and forwards every measured shot; the app finds the enclosure by itself, pairs with it in one click, relays the shots into GSPro or E6 Connect, and shows PiTrac's own dashboard in a tab. Setup is a five-step wizard, and moving the enclosure to a different residence means picking a new network off a list — nothing about PiTrac's own configuration changes.
 
 - **Download:** <https://tylerpardun.github.io/pitrac-easy-connect/>
-- **Version:** 0.2.0, running on real hardware
-- **Tests:** 814, passing on macOS, Windows, Linux, and the Raspberry Pi
+- **Version:** 0.2.0
 - **Dependencies:** none — Python standard library only
 - **Licence:** [MIT](LICENSE)
+
+![The practice range](media/range.png)
+
+*Every shot flown from its measured launch numbers, with per-club dispersion underneath.*
 
 ---
 
@@ -31,6 +34,27 @@ PiTrac Easy-Connect is a two-part system: a background service on the Raspberry 
 | **Ownership transfer** | Removes saved networks, paired computers, preferences, and the proprietary trained models along with the source clone and its git history |
 | **Updates** | Checked on launch; installed in place for source builds, pointed at the download otherwise |
 | **Native app** | A real window with its own Dock or taskbar icon and its own menu bar, not a browser in disguise |
+
+### What it looks like
+
+| | |
+|---|---|
+| ![Ready to play](media/home.png) | ![Shot history by club](media/shots.png) |
+| **One line, and one thing to do about it.** The app says whether you can play and, if not, what is stopping you. | **Every shot kept with its club**, with ball speed, spread, launch and spin, so you can see what each club is actually doing. |
+
+<img src="media/wifi.png" width="380" align="right" alt="Choosing a Wi-Fi network">
+
+**Wi-Fi without a terminal.** The enclosure makes its own network when it has
+never been on one, so it can be set up from a phone or a laptop. Networks it
+already knows are grouped first, anything needing a password has a padlock, and
+signal strength is a glance rather than a number.
+
+If the new network does not work, the enclosure puts the old one back on its own
+within two and a half minutes. Pulling the power halfway through is survivable
+too. Getting locked out of a machine you cannot SSH into is the one failure that
+has no recovery, so it is the one thing built most carefully.
+
+<br clear="right">
 
 ---
 
@@ -121,30 +145,6 @@ dependencies.
 | *(none)* | Native app — `.app` on macOS, `.exe` on Windows |
 | `--pyz` | Portable single file, runs anywhere Python 3.9+ is installed |
 | `--all` | Both |
-
----
-
-## Development
-
-### Running Without Hardware
-
-A simulated Raspberry Pi, a stand-in simulator, and the real app, all on one machine:
-
-```bash
-PYTHONPATH=src python3 -m pitrac_easy_connect.demo gspro
-```
-
-Against a real enclosure with a stand-in simulator, to exercise the shot path without opening GSPro:
-
-```bash
-PYTHONPATH=src python3 -m pitrac_easy_connect.tryit gspro
-```
-
-### Tests
-
-```bash
-python3 -m pytest -q
-```
 
 ---
 

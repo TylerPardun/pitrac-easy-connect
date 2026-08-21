@@ -123,7 +123,11 @@ PAGE = r"""<!doctype html>
   body.pairing .status,body.pairing #do,body.pairing #pick,
   body.pairing #update,body.pairing .adv{display:none}
   /* --- practice range --- */
-  #pane-range{padding:0;display:flex;flex-direction:column;height:100%}
+  /* Scoped to .on. An unscoped #pane-range beats .pane{display:none} on
+     specificity, which left the range rendering underneath every other tab
+     with its HUD and controls showing through. */
+  #pane-range{padding:0}
+  #pane-range.on{display:flex;flex-direction:column;height:100%}
   .rangewrap{position:relative;flex:1;min-height:0;background:#0a0f0d}
   #rangeCanvas{display:block;width:100%;height:100%;outline:none}
   #rangeCanvas:focus-visible{box-shadow:inset 0 0 0 2px var(--green)}
@@ -164,6 +168,9 @@ PAGE = r"""<!doctype html>
   .rcstat b{color:var(--text);font-weight:700}
   @media (prefers-reduced-motion:reduce){.viewbtn{transition:none}}
 
+  .raw{max-height:260px;overflow:auto;background:var(--bg);border:1px solid var(--line);
+    border-radius:10px;padding:10px 12px;font-size:.72rem;line-height:1.5;
+    color:var(--muted);white-space:pre;margin-top:8px}
   .wiz{margin-bottom:26px}
   .wizrail{display:flex;gap:6px;margin-bottom:10px}
   .wizrail i{height:3px;flex:1;border-radius:2px;background:var(--line)}
@@ -288,6 +295,10 @@ PAGE = r"""<!doctype html>
       <label class="linkbtn quiet" for="bkFile" style="cursor:pointer">Restore from a file</label>
       <input type="file" id="bkFile" accept=".pitracbackup,.json,application/json" class="hidden">
       <div id="bkPreview"></div>
+
+      <h3>What PiTrac sent</h3>
+      <button class="quiet" id="showRaw">Show the last shots as received</button>
+      <div id="rawShots"></div>
 
       <h3>This computer</h3>
       <button class="quiet danger" id="forget">Unpair this computer</button>
@@ -705,6 +716,22 @@ function closeAsk(){
 }
 
 $("cancelPair").addEventListener("click",()=>{ closeAsk(); refresh(); });
+
+$("showRaw").addEventListener("click",e=>run(e.target, async()=>{
+  const data = await api("/api/raw-shots");
+  const host = $("rawShots");
+  if(!data.shots.length){
+    host.innerHTML='<div class="note">Nothing yet. Hit a ball, or send a test shot.</div>';
+    return;
+  }
+  const warn = data.unitsUnexpected
+    ? '<div class="note bad">PiTrac is reporting units this app has not seen before ('+
+      esc(data.declaredUnits.join(", "))+'). Distances may be wrong. Expected '+
+      esc(data.expectedUnits)+'.</div>'
+    : "";
+  host.innerHTML = warn +
+    '<pre class="raw">'+esc(JSON.stringify(data.shots.map(s=>s.message), null, 1))+'</pre>';
+}));
 
 $("setupAgain").addEventListener("click",e=>run(e.target, async()=>{
   wizard={started:true, simPicked:false};

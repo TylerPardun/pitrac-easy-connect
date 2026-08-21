@@ -63,6 +63,9 @@ class CompanionHandler(BaseHTTPRequestHandler):
         if path == "/api/status":
             self._guarded(self.server.service.status)
             return
+        if path == "/api/raw-shots":
+            self._guarded(self.server.service.raw_shots)
+            return
         if path == "/api/range":
             self._guarded(self.server.service.range_status)
             return
