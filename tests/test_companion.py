@@ -159,11 +159,26 @@ def test_the_pairing_secret_is_never_sent_over_the_network(rig, monkeypatch):
         assert secret not in str(payload), "the pairing secret crossed the wire"
 
 
+def forget_locally_only(rig):
+    """Drop this computer's half of the pairing, leaving the enclosure's.
+
+    Not ``forget``: that revokes on the enclosure too, which is the right
+    behaviour for a user pressing Unpair but leaves the enclosure with nothing
+    paired to it — and an enclosure with nothing paired to it accepts the next
+    computer by design. To stand in for "somebody else's machine asking", the
+    enclosure has to still have its computer.
+    """
+
+    rig.companion.disconnect()
+    rig.companion.store.update({"enclosures": {}, "activeDeviceId": ""})
+
+
 def test_an_enclosure_that_already_has_a_computer_refuses_another(rig):
     """This is the whole of the protection now that there is no code to type."""
 
     rig.pair()
-    rig.companion.forget(rig.pi.identity.device_id)  # this PC forgets it locally
+    assert rig.pi.pairings.count == 1
+    forget_locally_only(rig)
 
     with pytest.raises(EasyConnectError) as caught:
         rig.pair()
@@ -174,11 +189,28 @@ def test_an_enclosure_that_already_has_a_computer_refuses_another(rig):
 
 def test_the_owner_opening_a_window_lets_the_computer_in(rig):
     rig.pair()
-    rig.companion.forget(rig.pi.identity.device_id)
+    forget_locally_only(rig)
     with pytest.raises(EasyConnectError):
         rig.pair()
 
     rig.pi.pairings.open_window()
+    assert rig.pair()["deviceId"] == rig.pi.identity.device_id
+
+
+def test_unpairing_properly_does_hand_the_enclosure_back(rig):
+    """The other side of the same coin, and the way back in from a dead PC.
+
+    ``forget`` revokes on the enclosure as well, so afterwards it has nothing
+    paired to it and takes the next computer that asks. Without this an
+    enclosure whose only computer died could never be reached again.
+    """
+
+    rig.pair()
+    rig.wait_linked()
+    rig.companion.forget(rig.pi.identity.device_id)
+
+    assert rig.pi.pairings.count == 0
+    assert rig.pi.pairings.accepting()
     assert rig.pair()["deviceId"] == rig.pi.identity.device_id
 
 
