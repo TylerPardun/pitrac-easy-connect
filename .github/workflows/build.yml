@@ -83,6 +83,26 @@ jobs:
           python-version: "3.13"
       # The portable build is plain Python, so it is the same file everywhere.
       - run: ./packaging/build-app.sh --pyz
+
+      # This file is the Linux download, and nothing else in the matrix proves
+      # the app itself starts on Linux — the tests exercise the library, not
+      # the packaged artifact. So start it and ask it how it is.
+      - name: Check the portable build runs on Linux
+        run: |
+          python3 dist/*.pyz --no-browser --port 8899 &
+          for _ in $(seq 1 20); do
+            sleep 1
+            if curl -fsS -m 3 http://127.0.0.1:8899/api/status -o status.json; then
+              break
+            fi
+          done
+          python3 -c "
+          import json, sys
+          status = json.load(open('status.json'))
+          print('started, version', status['version'])
+          sys.exit(0 if status['version'] else 1)
+          "
+
       - uses: actions/upload-artifact@v4
         with:
           name: PiTrac-portable

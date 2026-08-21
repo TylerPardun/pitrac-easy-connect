@@ -243,11 +243,13 @@
 
     <a class="dl" href="https://github.com/TylerPardun/pitrac-easy-connect/releases/latest">
       <div class="dl-top">
-        <span class="dl-os">Any computer</span>
-        <svg class="dl-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M12 3v12m0 0l-4.5-4.5M12 15l4.5-4.5M4 17v2a2 2 0 002 2h12a2 2 0 002-2v-2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        <span class="dl-os">Linux</span>
+        <svg class="dl-ico" viewBox="0 0 24 24" aria-hidden="true"><mask id="tuxmask"><rect width="24" height="24" fill="#000"/><g fill="#fff"><ellipse cx="8.1" cy="20.5" rx="3.2" ry="1.5" transform="rotate(-20 8.1 20.5)"/><ellipse cx="15.9" cy="20.5" rx="3.2" ry="1.5" transform="rotate(20 15.9 20.5)"/><ellipse cx="12" cy="14.6" rx="5.3" ry="6.1"/><circle cx="12" cy="6.4" r="4"/></g><g fill="#000"><circle cx="10.5" cy="5.9" r=".95"/><circle cx="13.5" cy="5.9" r=".95"/><path d="M12 7.1 L13.8 8.7 A1.95 1.95 0 0 1 10.2 8.7 Z"/></g></mask><rect width="24" height="24" fill="currentColor" mask="url(#tuxmask)"/></svg>
       </div>
-      <div class="dl-file">PiTrac-Easy-Connect-*.pyz</div>
-      <div class="dl-note">One portable file. Needs Python 3.9 or newer.</div>
+      <div class="dl-file">PiTrac-Easy-Connect-0.2.0.pyz</div>
+      <div class="dl-note">One file, nothing to install. Needs Python 3.9 or
+        newer, which most distributions already have. Opens in your browser
+        rather than a window of its own.</div>
     </a>
   </div>
 
@@ -331,7 +333,8 @@
       <h3>The desktop app</h3>
       <p>Produces a <code>.app</code> on macOS and an <code>.exe</code> on
       Windows. PyInstaller bundles the interpreter of the machine it runs on, so
-      build each one on that operating system.</p>
+      build each one on that operating system. The portable
+      <code>.pyz</code> is plain Python and runs on any of the three.</p>
 <pre><span class="c"># macOS or Windows</span>
 git clone https://github.com/TylerPardun/pitrac-easy-connect
 cd pitrac-easy-connect

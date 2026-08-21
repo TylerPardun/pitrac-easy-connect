@@ -77,7 +77,7 @@ Download from the [latest release](https://github.com/TylerPardun/pitrac-easy-co
 |---|---|
 | macOS 11+, Apple silicon or Intel | `PiTrac-Easy-Connect-macos.zip` |
 | Windows 10 and 11 | `PiTrac.Easy-Connect.exe` |
-| Any OS with Python 3.9+ | `PiTrac-Easy-Connect-0.2.0.pyz` |
+| Linux, or any OS with Python 3.9+ | `PiTrac-Easy-Connect-0.2.0.pyz` |
 
 Neither native build is code signed, so both operating systems warn on first launch:
 
