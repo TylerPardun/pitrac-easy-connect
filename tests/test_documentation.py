@@ -26,6 +26,16 @@ ALL_DOCS = GUIDES + [DOCS / "operator-guide.md", DOCS / "architecture.md", READM
 
 
 def read(path):
+    """Read a document, or skip if this checkout does not have it.
+
+    The guides are kept locally for reference but are not published, so they
+    are absent on a CI runner and on anyone else's clone. These checks are
+    worth keeping — they catch a guide quoting a timing or an error code the
+    code no longer has — but only where there is something to check.
+    """
+
+    if not path.exists():
+        pytest.skip("{} is not published; it is kept locally only".format(path.name))
     return path.read_text(encoding="utf-8")
 
 

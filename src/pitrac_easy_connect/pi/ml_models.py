@@ -18,8 +18,9 @@ in the working tree of the source clone, and inside that clone's git history.
 Deleting the first two leaves the third recoverable with one command, which is
 why this removes the clone outright rather than tidying files inside it.
 
-This module never downloads anything. See ``docs/licensing/model-provisioning.md``
-for why the fetch-on-first-boot idea does not by itself make selling lawful.
+This module never downloads anything. Fetching the models at first boot would
+cure the redistribution problem, but not the separate clause forbidding
+commercial use without written permission, so it is not a way around that.
 """
 
 import os

@@ -45,8 +45,6 @@ pitrac_lm  →  Pi relay  ══ paired link ══>  Desktop app  →  GSPro / 
 2. **The app dials out to the enclosure**, never the reverse. Windows needs no firewall rule, and the PC's IP address can change freely.
 3. **The link is authenticated per computer.** Each side proves it holds the shared secret by answering a fresh challenge, so a listener on the network learns nothing reusable.
 
-Full detail in [docs/architecture.md](docs/architecture.md).
-
 ---
 
 ## Setup
@@ -66,8 +64,6 @@ The installer checks the hardware, installs and starts the service, points PiTra
 > **Photograph the owner card.** The setup Wi-Fi password on it is generated for that Pi alone and is the only way back in if the enclosure cannot reach a network.
 
 Re-run the same installer to upgrade. Identity, saved networks, paired computers, and camera calibration are preserved.
-
-Starting from a blank memory card instead? [New Pi setup](docs/new-pi-setup.md) covers flashing through to a working launch monitor.
 
 ### 2. Install the app on your computer
 
@@ -131,18 +127,6 @@ PYTHONPATH=src python3 -m pitrac_easy_connect.tryit gspro
 ```bash
 python3 -m pytest -q
 ```
-
----
-
-## Guides
-
-| Document | Covers |
-|---|---|
-| [Setting up PiTrac](docs/beginner-guide.html) | Illustrated and printable, for the eventual owner ([plain text](docs/beginner-guide.md)) |
-| [New Pi setup](docs/new-pi-setup.md) | Blank memory card through to a working launch monitor |
-| [Quickstart](docs/quickstart.md) | Adding Easy-Connect to a Pi already running PiTrac |
-| [Operator guide](docs/operator-guide.md) | Additional Pis and computers, upgrades, and diagnosis |
-| [Architecture](docs/architecture.md) | How the pieces fit together, and why |
 
 ---
 
