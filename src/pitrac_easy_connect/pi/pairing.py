@@ -30,7 +30,7 @@ import time
 from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List
 
 from ..common import pairing_exchange as exchange
 from ..common.configstore import ConfigStore

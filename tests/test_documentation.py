@@ -307,3 +307,24 @@ def test_the_two_beginner_guides_cover_the_same_steps():
     only_md = {s for s in in_md if not any(s[:14] in h for h in in_html)}
     only_html = {s for s in in_html if not any(h[:14] in s for s in in_md for h in [s])}
     assert not only_md, "in the markdown guide but not the printable one: {}".format(only_md)
+
+
+def test_no_error_code_is_hardcoded_outside_the_catalogue():
+    """Two sources of truth for a code is one too many.
+
+    A literal like ``"PT-SIM-004"`` sitting in a module silently survives the
+    code being renumbered or removed in ``common/errors.py``, and then reports
+    something that no longer exists.
+    """
+
+    import re
+
+    root = Path(__file__).resolve().parent.parent / "src" / "pitrac_easy_connect"
+    offenders = []
+    for path in sorted(root.rglob("*.py")):
+        if path.name == "errors.py":
+            continue
+        for number, line in enumerate(path.read_text().splitlines(), 1):
+            if re.search(r'["\']PT-[A-Z]+-\d{3}["\']', line):
+                offenders.append("{}:{}".format(path.name, number))
+    assert not offenders, "use the named constant instead: {}".format(offenders)

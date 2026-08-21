@@ -11,7 +11,6 @@ fleet-wide default password, and the hotspot is never open.
 """
 
 import secrets
-import string
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict

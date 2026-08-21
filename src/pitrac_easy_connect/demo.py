@@ -16,7 +16,6 @@ import time
 import webbrowser
 from pathlib import Path
 
-from .common import discovery, pairing_exchange as exchange
 from .companion.service import CompanionService
 from .companion.web import CompanionHTTPServer
 from .mock_simulators import RunningMock

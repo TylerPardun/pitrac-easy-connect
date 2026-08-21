@@ -24,7 +24,6 @@ Three rules shape all of it:
 """
 
 import json
-import os
 import subprocess
 import sys
 import threading

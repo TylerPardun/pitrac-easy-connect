@@ -10,7 +10,7 @@ Losing a network connection is the failure that most needs testing and is the
 one you least want to reproduce by hand on real hardware.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
 # Wireless security as the setup page needs to reason about it, not as

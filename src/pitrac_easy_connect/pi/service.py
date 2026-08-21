@@ -11,14 +11,14 @@ nobody can reach cannot be told about any other problem it has.
 
 import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 from .. import __version__
 from ..common import discovery, link
 from ..common.configstore import ConfigStore
-from ..common.errors import EasyConnectError, PAIR_NOT_PAIRED
+from ..common.errors import EasyConnectError, LINK_LOST
 from ..common.identity import IdentityStore
 from ..common.states import State
 from ..common.updates import Updater
@@ -411,7 +411,7 @@ class PiService:
                     request_id,
                     False,
                     error_info={
-                        "code": "PT-LINK-002",
+                        "code": LINK_LOST.code,
                         "failed": str(exc),
                         "nextStep": "Try again. If it repeats, restart PiTrac.",
                         "stillSafe": "Nothing on the enclosure was changed.",

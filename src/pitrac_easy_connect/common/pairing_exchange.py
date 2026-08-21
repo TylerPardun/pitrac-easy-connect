@@ -31,7 +31,7 @@ package to install — it is built from `pow`, `hmac`, and `secrets` alone.
 import hmac
 import secrets
 from hashlib import sha256
-from typing import Dict, Tuple
+from typing import Tuple
 
 #: RFC 3526 group 14. A published, fixed, well-reviewed group; nothing here
 #: depends on it being secret.

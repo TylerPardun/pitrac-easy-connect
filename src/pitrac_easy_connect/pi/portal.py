@@ -23,7 +23,7 @@ import json
 import re
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict
 from urllib.parse import urlparse
 
 from ..common.errors import EasyConnectError

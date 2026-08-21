@@ -16,14 +16,12 @@ import argparse
 import json
 import signal
 import socket
-import sys
 import threading
 import time
 import webbrowser
 from pathlib import Path
 
 from . import __version__
-from .common import discovery
 from .companion.service import CompanionService
 from .companion.web import CompanionHTTPServer
 from .mock_simulators import RunningMock

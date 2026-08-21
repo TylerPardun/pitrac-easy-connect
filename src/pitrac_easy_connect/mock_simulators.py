@@ -142,13 +142,5 @@ def main() -> None:
     run_mock(Simulator(args.simulator), args.port)
 
 
-def gspro_main() -> None:
-    run_mock(Simulator.GSPRO)
-
-
-def e6_main() -> None:
-    run_mock(Simulator.E6)
-
-
 if __name__ == "__main__":
     main()

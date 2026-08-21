@@ -14,7 +14,6 @@ routinely contain spaces, quotes, and non-ASCII characters, and they arrive from
 a web form.
 """
 
-import json
 import os
 import re
 import shutil

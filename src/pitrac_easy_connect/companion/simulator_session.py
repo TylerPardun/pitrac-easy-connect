@@ -17,6 +17,7 @@ import threading
 import time
 from typing import Any, Callable, Dict, Optional
 
+from ..common.errors import SIM_BAD_RESPONSE, SIM_NOT_ARMED, SIM_NO_RESPONSE, SIM_REJECTED_SHOT
 from ..models import ShotData, Simulator
 from ..protocols import e6_ball_message, e6_club_message, gspro_message
 
@@ -204,20 +205,20 @@ class SimulatorSession:
         if self.simulator is Simulator.GSPRO:
             response = self.send_and_wait(gspro_message(shot))
             if response is None:
-                return {"accepted": False, "code": "PT-SIM-004", "response": None}
+                return {"accepted": False, "code": SIM_NO_RESPONSE.code, "response": None}
             if response.get("Code") == 200:
                 return {"accepted": True, "code": "", "response": response}
             if response.get("Code") in (201, 202):
                 # GSPro answers player-change and similar notices with 2xx codes
                 # that are not shot acknowledgements.
-                return {"accepted": False, "code": "PT-SIM-002", "response": response}
-            return {"accepted": False, "code": "PT-SIM-003", "response": response}
+                return {"accepted": False, "code": SIM_NOT_ARMED.code, "response": response}
+            return {"accepted": False, "code": SIM_REJECTED_SHOT.code, "response": response}
 
         handshake = self.send_and_wait({"Type": "Handshake"})
         if handshake is None:
-            return {"accepted": False, "code": "PT-SIM-004", "response": None}
+            return {"accepted": False, "code": SIM_NO_RESPONSE.code, "response": None}
         if handshake.get("Type") not in {"Handshake", "HandshakeAck"}:
-            return {"accepted": False, "code": "PT-SIM-005", "response": handshake}
+            return {"accepted": False, "code": SIM_BAD_RESPONSE.code, "response": handshake}
 
         self.send(e6_ball_message(shot))
         time.sleep(0.05)
@@ -225,12 +226,12 @@ class SimulatorSession:
         time.sleep(0.05)
         response = self.send_and_wait({"Type": "SendShot"})
         if response is None:
-            return {"accepted": False, "code": "PT-SIM-004", "response": None}
+            return {"accepted": False, "code": SIM_NO_RESPONSE.code, "response": None}
         if response.get("Type") in {"ShotComplete", "ShotAccepted"}:
             return {"accepted": True, "code": "", "response": response}
         if response.get("Type") == "Error":
-            return {"accepted": False, "code": "PT-SIM-003", "response": response}
-        return {"accepted": False, "code": "PT-SIM-005", "response": response}
+            return {"accepted": False, "code": SIM_REJECTED_SHOT.code, "response": response}
+        return {"accepted": False, "code": SIM_BAD_RESPONSE.code, "response": response}
 
     # --- Reporting --------------------------------------------------------
 

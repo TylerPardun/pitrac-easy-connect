@@ -8,7 +8,6 @@ These are also the formats PiTrac itself produces, so a message travelling
 through the relay is byte-for-byte what PiTrac sent. Nothing here rewrites it.
 """
 
-import math
 from typing import Any, Dict
 
 from .models import ShotData

@@ -30,7 +30,7 @@ import time
 from dataclasses import dataclass, field
 from hashlib import sha256
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 from .. import __version__
 from ..common.configstore import ConfigStore, atomic_write_bytes

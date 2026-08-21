@@ -139,9 +139,9 @@ PAGE = r"""<!doctype html>
   .helpbody li{margin:6px 0}
   .helpbody code{background:var(--line);padding:1px 5px;border-radius:4px;
     font-size:.82rem}
-  .codeframe{width:100%;height:420px;border:1px solid var(--line);border-radius:14px;
+  .askframe{width:100%;height:420px;border:1px solid var(--line);border-radius:14px;
     background:var(--bg);display:block}
-  .codefall{color:var(--faint);font-size:.82rem;line-height:1.45;margin:2px 0 8px}
+  .asknote{color:var(--faint);font-size:.82rem;line-height:1.45;margin:2px 0 8px}
   .device{display:flex;justify-content:space-between;align-items:center;gap:12px;
     padding:14px 16px;border:1px solid var(--line);border-radius:11px;background:var(--panel);
     color:var(--text);cursor:pointer;text-align:left;width:100%}
@@ -220,8 +220,8 @@ PAGE = r"""<!doctype html>
   <div class="pick hidden" id="pick"></div>
 
   <div class="pick hidden" id="askBox">
-    <iframe class="codeframe" id="askFrame" title="PiTrac setup page"></iframe>
-    <div class="codefall" id="askFall"></div>
+    <iframe class="askframe" id="askFrame" title="PiTrac setup page"></iframe>
+    <div class="asknote" id="askNote"></div>
     <button class="quiet" id="cancelPair">Back</button>
   </div>
 
@@ -607,7 +607,7 @@ function showAsk(enclosure){
   const address=enclosure && enclosure.address ? enclosure.address.split(":")[0] : "";
   const port=(enclosure && enclosure.portalPort) || 80;
   const base=address ? "http://"+address+(port===80?"":":"+port) : "";
-  const frame=$("askFrame"), fallback=$("askFall");
+  const frame=$("askFrame"), fallback=$("askNote");
   if(base){
     frame.style.display=""; frame.src=base;
     fallback.textContent="You can also do this at "+base+" from any device on this Wi-Fi.";

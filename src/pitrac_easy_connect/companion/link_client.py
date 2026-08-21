@@ -18,7 +18,7 @@ import time
 from typing import Any, Callable, Dict, Optional
 
 from ..common import link
-from ..common.errors import LINK_LOST, LINK_VERSION_MISMATCH, ErrorInfo, lookup
+from ..common.errors import LINK_LOST, LINK_VERSION_MISMATCH
 
 RECONNECT_SECONDS = 3.0
 CONNECT_TIMEOUT = 5.0
