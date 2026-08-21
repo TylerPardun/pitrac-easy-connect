@@ -1,17 +1,18 @@
 # PiTrac Easy-Connect
 
-**Wi-Fi provisioning, pairing, and shot relay for the PiTrac golf launch monitor — no terminal, no SSH, and no IP addresses.**
+**Connect your PiTrac enclosure to Wi-Fi and send shots to GSPro or E6 Connect from one desktop app.**
 
-PiTrac Easy-Connect is a two-part system: a background service on the Raspberry Pi inside the enclosure, and a desktop app for macOS and Windows. The service puts the enclosure on your home Wi-Fi, announces itself on the network, and forwards every measured shot; the app finds the enclosure by itself, pairs with it in one click, relays the shots into GSPro or E6 Connect, and shows PiTrac's own dashboard in a tab. Setup is a five-step wizard, and moving the enclosure to a different residence means picking a new network off a list — nothing about PiTrac's own configuration changes.
+PiTrac Easy-Connect makes a PiTrac launch monitor easier to set up and use. It includes a small program that runs on the Raspberry Pi inside the enclosure and a desktop app for macOS and Windows. The app connects the enclosure to your home Wi-Fi, finds it automatically, and sends each measured shot to GSPro or E6 Connect. It also includes PiTrac's dashboard, shot history, and a practice range.
+
+A five-step guide walks you through the first setup. If you move the enclosure to another home, you only need to choose the new Wi-Fi network. You do not need to reconfigure PiTrac.
 
 - **Download:** <https://tylerpardun.github.io/pitrac-easy-connect/>
 - **Version:** 0.2.0
-- **Dependencies:** none — Python standard library only
-- **Licence:** [MIT](LICENSE)
+- **License:** [MIT](LICENSE)
 
 ![The practice range](media/range.png)
 
-*Every shot flown from its measured launch numbers, with per-club dispersion underneath.*
+*Each shot follows a path based on its measured launch data, with the shot pattern for each club shown below.*
 
 ---
 
@@ -19,40 +20,32 @@ PiTrac Easy-Connect is a two-part system: a background service on the Raspberry 
 
 | Capability | Details |
 |---|---|
-| **Wi-Fi setup** | Country selection, live network scan, hidden networks, and a padlock beside anything needing a password; networks the Pi already knows are grouped first |
-| **Setup hotspot** | An enclosure that has never been on a network broadcasts its own at `10.42.0.1` with DHCP, so it can be configured from a phone or laptop, and restores the previous state afterwards |
-| **Cannot be locked out** | Every network change writes a journal and takes a NetworkManager checkpoint first; if the new network does not work within 150 seconds the old one is restored automatically, and pulling the power mid-change is survivable |
-| **Discovery** | UDP beacon plus a static Avahi mDNS record, so the app locates the enclosure without being told an address |
-| **Pairing** | One click. An ephemeral Diffie-Hellman exchange gives each computer its own secret, derived at both ends rather than transmitted; the enclosure accepts the first computer and refuses the rest until its owner opens a window |
-| **Shot relay** | GSPro and E6 Connect protocols passed through byte-for-byte in both directions; shots are never retried, since a duplicate scored shot is worse than a missing one |
-| **Guided first run** | Five steps, one action per screen, with the simulator choice and a "cannot find it" path built in; it does not appear again once setup is finished |
-| **Self-test** | Fifteen checks across cameras, calibration, detection models, temperature, power supply, storage, clock, and services; recomputed every time and never latched, so readiness is never claimed without proof |
-| **Shot history** | Every shot retained with its club, with average, best, worst, and spread per club, alongside PiTrac's captured still images |
-| **Practice range** | A 3D driving range in the app. Every shot is flown from the measured launch numbers and drawn as a tracer, with carry, total, apex and offline, and per-club dispersion. No GSPro, no E6, no account, no internet |
-| **Embedded dashboard** | PiTrac's own web dashboard in a tab, rather than a reimplementation of it |
-| **Backup and restore** | Checksummed archive of calibration and settings, with identity as an explicit opt-in for memory-card replacement |
-| **Ownership transfer** | Removes saved networks, paired computers, preferences, and the proprietary trained models along with the source clone and its git history |
-| **Updates** | Checked on launch; installed in place for source builds, pointed at the download otherwise |
-| **Native app** | A real window with its own Dock or taskbar icon and its own menu bar, not a browser in disguise |
+| **Wi-Fi setup** | Scan for nearby networks and connect the enclosure from the app. Known networks appear first and reconnect automatically when the enclosure is turned on |
+| **First-time connection** | Before the enclosure is connected to your home Wi-Fi, it creates a temporary network of its own. This lets you complete setup from a phone or laptop |
+| **Connection recovery** | If a new Wi-Fi connection fails, the enclosure returns to the previous network within two and a half minutes. It can also recover if power is lost during the change |
+| **Find and connect** | The app finds the enclosure automatically. One click links the app and enclosure, and other computers cannot connect unless the owner allows them |
+| **Simulator connection** | Sends each measured shot to GSPro or E6 Connect |
+| **Setup and system checks** | A five-step guide handles the first setup. The app also checks that the cameras, calibration, software, storage, and other essentials are ready, then explains anything that needs attention |
+| **Shot history and practice range** | Saves every shot with its club and captured images. The built-in range shows ball flight, distance, height, accuracy, and shot patterns without GSPro, E6 Connect, an account, or an internet connection |
+| **Dashboard and settings** | Includes PiTrac's dashboard and tools to back up, restore, update, or reset the enclosure for a new owner |
 
 ### What it looks like
 
 | | |
 |---|---|
 | ![Ready to play](media/home.png) | ![Shot history by club](media/shots.png) |
-| **One line, and one thing to do about it.** The app says whether you can play and, if not, what is stopping you. | **Every shot kept with its club**, with ball speed, spread, launch and spin, so you can see what each club is actually doing. |
+| **One line and one next step.** The app tells you whether the system is ready and, if not, what needs attention. | **Every shot stays with its club**, along with ball speed, launch, spin, and shot pattern, so you can see what each club is actually doing. |
 
 <img src="media/wifi.png" width="380" align="right" alt="Choosing a Wi-Fi network">
 
-**Wi-Fi without a terminal.** The enclosure makes its own network when it has
-never been on one, so it can be set up from a phone or a laptop. Networks it
-already knows are grouped first, anything needing a password has a padlock, and
-signal strength is a glance rather than a number.
+**Wi-Fi setup from the app.** If the enclosure has never joined a network, it
+creates a temporary one so you can set it up from a phone or laptop. Known
+networks appear first, a padlock marks those that require a password, and signal
+strength is easy to see.
 
-If the new network does not work, the enclosure puts the old one back on its own
-within two and a half minutes. Pulling the power halfway through is survivable
-too. Getting locked out of a machine you cannot SSH into is the one failure that
-has no recovery, so it is the one thing built most carefully.
+If the new network does not work, the enclosure restores the previous one within
+two and a half minutes. It can also recover if power is lost during the change.
+This prevents a failed network change from leaving you unable to reconnect.
 
 <br clear="right">
 
@@ -60,45 +53,43 @@ has no recovery, so it is the one thing built most carefully.
 
 ## How It Works
 
-`pitrac_lm` connects outward to a simulator rather than listening for one. Easy-Connect uses that: at install time it points PiTrac at `127.0.0.1` on the Pi itself and stands in for the simulator.
+PiTrac sends each measured shot to Easy-Connect inside the enclosure. The desktop app receives it over your home Wi-Fi and passes it to the simulator running on the same computer.
 
 ```
-pitrac_lm  →  Pi relay  ══ paired link ══>  Desktop app  →  GSPro / E6 Connect
-              127.0.0.1:9210 / :9248         (Wi-Fi)         127.0.0.1:921 / :2483
+PiTrac enclosure  →  Home Wi-Fi  →  Easy-Connect app  →  GSPro / E6 Connect
 ```
 
-1. **The relay address is loopback**, so it is correct in every house. Moving the enclosure never touches PiTrac's configuration.
-2. **The app dials out to the enclosure**, never the reverse. Windows needs no firewall rule, and the PC's IP address can change freely.
-3. **The link is authenticated per computer.** Each side proves it holds the shared secret by answering a fresh challenge, so a listener on the network learns nothing reusable.
+The app finds the enclosure automatically, limits access to computers you have approved, and does not require a Windows firewall rule. Changing homes or Wi-Fi networks does not change PiTrac's setup.
 
 ---
 
 ## Install on the Raspberry Pi
 
 PiTrac itself must already be installed and working — see
-[PiTracLM/PiTrac](https://github.com/PiTracLM/PiTrac). Then copy this repository
-to the Pi and run:
+[PiTracLM/PiTrac](https://github.com/PiTracLM/PiTrac). If you are starting with
+a blank memory card, follow the [new Pi setup guide](docs/new-pi-setup.md) first.
+It covers the entire process, from flashing the card to running the launch
+monitor.
+
+Once PiTrac is working, copy this repository to the Pi and run:
 
 ```bash
 sudo ./packaging/pi/install.sh
 ```
 
-The installer checks the hardware, installs and starts the service, points
-PiTrac's shot output at the relay, and prints the **owner card**.
+The installer checks the enclosure, installs and starts Easy-Connect, prepares
+PiTrac to send shots to the app, and prints the **owner card**.
 
-> **Photograph the owner card.** The setup Wi-Fi password on it is generated for
-> that Pi alone and is the only way back in if the enclosure cannot reach a
-> network.
+> **Photograph the owner card.** Its setup Wi-Fi password is generated for that
+> Pi alone, and it is the only way to reconnect if the enclosure cannot reach
+> a network.
 
-Re-run the same installer to upgrade. Identity, saved networks, paired
-computers, and camera calibration are all preserved.
-
-Starting from a blank memory card? `docs/new-pi-setup.md` covers flashing
-through to a working launch monitor.
+Re-run the same installer to upgrade. Your setup, saved Wi-Fi networks,
+connected computers, and camera calibration are all preserved.
 
 ---
 
-## Install the app on macOS or Windows
+## Install the desktop app
 
 Download the build for your computer from
 <https://tylerpardun.github.io/pitrac-easy-connect/>:
@@ -117,17 +108,17 @@ first time:
 | macOS | Right-click the app and choose **Open** rather than double-clicking |
 | Windows | Choose **More info**, then **Run anyway** |
 
-Open it and follow the five steps: find the enclosure, choose your simulator,
-open it, send one test shot, play. The wizard does not return after that;
-**Advanced → Run setup again** brings it back if needed.
+Open the app and follow five steps: find the enclosure, choose your simulator,
+open it, send a test shot, and play. The guide does not appear again after
+the first-time setup, but you can reopen it with **Advanced → Run setup again**.
 
 ---
 
-## Or build the app from source
+## Build the app from source (optional)
 
-Requires Python 3.9 or newer. PyInstaller bundles the interpreter of the
-machine it runs on, so a Windows executable must be built on Windows and a
-macOS app on macOS. There is no cross-compiling.
+Building from source requires Python 3.9 or newer. PyInstaller bundles the
+interpreter for the platform on which it runs, so Windows executables must be
+built on Windows and macOS apps on macOS. Cross-compiling is not supported.
 
 ```bash
 git clone https://github.com/TylerPardun/pitrac-easy-connect
@@ -135,10 +126,10 @@ cd pitrac-easy-connect
 ./packaging/build-app.sh
 ```
 
-The result is written to `dist/` — `PiTrac Easy-Connect.app` on macOS,
-`PiTrac Easy-Connect.exe` on Windows. PyInstaller and pywebview are installed
-automatically if missing; both are build-time only and are not runtime
-dependencies.
+The build is written to `dist/` as `PiTrac Easy-Connect.app` on macOS or
+`PiTrac Easy-Connect.exe` on Windows. If PyInstaller or pywebview is missing,
+the build script installs it automatically. Both are used only at build time,
+not at runtime.
 
 | Flag | Description |
 |---|---|
@@ -150,5 +141,5 @@ dependencies.
 
 ## Licensing
 
-**Easy-Connect is MIT.** PiTrac itself is GPL-2.0 and belongs to [PiTracLM](https://github.com/PiTracLM/PiTrac).
-PiTrac is the hard part, and it is not my work. Easy-Connect only handles the setup and connectivity around it, making it an easier user experience.
+**Easy-Connect is licensed under the MIT License.** PiTrac itself is GPL-2.0 and belongs to [PiTracLM](https://github.com/PiTracLM/PiTrac).
+PiTrac does the hard work, and it is not my project. Easy-Connect handles the setup and connectivity around it so the launch monitor is easier to install, move, and use.
