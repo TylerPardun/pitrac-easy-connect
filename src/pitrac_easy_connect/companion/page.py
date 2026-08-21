@@ -296,6 +296,10 @@ PAGE = r"""<!doctype html>
       <input type="file" id="bkFile" accept=".pitracbackup,.json,application/json" class="hidden">
       <div id="bkPreview"></div>
 
+      <h3>PiTrac's software</h3>
+      <button class="quiet" id="checkPiUpdate">Check PiTrac for updates</button>
+      <div id="piUpdate"></div>
+
       <h3>What PiTrac sent</h3>
       <button class="quiet" id="showRaw">Show the last shots as received</button>
       <div id="rawShots"></div>
@@ -716,6 +720,31 @@ function closeAsk(){
 }
 
 $("cancelPair").addEventListener("click",()=>{ closeAsk(); refresh(); });
+
+// The enclosure updates itself, driven from here, because nobody is going to
+// SSH into it. The app only asks; the Pi does the work and restarts itself.
+$("checkPiUpdate").addEventListener("click",e=>run(e.target, async()=>{
+  const host=$("piUpdate");
+  const status=await api("/api/enclosure",{command:"checkForUpdates"});
+  if(!status.available){
+    host.innerHTML='<div class="note good">PiTrac is up to date ('+
+      esc(status.installed||"")+').</div>';
+    return;
+  }
+  if(!status.canApply){
+    host.innerHTML='<div class="note">'+esc(status.detail)+'</div>';
+    return;
+  }
+  host.innerHTML='<div class="note">'+esc(status.detail)+'</div>'+
+    '<button class="quiet" id="doPiUpdate">Update PiTrac to '+esc(status.latest)+'</button>';
+  $("doPiUpdate").addEventListener("click",ev=>run(ev.target, async()=>{
+    host.innerHTML='<div class="note">Updating. PiTrac will restart and the '+
+      'connection will drop for a moment.</div>';
+    const done=await api("/api/enclosure",{command:"applyUpdate"});
+    host.innerHTML='<div class="note '+(done.applied?"good":"bad")+'">'+
+      esc(done.detail||"")+'</div>';
+  }));
+}));
 
 $("showRaw").addEventListener("click",e=>run(e.target, async()=>{
   const data = await api("/api/raw-shots");

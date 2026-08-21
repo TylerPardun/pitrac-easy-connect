@@ -24,6 +24,9 @@ Three rules shape all of it:
 """
 
 import json
+import os
+import shutil
+import tempfile
 import subprocess
 import sys
 import threading
@@ -36,9 +39,13 @@ from typing import Any, Callable, Dict, Optional
 
 from .versions import is_newer
 
-#: Where releases are published. Set once the repository exists.
-REPOSITORY = "PiTracLM-EasyConnect/pitrac-easy-connect"
-RELEASES_API = "https://api.github.com/repos/{}/releases/latest"
+#: Where releases are published. Overridable so the update path can be
+#: exercised against a stand-in rather than against GitHub.
+REPOSITORY = os.environ.get("PITRAC_UPDATE_REPOSITORY", "TylerPardun/pitrac-easy-connect")
+
+#: The base of the release API. Overridable for the same reason.
+API_BASE = os.environ.get("PITRAC_UPDATE_API", "https://api.github.com")
+RELEASES_API = API_BASE + "/repos/{}/releases/latest"
 RELEASES_PAGE = "https://github.com/{}/releases/latest"
 
 CHECK_TIMEOUT = 6.0
@@ -248,3 +255,185 @@ class Updater:
             "detail": "Updated. Restart PiTrac Easy-Connect to use the new version.",
             "needsRestart": True,
         }
+
+
+# --- Updating an installation that came from an archive --------------------
+#
+# The enclosure is installed by copying a directory into /usr/lib, so it has no
+# git checkout to pull and cannot replace itself the way a source tree can.
+# What it can do is fetch the release archive, unpack it somewhere else,
+# satisfy itself that what arrived is real, and swap it into place.
+#
+# The swap is the part that has to be right. A half-written application
+# directory on a machine with no keyboard and no screen is not a bug report,
+# it is a brick, so the new copy is assembled completely before anything is
+# moved, the old one is kept until the new one is in place, and a failure at
+# any point leaves the running version untouched.
+
+#: The file in a release that holds the application, as build-app.sh names it.
+ARCHIVE_SUFFIX = ".pyz"
+
+#: A release archive far outside this range is not one of ours.
+MIN_ARCHIVE_BYTES = 50 * 1024
+MAX_ARCHIVE_BYTES = 80 * 1024 * 1024
+
+
+class ArchiveUpdater:
+    """Replaces an installed copy from a published release archive."""
+
+    def __init__(
+        self,
+        installed: str,
+        app_dir: Path,
+        repository: str = REPOSITORY,
+        restart: Optional[Callable[[], None]] = None,
+        fetch: Optional[Callable[[str], bytes]] = None,
+        api_base: str = None,
+    ):
+        self.installed = installed
+        self.app_dir = Path(app_dir)
+        self.repository = repository
+        self._restart = restart
+        self._fetch = fetch or _download
+        self._api = (api_base or API_BASE).rstrip("/")
+        self._lock = threading.RLock()
+
+    def check(self) -> UpdateStatus:
+        try:
+            release = self._release()
+        except Exception:
+            return UpdateStatus(self.installed, PACKAGED, detail="Could not check for updates.")
+
+        tag = str(release.get("tag_name") or "")
+        if not tag or not is_newer(tag, self.installed):
+            return UpdateStatus(self.installed, PACKAGED, latest=tag or self.installed,
+                                detail="Up to date.")
+        if not self._archive_url(release):
+            return UpdateStatus(
+                self.installed, PACKAGED, latest=tag, available=True, can_apply=False,
+                detail="Version {} is available, but it has no archive to install.".format(tag),
+                download_url=str(release.get("html_url") or ""),
+            )
+        return UpdateStatus(
+            self.installed, PACKAGED, latest=tag, available=True, can_apply=True,
+            detail="Version {} is ready to install.".format(tag),
+            download_url=str(release.get("html_url") or ""),
+        )
+
+    def apply(self) -> Dict[str, Any]:
+        with self._lock:
+            try:
+                release = self._release()
+            except Exception as exc:
+                return {"applied": False, "detail": "Could not reach the update service: {}".format(exc)}
+
+            tag = str(release.get("tag_name") or "")
+            if not tag or not is_newer(tag, self.installed):
+                return {"applied": False, "detail": "Already up to date."}
+
+            url = self._archive_url(release)
+            if not url:
+                return {"applied": False, "detail": "That release has nothing to install."}
+
+            try:
+                blob = self._fetch(url)
+            except Exception as exc:
+                return {"applied": False, "detail": "The download did not finish: {}".format(exc)}
+
+            if not MIN_ARCHIVE_BYTES <= len(blob) <= MAX_ARCHIVE_BYTES:
+                return {"applied": False,
+                        "detail": "The downloaded file is not the right size to be an update."}
+
+            try:
+                staged = self._unpack(blob)
+            except Exception as exc:
+                return {"applied": False, "detail": "The update could not be unpacked: {}".format(exc)}
+
+            try:
+                self._swap(staged)
+            except Exception as exc:
+                shutil.rmtree(staged.parent, ignore_errors=True)
+                return {"applied": False, "detail": "The update could not be installed: {}".format(exc)}
+
+            if self._restart:
+                try:
+                    self._restart()
+                except Exception:
+                    pass
+            return {"applied": True, "version": tag,
+                    "detail": "Updated to {}. PiTrac is restarting.".format(tag)}
+
+    # --- The pieces ------------------------------------------------------
+
+    def _release(self) -> Dict[str, Any]:
+        request = urllib.request.Request(
+            "{}/repos/{}/releases/latest".format(self._api, self.repository),
+            headers={"Accept": "application/vnd.github+json", "User-Agent": "PiTrac"},
+        )
+        with urllib.request.urlopen(request, timeout=CHECK_TIMEOUT) as response:
+            return json.loads(response.read().decode("utf-8"))
+
+    @staticmethod
+    def _archive_url(release: Dict[str, Any]) -> str:
+        for asset in release.get("assets") or []:
+            name = str(asset.get("name") or "")
+            if name.endswith(ARCHIVE_SUFFIX):
+                return str(asset.get("browser_download_url") or "")
+        return ""
+
+    def _unpack(self, blob: bytes) -> Path:
+        """Unpack into a staging directory, and check it looks like the app.
+
+        A zipapp is a zip file, so this is also where a truncated download or
+        something that is not an update at all gets caught, before anything on
+        the machine has been touched.
+        """
+
+        import zipfile
+
+        staging = Path(tempfile.mkdtemp(prefix="pitrac-update-"))
+        archive = staging / "download.pyz"
+        archive.write_bytes(blob)
+
+        unpacked = staging / "new"
+        with zipfile.ZipFile(archive) as zipped:
+            bad = zipped.testzip()
+            if bad:
+                raise ValueError("the archive is damaged at {}".format(bad))
+            for member in zipped.namelist():
+                target = (unpacked / member).resolve()
+                if not str(target).startswith(str(unpacked.resolve())):
+                    raise ValueError("the archive tried to write outside itself")
+            zipped.extractall(unpacked)
+
+        package = unpacked / "pitrac_easy_connect"
+        if not (package / "__init__.py").exists():
+            raise ValueError("the archive does not contain the application")
+        if not (package / "pi" / "service.py").exists():
+            raise ValueError("the archive is missing the enclosure service")
+        return package
+
+    def _swap(self, staged: Path) -> None:
+        """Put the new copy in place, keeping the old one until it is."""
+
+        target = self.app_dir / "pitrac_easy_connect"
+        previous = self.app_dir / "pitrac_easy_connect.previous"
+
+        shutil.rmtree(previous, ignore_errors=True)
+        if target.exists():
+            os.replace(target, previous)
+        try:
+            shutil.move(str(staged), str(target))
+        except Exception:
+            # Put back what was working before giving up.
+            if previous.exists() and not target.exists():
+                os.replace(previous, target)
+            raise
+        shutil.rmtree(previous, ignore_errors=True)
+        shutil.rmtree(staged.parent.parent, ignore_errors=True)
+
+
+def _download(url: str, timeout: float = 120.0) -> bytes:
+    request = urllib.request.Request(url, headers={"User-Agent": "PiTrac"})
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        return response.read(MAX_ARCHIVE_BYTES + 1)

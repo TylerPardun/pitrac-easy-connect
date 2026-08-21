@@ -21,7 +21,8 @@ from ..common.configstore import ConfigStore
 from ..common.errors import EasyConnectError, LINK_LOST
 from ..common.identity import IdentityStore
 from ..common.states import State
-from ..common.updates import Updater
+from ..common import updates as updates_module
+from ..common.updates import ArchiveUpdater, Updater
 from ..models import Simulator
 from .backend import BackendError, PiBackend
 from .backup import BackupManager
@@ -119,7 +120,16 @@ class PiService:
             self.paths.backups,
             version=version,
         )
+        # An enclosure installed by install.sh has no git checkout, so the
+        # source updater has nothing to pull. It fetches the release archive
+        # and swaps it in instead. Anywhere else -- a development checkout, a
+        # test -- the ordinary updater still applies.
         self.updates = Updater(version)
+        self.enclosure_updates = ArchiveUpdater(
+            installed=version,
+            app_dir=Path(__file__).resolve().parent.parent.parent,
+            restart=self._restart_service,
+        )
         self.discovery = discovery.DiscoveryResponder(self.describe, port=discovery_port)
 
         self._lock = threading.RLock()
@@ -454,8 +464,8 @@ class PiService:
             "reboot": lambda a: self._reboot(),
             "shutdown": lambda a: self._shutdown(),
             "ownerCard": lambda a: {"text": self.identity.owner_card()},
-            "checkForUpdates": lambda a: self.updates.check(force=True).as_dict(),
-            "applyUpdate": lambda a: self.updates.apply(),
+            "checkForUpdates": lambda a: self._check_updates(),
+            "applyUpdate": lambda a: self._apply_update(),
             "createBackup": lambda a: self._create_backup(a),
             "inspectBackup": lambda a: self.backups.inspect(str(a.get("file", ""))).as_dict(),
             "restoreBackup": lambda a: self._restore_backup(a),
@@ -614,6 +624,33 @@ class PiService:
         self._publish_mdns()
         self.refresh()
         return result.as_dict()
+
+    def _updater(self):
+        """Whichever updater suits how this copy was installed."""
+
+        return (
+            self.updates if self.updates.kind() == updates_module.SOURCE
+            else self.enclosure_updates
+        )
+
+    def _check_updates(self) -> Dict[str, Any]:
+        updater = self._updater()
+        if updater is self.updates:
+            return self.updates.check(force=True).as_dict()
+        return updater.check().as_dict()
+
+    def _apply_update(self) -> Dict[str, Any]:
+        return self._updater().apply()
+
+    def _restart_service(self) -> None:
+        """Restart Easy-Connect itself, so the new code is the running code.
+
+        Deliberately not a plain exit: systemd brings the unit back, and if
+        this is not running under systemd there is nothing sensible to do
+        anyway, so the caller is told the files are in place either way.
+        """
+
+        self.backend.run(["systemctl", "restart", "pitrac-easy-connect"], timeout=20)
 
     def _restart_pitrac(self) -> Dict[str, Any]:
         from .pitrac import PITRAC_WEB_SERVICE
