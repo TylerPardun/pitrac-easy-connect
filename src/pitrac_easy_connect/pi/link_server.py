@@ -12,6 +12,7 @@ import time
 from typing import Any, Callable, Dict, Optional
 
 from ..common import link
+from ..common.link import claim_port
 from ..common.errors import (
     LINK_BUSY,
     LINK_VERSION_MISMATCH,
@@ -57,7 +58,7 @@ class CompanionLinkServer:
 
     def start(self) -> int:
         server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        claim_port(server)
         server.bind((self.host, self.port))
         server.listen(4)
         server.settimeout(ACCEPT_POLL_SECONDS)

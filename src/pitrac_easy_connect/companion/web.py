@@ -21,7 +21,16 @@ MAX_RESTORE_BYTES = 9 * 1024 * 1024
 
 class CompanionHTTPServer(ThreadingHTTPServer):
     daemon_threads = True
-    allow_reuse_address = True
+    # Not allow_reuse_address: on Windows that lets a second copy of the app
+    # take the port from the copy already running, so opening it twice would
+    # break the first one silently. See common.link.claim_port.
+    allow_reuse_address = False
+
+    def server_bind(self):
+        from ..common.link import claim_port
+
+        claim_port(self.socket)
+        super().server_bind()
 
     def __init__(self, address, service: CompanionService):
         self.service = service

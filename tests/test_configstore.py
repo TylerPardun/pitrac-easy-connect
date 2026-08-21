@@ -72,6 +72,12 @@ def test_migrations_run_in_order_up_to_the_current_version(tmp_path):
     assert store.get("simulatorChosenBy") == "migration"
 
 
+@pytest.mark.skipif(
+    os.name == "nt",
+    reason="Windows has no POSIX mode bits. There, a file written under the "
+    "user's own profile is protected by the profile's ACL instead, and the "
+    "standard library cannot set an ACL, so there is nothing to assert.",
+)
 def test_secret_documents_are_not_world_readable(tmp_path):
     path = tmp_path / "pairings.json"
     ConfigStore(path, {"pairings": []}, secret=True).set("pairings", ["a"])

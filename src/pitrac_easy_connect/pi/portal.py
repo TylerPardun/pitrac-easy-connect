@@ -51,7 +51,15 @@ _ALLOWED_HOST = re.compile(
 
 class PortalServer(ThreadingHTTPServer):
     daemon_threads = True
-    allow_reuse_address = True
+    # Not allow_reuse_address: on Windows that lets a second copy take the port
+    # from the one already serving. See common.link.claim_port.
+    allow_reuse_address = False
+
+    def server_bind(self):
+        from ..common.link import claim_port
+
+        claim_port(self.socket)
+        super().server_bind()
 
     def __init__(self, address, service, extra_hosts=(), downloads_dir=None):
         self.service = service

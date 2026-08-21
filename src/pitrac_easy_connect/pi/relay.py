@@ -23,6 +23,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
 
 from ..common import link
+from ..common.link import claim_port
 from ..models import Simulator
 
 #: Where ``pitrac_lm`` is told to find its simulator. Above 1024 so the service
@@ -153,7 +154,7 @@ class ShotRelay:
         bound: Dict[Simulator, int] = {}
         for simulator, port in self.ports.items():
             server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            claim_port(server)
             server.bind((self.host, port))
             server.listen(4)
             server.settimeout(ACCEPT_POLL_SECONDS)

@@ -258,3 +258,29 @@ def serve_forever(
             continue
         except (LinkClosed, LinkError):
             return
+
+
+def claim_port(sock) -> None:
+    """Take a listening port in a way that means the same on every platform.
+
+    ``SO_REUSEADDR`` does not mean the same thing everywhere. On Linux and macOS
+    it lets a new listener take a port left in ``TIME_WAIT`` by a socket that has
+    closed — which is what a service wants when it restarts. On Windows it means
+    something else entirely: a *second* listener can bind a port another process
+    is still using, and it silently takes over the connections.
+
+    That difference matters here. A second copy of the app, or of the enclosure
+    service, would quietly steal the port from the copy already running instead
+    of failing to start — and the first copy would go on reporting that it was
+    listening while nothing reached it.
+
+    Windows spells the behaviour we actually want ``SO_EXCLUSIVEADDRUSE``.
+    """
+
+    import socket
+
+    exclusive = getattr(socket, "SO_EXCLUSIVEADDRUSE", None)
+    if exclusive is not None:  # Windows
+        sock.setsockopt(socket.SOL_SOCKET, exclusive, 1)
+    else:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)

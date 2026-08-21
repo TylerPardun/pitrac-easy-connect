@@ -338,3 +338,38 @@ def test_a_responder_that_raises_does_not_die():
         assert [item.device_id for item in found] == ["CCCC3333"]
     finally:
         responder.stop()
+
+
+def test_a_second_listener_cannot_take_a_port_that_is_already_held():
+    """``SO_REUSEADDR`` means different things on different systems.
+
+    On Linux and macOS it only lets a restarting service reclaim a port left in
+    TIME_WAIT. On Windows it lets a *second* process bind a port another one is
+    still serving, and quietly take its connections — so a second copy of the
+    app would steal the port from the copy already running, and the first would
+    go on reporting that it was listening while nothing reached it.
+
+    ``claim_port`` asks for the behaviour we actually depend on, whichever name
+    the platform gives it.
+    """
+
+    import socket
+
+    from pitrac_easy_connect.common.link import claim_port
+
+    first = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        claim_port(first)
+        first.bind(("127.0.0.1", 0))
+        first.listen(1)
+        port = first.getsockname()[1]
+
+        second = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            claim_port(second)
+            with pytest.raises(OSError):
+                second.bind(("127.0.0.1", port))
+        finally:
+            second.close()
+    finally:
+        first.close()
