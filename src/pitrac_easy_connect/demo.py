@@ -28,7 +28,7 @@ from .pi.pitrac import PitracInstallation
 
 
 def main(argv=None) -> int:
-    parser = argparse.ArgumentParser(description="Run the complete Easy Connect demo locally")
+    parser = argparse.ArgumentParser(description="Run the complete Easy-Connect demo locally")
     parser.add_argument(
         "simulator", choices=[item.value for item in Simulator], nargs="?", default="gspro"
     )
@@ -59,7 +59,7 @@ def main(argv=None) -> int:
         encoding="utf-8",
     )
 
-    print("PiTrac Easy Connect demo")
+    print("PiTrac Easy-Connect demo")
     print("  Fake {} and a simulated Raspberry Pi.".format(simulator.label))
     print("  State: {}".format(state_dir))
 
@@ -129,9 +129,8 @@ def main(argv=None) -> int:
 
 
 def _auto_pair(service: PiService, companion: CompanionService, portal_port: int) -> None:
-    """Do what the user would do: read the code, then type it into the Companion."""
+    """Do what the user would do: pick the enclosure out of the list."""
 
-    code = service.pairings.code_for_display().code
     for _attempt in range(20):
         found = companion.search(timeout=1.0)
         if any(item["deviceId"] == service.identity.device_id for item in found):
@@ -142,14 +141,14 @@ def _auto_pair(service: PiService, companion: CompanionService, portal_port: int
         return
 
     try:
-        companion.pair(service.identity.device_id, code, portal_port=portal_port)
+        companion.pair(service.identity.device_id, portal_port=portal_port)
     except Exception as exc:
         print("  Pairing failed: {}".format(exc))
         return
 
     for _attempt in range(50):
         if companion.status()["link"]["connected"]:
-            print("  Paired and connected (code was {}).".format(code))
+            print("  Paired and connected.")
             return
         time.sleep(0.1)
     print("  Paired, but the link has not come up yet.")

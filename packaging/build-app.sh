@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Build the PiTrac app for whichever platform this runs on.
+# Build the PiTrac Easy-Connect app for whichever platform this runs on.
 #
 #   ./packaging/build-app.sh          native app (.app on macOS, .exe on Windows)
 #   ./packaging/build-app.sh --pyz    the portable single file instead
@@ -44,7 +44,7 @@ from pitrac_easy_connect.companion.app import main
 
 raise SystemExit(main())
 PY
-    PYZ="$OUT/PiTrac-$VERSION.pyz"
+    PYZ="$OUT/PiTrac-Easy-Connect-$VERSION.pyz"
     python3 -m zipapp "$STAGE" -o "$PYZ" -p "/usr/bin/env python3"
     chmod +x "$PYZ"
     say "$PYZ ($(du -h "$PYZ" | cut -f1)) — needs Python 3.9+ on the machine"
@@ -55,6 +55,14 @@ if [ "$WANT_APP" = yes ]; then
     if ! python3 -c "import PyInstaller" 2>/dev/null; then
         say "Installing PyInstaller (build-time only; not shipped)"
         python3 -m pip install --quiet --disable-pip-version-check pyinstaller
+    fi
+
+    # pywebview gives the app a real window with its own icon in the Dock or
+    # taskbar. It is bundled into the build, so nothing is needed on the
+    # machine that runs it.
+    if ! python3 -c "import webview" 2>/dev/null; then
+        say "Installing pywebview (bundled into the app)"
+        python3 -m pip install --quiet --disable-pip-version-check pywebview
     fi
 
     if [ ! -f packaging/icon/PiTrac.icns ] || [ ! -f packaging/icon/PiTrac.ico ]; then
@@ -71,13 +79,13 @@ if [ "$WANT_APP" = yes ]; then
 
     case "$(uname -s 2>/dev/null || echo Windows)" in
         Darwin)
-            say "$OUT/PiTrac.app ($(du -sh "$OUT/PiTrac.app" | cut -f1))"
+            say "$OUT/PiTrac Easy-Connect.app ($(du -sh "$OUT/PiTrac Easy-Connect.app" | cut -f1))"
             printf '\n  \033[1mUnsigned.\033[0m macOS will refuse to open it after download until it is\n'
             printf '  signed and notarised. Until then: right-click the app and choose Open,\n'
-            printf '  or run  xattr -d com.apple.quarantine "%s/PiTrac.app"\n' "$OUT"
+            printf '  or run  xattr -d com.apple.quarantine "%s/PiTrac Easy-Connect.app"\n' "$OUT"
             ;;
         MINGW*|MSYS*|CYGWIN*|Windows*)
-            say "$OUT/PiTrac.exe"
+            say "$OUT/PiTrac Easy-Connect.exe"
             printf '\n  \033[1mUnsigned.\033[0m SmartScreen will warn until it is code-signed.\n'
             printf '  Users click More info, then Run anyway.\n'
             ;;

@@ -389,3 +389,46 @@ def test_rejoining_the_network_that_already_works_never_deletes_it(tmp_path):
 
     assert backend.profile_name_for("Ferndale") in backend.saved_profiles()
     assert backend.active_connection().ssid == "Ferndale"
+
+
+def test_the_scan_marks_networks_the_enclosure_already_knows(tmp_path):
+    """Someone changing network has to tell theirs from the neighbours'."""
+
+    backend, provisioner, _ = build(tmp_path=tmp_path)
+    provisioner.join("Ferndale", "GoodPassword1")
+    provisioner.confirm()
+
+    listed = {network.ssid: network for network in provisioner.scan()}
+    assert listed["Ferndale"].known, "the saved network should be marked"
+    assert listed["Ferndale"].in_use
+    assert not listed["Neighbour-2G"].known
+
+
+def test_a_network_saved_by_netplan_counts_as_known(tmp_path):
+    """The Pi's original network belongs to netplan, not to Easy Connect.
+
+    Easy Connect must never change those profiles, but leaving them out of the
+    list means the network the Pi came on looks like a stranger's.
+    """
+
+    backend = home_network_pi(country="US")
+    backend._preexisting_ssids = ["Ferndale"]
+    _backend, provisioner, _clock = build(backend, tmp_path=tmp_path)
+
+    listed = {network.ssid: network for network in provisioner.scan()}
+    assert listed["Ferndale"].known
+    assert backend.saved_profiles() == [], "and Easy Connect still owns nothing"
+
+
+def test_a_backend_that_cannot_list_known_networks_still_returns_the_networks(tmp_path):
+    """Losing the marking is a nuisance; losing the list strands the user."""
+
+    backend, provisioner, _ = build(tmp_path=tmp_path)
+
+    def explode():
+        raise RuntimeError("nmcli is having a bad day")
+
+    backend.known_ssids = explode
+    listed = provisioner.scan()
+    assert listed, "the scan should survive a failure to list saved profiles"
+    assert not any(network.known for network in listed)

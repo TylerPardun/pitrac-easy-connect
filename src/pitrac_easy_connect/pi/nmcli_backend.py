@@ -260,6 +260,27 @@ class NmcliBackend(PiBackend):
             if name.startswith(PROFILE_PREFIX) and name != HOTSPOT_PROFILE
         ]
 
+    def known_ssids(self) -> List[str]:
+        result = self._nmcli("-t", "-f", "NAME,TYPE", "con", "show", timeout=15)
+        found: List[str] = []
+        for line in result.stdout.splitlines():
+            fields = split_terse(line)
+            if len(fields) < 2 or fields[1] != "802-11-wireless":
+                continue
+            name = fields[0]
+            if name == HOTSPOT_PROFILE:
+                continue
+            try:
+                ssid = self._nmcli(
+                    "-g", "802-11-wireless.ssid", "con", "show", name, timeout=10
+                ).stdout.strip()
+            except Exception:
+                # One unreadable profile must not cost the whole list.
+                continue
+            if ssid:
+                found.append(ssid)
+        return found
+
     def profile_name_for(self, ssid: str) -> str:
         # Keep the name recognisable but safe as a filename and a CLI argument.
         slug = re.sub(r"[^A-Za-z0-9._-]", "_", ssid)[:48] or "network"
@@ -322,7 +343,7 @@ class NmcliBackend(PiBackend):
         if not profile.startswith(PROFILE_PREFIX):
             # Refusing here is the guard that keeps a "reset network" action
             # from deleting the netplan profile the image shipped with.
-            raise BackendError("Easy Connect only removes profiles it created")
+            raise BackendError("Easy-Connect only removes profiles it created")
         self._nmcli("con", "delete", profile, timeout=15)
 
     def start_hotspot(self, ssid: str, password: str, timeout: float = 30.0) -> ActiveConnection:

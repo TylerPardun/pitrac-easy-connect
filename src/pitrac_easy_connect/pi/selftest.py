@@ -324,7 +324,7 @@ class SelfTest:
                 "pitracTarget",
                 "Shot delivery",
                 FAIL,
-                "Easy Connect is not listening for shots",
+                "Easy-Connect is not listening for shots",
                 CFG_WRITE_FAILED,
                 critical=True,
             )
@@ -333,12 +333,12 @@ class SelfTest:
                 "pitracTarget",
                 "Shot delivery",
                 FAIL,
-                "PiTrac is not pointed at Easy Connect",
+                "PiTrac is not pointed at Easy-Connect",
                 CFG_WRITE_FAILED,
                 critical=True,
             )
         return CheckResult(
-            "pitracTarget", "Shot delivery", PASS, "PiTrac is sending shots to Easy Connect"
+            "pitracTarget", "Shot delivery", PASS, "PiTrac is sending shots to Easy-Connect"
         )
 
     # --- The path to the simulator ---------------------------------------
@@ -362,7 +362,7 @@ class SelfTest:
 
     def _companion(self) -> CheckResult:
         if self.companion_connected():
-            return CheckResult("companion", "Your computer", PASS, "Connected to Easy Connect")
+            return CheckResult("companion", "Your computer", PASS, "Connected to Easy-Connect")
         from ..common.errors import LINK_NO_COMPUTER
 
         return CheckResult(

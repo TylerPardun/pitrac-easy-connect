@@ -1,15 +1,23 @@
+# Build output
+dist/
+build/
+*.spec.bak
+
+# Python
 __pycache__/
 *.py[cod]
 .pytest_cache/
-.venv/
-build/
-dist/
-*.spec.bak
+*.egg-info/
+
+# Generated icons — made by packaging/icon/make-icons.py at build time
+packaging/icon/PiTrac.icns
+packaging/icon/PiTrac.ico
+packaging/icon/PiTrac.iconset/
+
+# Private: correspondence and negotiating position, not for the public repo
+docs/licensing/
+
+# macOS
 .DS_Store
-
-
-# Built Companion artifacts
-dist/
-
-# macOS folder metadata
-.DS_Store
+._*
+*.tgz

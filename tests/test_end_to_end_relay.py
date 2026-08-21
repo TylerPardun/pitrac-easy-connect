@@ -83,8 +83,7 @@ class Chain:
         return {"accepted": True, "message": "sent to the simulator"}
 
     def pair_companion(self, wait=True):
-        code = self.pairings.issue_code().code
-        self.pairing = self.pairings.redeem(code, "Sim Room PC")
+        self.pairing = self.pairings.create_pairing("Sim Room PC")
         self.client = CompanionLinkClient(
             "127.0.0.1",
             self.link_port,
@@ -280,7 +279,7 @@ def test_an_unpaired_computer_is_refused(tmp_path):
 def test_a_wrong_secret_is_refused(tmp_path):
     chain = Chain(tmp_path, pair=False)
     try:
-        pairing = chain.pairings.redeem(chain.pairings.issue_code().code, "Real PC")
+        pairing = chain.pairings.create_pairing("Real PC")
         sock = socket.create_connection(("127.0.0.1", chain.link_port), timeout=5)
         stream = link.FrameStream(sock)
         hello = stream.receive(timeout=5)
@@ -316,7 +315,7 @@ def test_the_enclosure_proves_itself_to_the_computer(chain):
 
 
 def test_a_second_computer_is_told_the_enclosure_is_busy(chain):
-    second = chain.pairings.redeem(chain.pairings.issue_code().code, "Kitchen laptop")
+    second = chain.pairings.create_pairing("Kitchen laptop")
     sock = socket.create_connection(("127.0.0.1", chain.link_port), timeout=5)
     stream = link.FrameStream(sock)
     hello = stream.receive(timeout=5)
@@ -332,7 +331,7 @@ def test_a_second_computer_is_told_the_enclosure_is_busy(chain):
 def test_a_protocol_mismatch_names_the_side_that_must_be_updated(tmp_path):
     chain = Chain(tmp_path, pair=False)
     try:
-        pairing = chain.pairings.redeem(chain.pairings.issue_code().code, "Old PC")
+        pairing = chain.pairings.create_pairing("Old PC")
         sock = socket.create_connection(("127.0.0.1", chain.link_port), timeout=5)
         stream = link.FrameStream(sock)
         hello = stream.receive(timeout=5)

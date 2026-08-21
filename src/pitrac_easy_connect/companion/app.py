@@ -14,7 +14,7 @@ from .web import CompanionHTTPServer
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="pitrac-companion", description="PiTrac Easy Connect for your simulator PC"
+        prog="pitrac-companion", description="PiTrac Easy-Connect for your simulator PC"
     )
     parser.add_argument("--port", type=int, default=8787, help="local interface port")
     parser.add_argument(
@@ -52,30 +52,57 @@ def main(argv=None) -> int:
     # reachable from the residence network.
     server = CompanionHTTPServer(("127.0.0.1", args.port), service)
     url = "http://127.0.0.1:{}".format(server.server_port)
-    print("PiTrac Easy Connect {} is running at {}".format(__version__, url))
-    print("Press Control-C to stop it.")
+    print("PiTrac Easy-Connect {} is running at {}".format(__version__, url))
 
     if service.store.get("activeDeviceId"):
         # Reconnect to the enclosure this PC used last, without being asked.
         threading.Thread(target=_reconnect, args=(service,), daemon=True).start()
-    if not args.no_browser and not args.hidden:
-        if args.window:
-            from .window import open_window
 
-            threading.Timer(0.4, lambda: open_window(url)).start()
-        else:
-            threading.Timer(0.4, lambda: webbrowser.open(url)).start()
-    if args.hidden:
-        print("Running in the background. Open {} to see it.".format(url))
-
+    wants_window = args.window and not args.no_browser and not args.hidden
     try:
+        if wants_window:
+            from .window import native_available, open_window, run_native
+
+            # A native window has to own the main thread on both macOS and
+            # Windows, so the web server moves to a background thread.
+            threading.Thread(target=server.serve_forever, daemon=True).start()
+
+            if native_available() and run_native(url):
+                return 0  # the user closed the window
+
+            # No native backend on this machine: fall back to an
+            # application-mode browser and wait as before.
+            print("Native window unavailable; opening a browser window instead.")
+            open_window(url)
+            _wait_for_stop(server)
+            return 0
+
+        print("Press Control-C to stop it.")
+        if not args.no_browser and not args.hidden:
+            threading.Timer(0.4, lambda: webbrowser.open(url)).start()
+        if args.hidden:
+            print("Running in the background. Open {} to see it.".format(url))
         server.serve_forever()
     except KeyboardInterrupt:
         pass
     finally:
+        try:
+            server.shutdown()
+        except Exception:
+            pass
         server.server_close()
         service.close()
     return 0
+
+
+def _wait_for_stop(server) -> None:
+    """Keep running until the page asks the program to stop, or Control-C."""
+
+    try:
+        while not server.stopped.wait(0.5):
+            pass
+    except KeyboardInterrupt:
+        pass
 
 
 def _reconnect(service: CompanionService) -> None:

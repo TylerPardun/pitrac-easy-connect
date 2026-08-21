@@ -54,6 +54,11 @@ STYLE = r"""
   .net:hover{border-color:#3b4a42}
   .net[disabled]{opacity:.4;cursor:not-allowed}
   .net small{display:block;color:var(--faint);margin-top:3px;font-size:.8rem}
+  .netgroup{margin:14px 0 3px;font-size:.7rem;font-weight:800;letter-spacing:.13em;
+    text-transform:uppercase;color:var(--faint)}
+  .netgroup:first-child{margin-top:0}
+  .meta{display:flex;align-items:center;gap:8px;flex:none}
+  .lock{width:11px;height:14px;flex:none;color:var(--muted)}
   .bars{display:flex;gap:2px;align-items:flex-end;height:15px;flex:none}
   .bars i{width:3px;border-radius:1px;background:#33403a}
   .bars i.on{background:var(--green)}
@@ -62,8 +67,6 @@ STYLE = r"""
     border:1px solid var(--line);background:var(--panel);color:var(--text);font:inherit}
   .reveal{display:flex;gap:9px;align-items:center;margin-top:11px;color:var(--muted);font-size:.86rem}
   .reveal input{width:auto}
-  .code{font-size:2.6rem;font-weight:800;letter-spacing:.22em;text-align:center;margin:18px 0 4px;
-    font-variant-numeric:tabular-nums}
   .err{margin-top:20px;padding:14px 16px;border-radius:11px;border:1px solid rgba(255,125,115,.35);
     background:rgba(255,125,115,.06)}
   .err h2{margin:0 0 6px;font-size:.95rem;font-weight:650;color:var(--red)}
@@ -79,6 +82,12 @@ STYLE = r"""
   details.adv[open] > summary::before{transform:rotate(45deg)}
   details.adv > summary:hover{color:var(--muted)}
   .advbody{margin-top:18px;display:flex;flex-direction:column;gap:9px}
+  .pcs{display:flex;flex-direction:column;gap:6px}
+  .pc{display:flex;justify-content:space-between;align-items:center;gap:12px;
+    padding:11px 14px;border-radius:11px;border:1px solid var(--line-soft);
+    background:var(--panel);font-size:.88rem}
+  .pc small{display:block;color:var(--faint);font-size:.76rem;margin-top:2px}
+  .pc button{width:auto;padding:6px 11px;font-size:.78rem;flex:none}
   .advbody h3{margin:10px 0 2px;font-size:.72rem;font-weight:800;letter-spacing:.13em;
     text-transform:uppercase;color:var(--faint)}
   .advbody button,.advbody .linkbtn{padding:11px 14px;font-size:.9rem;font-weight:600}
@@ -133,10 +142,15 @@ PAGE = r"""<!doctype html>
       <button class="quiet" id="changeNetwork">Change Wi-Fi network</button>
       <button class="quiet" id="directMode">Play without a router</button>
 
+      <h3>Computers</h3>
+      <div class="pcs" id="pcs"></div>
+      <button class="quiet" id="pairAnother">Pair another computer</button>
+
       <h3>Maintenance</h3>
       <button class="quiet" id="ownerCard">Show owner card</button>
       <button class="quiet" id="restart">Restart PiTrac</button>
       <button class="quiet danger" id="resetNetwork">Forget Wi-Fi networks</button>
+      <button class="quiet danger" id="newOwner">Prepare for a new owner</button>
       <button class="quiet danger" id="shutdown">Shut down safely</button>
 
       <h3>Backup</h3>
@@ -160,7 +174,16 @@ const COUNTRIES=[["US","United States"],["CA","Canada"],["GB","United Kingdom"],
  ["ZA","South Africa"],["MX","Mexico"],["BR","Brazil"]];
 
 const $=id=>document.getElementById(id);
+// A padlock, drawn rather than written, so it reads at a glance and needs no
+// font that might not be there.
+const LOCK='<svg class="lock" viewBox="0 0 11 14" fill="none" aria-label="Password needed">'+
+  '<rect x=".7" y="5.6" width="9.6" height="7.7" rx="2" fill="currentColor"/>'+
+  '<path d="M2.9 5.6V3.8a2.6 2.6 0 0 1 5.2 0v1.8" stroke="currentColor" stroke-width="1.4" '+
+  'stroke-linecap="round"/></svg>';
 let status=null, busy=false, view=null, chosen=null, downloads=[];
+// Results of the last Wi-Fi scan, kept so a re-render redraws them instead of
+// throwing the list away and scanning again.
+let networks=null, scanning=false;
 
 async function api(path, body){
   const options={method: body?"POST":"GET", headers:{"X-PiTrac-Portal":"1"}};
@@ -194,6 +217,17 @@ function decide(data){
   const net=data.network||{};
   if(view==="password") return {step:1, ...passwordView()};
   if(view==="networks") return {step:1, ...networkView()};
+  if(view==="pairing"){
+    const left=(data.pairing&&data.pairing.windowSecondsLeft)||0;
+    return {step:2, dot:left?"busy":"", head:"Ready for another computer", sub:"",
+      why:left
+        ? "Open PiTrac Easy-Connect on the other computer and choose this PiTrac. "+
+          "This stays open for "+Math.ceil(left/60)+" more minute"+
+          (Math.ceil(left/60)===1?"":"s")+", or until one connects."
+        : "The window closed. Press Open again to let another computer connect.",
+      body:"", actions:[{label:left?"Done":"Open again", id:left?"donePairing":"openPairing",
+                         primary:false}]};
+  }
 
   if(!net.country) return {step:0, dot:"", head:"Where are you?",
     sub:"Wi-Fi rules differ by country. PiTrac asks once.",
@@ -202,24 +236,25 @@ function decide(data){
   if(net.awaitingConfirmation) return {step:1, dot:"busy",
     head:"Reconnect your computer", sub:"PiTrac has joined "+esc(net.connection&&net.connection.ssid||"your network"),
     why:"Its setup signal has gone, so this page will stop responding. Reconnect this computer "+
-      "to your normal Wi-Fi, then open Easy Connect. "+net.secondsLeftToConfirm+" seconds left.",
+      "to your normal Wi-Fi, then open Easy-Connect. "+net.secondsLeftToConfirm+" seconds left.",
     body:"", actions:[]};
 
   const onHotspot=net.connection&&net.connection.isHotspot;
   if(onHotspot && !net.directMode) return {step:1, ...networkView()};
 
   if(!data.pairedComputer && !data.setupComplete) return {step:2, dot:"busy",
-    head:"Pair your computer", sub:"",
-    why:"Open Easy Connect on your computer and enter this code."+
+    head:"Connect your computer", sub:"",
+    why:"Open PiTrac Easy-Connect on your computer and choose this PiTrac."+
       (downloads.length?" Do not have it yet? Get it below.":""),
-    body:pairingBody(), actions:downloads.length
-      ? [{label:"Get Easy Connect for this computer", id:"downloads", primary:false}] : []};
+    body:"", actions:downloads.length
+      ? [{label:"Get PiTrac Easy-Connect for this computer", id:"downloads", primary:false}] : []};
 
   return {step:3, dot:"good", head:"PiTrac is set up",
     sub:(net.connection&&net.connection.ssid ? "On "+esc(net.connection.ssid) : "")+
         (data.pairedComputer ? " · "+esc(data.pairedComputer.computerName)+" is paired" : ""),
-    why:"You can close this page. Play from Easy Connect on your computer.",
-    body:"", actions:[{label:"View shot data", id:"dash", primary:false}]};
+    why:"",
+    body:"", actions:[{label:"View shot data", id:"dash", primary:false},
+                      {label:"Change Wi-Fi network", id:"changeWifi", primary:false}]};
 }
 
 function countryPicker(){
@@ -229,11 +264,24 @@ function countryPicker(){
 }
 
 function networkView(){
-  return {dot:"", head:"Choose your Wi-Fi", sub:"Pick the network your computer uses.",
-    why:"", body:'<div class="list" id="netList"><div class="why">Looking…</div></div>',
-    actions:[{label:"Search again", id:"scan", primary:false},
-             {label:"Type a network name", id:"hidden", primary:false}],
-    after:loadNetworks};
+  const joined=status&&status.network&&status.network.connection;
+  const onHotspot=joined&&joined.isHotspot;
+  const actions=[{label:"Search again", id:"scan", primary:false},
+                 {label:"Type a network name", id:"hidden", primary:false}];
+  // Only offer to stay put when there is something to stay on. On the setup
+  // hotspot there is no working network to go back to.
+  if(joined && !onHotspot)
+    actions.push({label:"Keep "+joined.ssid, id:"keepWifi", primary:false});
+  return {dot:"", head:"Choose your Wi-Fi",
+    sub:joined && !onHotspot ? "PiTrac is on "+esc(joined.ssid)+" now."
+                             : "Pick the network your computer uses.",
+    why:joined && !onHotspot
+      ? "Picking a different network replaces it. If the new one does not work, "+
+        "PiTrac goes back to this one on its own."
+      : "",
+    body:'<div class="list" id="netList">'+
+      (networks ? networkRows(networks) : '<div class="why">Looking…</div>')+'</div>',
+    actions:actions, after:bindNetworks};
 }
 
 function passwordView(){
@@ -253,11 +301,6 @@ function passwordView(){
       const password=$("password");
       if(password) password.addEventListener("keydown",e=>{if(e.key==="Enter") act("join");});
     }};
-}
-
-function pairingBody(){
-  const code=(status&&status.pairingCode)||"------";
-  return `<div class="code">${esc(code.replace(/(\d{3})(\d{3})/,"$1 $2"))}</div>`;
 }
 
 // --- rendering ------------------------------------------------------------
@@ -288,12 +331,13 @@ function render(data){
   });
   if(decided.after) decided.after();
   renderChecks(data.selfTest);
+  renderComputers(data.trustedComputers);
 }
 
 function act(id, button){
   if(id==="country") return run(button, async()=>{
     await api("/api/country",{country:$("country").value});});
-  if(id==="scan"){ $("netList").dataset.loaded=""; return run(button, loadNetworks); }
+  if(id==="scan"){ networks=null; return run(button, loadNetworks); }
   if(id==="hidden"){ chosen={ssid:"",needsPassword:true,hidden:true}; view="password"; return render(status); }
   if(id==="back"){ view="networks"; chosen=null; return render(status); }
   if(id==="join") return run(button, async()=>{
@@ -304,30 +348,80 @@ function act(id, button){
     view=null; chosen=null;
     if(!result.ok) showError({message:result.message, info:result.error});
   });
+  if(id==="changeWifi"){ view="networks"; chosen=null; networks=null; return render(status); }
+  if(id==="donePairing") return run(button, async()=>{ await api("/api/pair-close",{}); view=null; });
+  if(id==="openPairing") return run(button, async()=>{ await api("/api/pair-open",{}); });
+  if(id==="keepWifi"){ view=null; chosen=null; return render(status); }
   if(id==="dash" && status.dashboardUrl) window.open(status.dashboardUrl,"_blank","noopener");
   if(id==="downloads") window.open("/companion","_blank","noopener");
 }
 
-async function loadNetworks(){
-  const host=$("netList");
-  if(!host || host.dataset.loaded) return;
-  host.dataset.loaded="1";
-  try{
-    const data=await api("/api/networks");
-    host.innerHTML = data.networks.length ? data.networks.map(n=>`
+function netRow(n){
+  return `
       <button class="net" data-ssid="${esc(n.ssid)}" data-pw="${n.needsPassword?"1":""}"
         ${n.supported?"":"disabled"}>
-        <span><strong>${esc(n.ssid)}</strong><small>${n.supported?
-          (n.needsPassword?"Password needed":"Open network"):"Not supported"}</small></span>
-        <span class="bars">${[1,2,3,4].map(b=>
-          `<i class="${b<=n.bars?"on":""}" style="height:${b*3.5}px"></i>`).join("")}</span>
-      </button>`).join("") :
-      '<div class="why">No networks found. Move PiTrac closer to your router.</div>';
-    host.querySelectorAll(".net").forEach(button=>button.addEventListener("click",()=>{
-      chosen={ssid:button.dataset.ssid, needsPassword:!!button.dataset.pw, hidden:false};
-      view="password"; render(status);
-    }));
-  }catch(error){ showError(error); host.innerHTML=""; }
+        <span><strong>${esc(n.ssid)}</strong>${n.inUse?"<small>Connected</small>":
+          (n.supported?"":"<small>Not supported</small>")}</span>
+        <span class="meta">${n.needsPassword?LOCK:""}<span class="bars">${[1,2,3,4].map(b=>
+          `<i class="${b<=n.bars?"on":""}" style="height:${b*3.5}px"></i>`).join("")}</span></span>
+      </button>`;
+}
+
+function networkRows(list){
+  if(!list.length)
+    return '<div class="why">No networks found. Move PiTrac closer to your router.</div>';
+
+  // The one it is on, then ones it already has the password for, then the
+  // rest. Signal strength alone buries the network you are looking for among
+  // the neighbours'.
+  const known=list.filter(n=>n.inUse||n.known).sort((a,b)=>(b.inUse?1:0)-(a.inUse?1:0));
+  const rest=list.filter(n=>!(n.inUse||n.known));
+  if(!known.length) return rest.map(netRow).join("");
+
+  return '<div class="netgroup">Known networks</div>'+known.map(netRow).join("")+
+    (rest.length?'<div class="netgroup">Other networks</div>'+rest.map(netRow).join(""):"");
+}
+
+function bindNetworks(){
+  const host=$("netList");
+  if(!host) return;
+  host.querySelectorAll(".net").forEach(button=>button.addEventListener("click",()=>{
+    chosen={ssid:button.dataset.ssid, needsPassword:!!button.dataset.pw, hidden:false};
+    view="password"; render(status);
+  }));
+  // Only scan when there is nothing to show. Re-rendering must not restart it:
+  // a repeat scan takes longer than the refresh interval, so a scan that is
+  // restarted on every render never finishes.
+  if(networks===null && !scanning) loadNetworks();
+}
+
+async function loadNetworks(){
+  if(scanning) return;
+  scanning=true;
+  try{
+    const data=await api("/api/networks");
+    networks=data.networks||[];
+    const host=$("netList");
+    if(host){ host.innerHTML=networkRows(networks); bindNetworks(); }
+  }catch(error){
+    showError(error);
+    networks=[];
+  }finally{ scanning=false; }
+}
+
+function renderComputers(list){
+  const host=$("pcs");
+  if(!host) return;
+  const computers=list||[];
+  const mine=status&&status.pairedComputer?status.pairedComputer.pairingId:"";
+  host.innerHTML = computers.length ? computers.map(c=>`
+    <div class="pc"><span>${esc(c.name)}${c.pairingId===mine?
+      "<small>connected now</small>":""}</span>
+    <button class="quiet danger" data-forget="${esc(c.pairingId)}">Remove</button></div>`).join("")
+    : '<div class="why">No computers are connected to this PiTrac.</div>';
+  host.querySelectorAll("[data-forget]").forEach(button=>
+    button.addEventListener("click",()=>run(button, ()=>
+      api("/api/pair-remove",{pairingId:button.dataset.forget}))));
 }
 
 function renderChecks(report){
@@ -341,7 +435,12 @@ function renderChecks(report){
 
 // --- advanced -------------------------------------------------------------
 
-$("changeNetwork").addEventListener("click",()=>{ view="networks"; $("adv").open=false; render(status); });
+$("changeNetwork").addEventListener("click",()=>{
+  view="networks"; networks=null; $("adv").open=false; render(status); });
+$("pairAnother").addEventListener("click",()=>run(null, async()=>{
+  await api("/api/pair-open",{});
+  view="pairing"; $("adv").open=false;
+}));
 $("directMode").addEventListener("click",e=>run(e.target, async()=>{
   if(!confirm("Play without a router?\n\nYour computer connects straight to PiTrac's own signal. "+
     "Your computer usually loses its internet connection while this is on.")) return;
@@ -359,6 +458,20 @@ $("resetNetwork").addEventListener("click",e=>run(e.target, async()=>{
   if(!confirm("Forget all saved Wi-Fi networks?\n\nKEPT: calibration, paired computers, simulator settings.\nREMOVED: saved Wi-Fi networks only.")) return;
   await api("/api/reset-network",{});
   $("note").innerHTML='<div class="note good">Wi-Fi networks removed. Everything else was kept.</div>';
+}));
+$("newOwner").addEventListener("click",e=>run(e.target, async()=>{
+  // The trained models are licensed to you, not to this machine, and that
+  // licence cannot be handed on. They have to come off before it does.
+  if(!confirm("Prepare this PiTrac for someone else?\n\n"+
+    "REMOVED: saved Wi-Fi, paired computers, preferences, and the trained "+
+    "models with the PiTrac source folder. The models are licensed to you and "+
+    "cannot be passed on \u2014 the new owner installs their own copy.\n\n"+
+    "KEPT: the installed PiTrac software and your camera calibration.\n\n"+
+    "This cannot be undone. Save a backup first if you have not.")) return;
+  const result=await api("/api/new-owner",{});
+  $("note").innerHTML='<div class="note good">Ready for a new owner. '+
+    'Removed: '+esc((result.removed||[]).join(", "))+'. '+
+    'Give them the new owner card:<pre>'+esc(result.ownerCard||"")+'</pre></div>';
 }));
 $("shutdown").addEventListener("click",e=>run(e.target, async()=>{
   if(!confirm("Shut PiTrac down safely?\n\nWait for the green light on the Raspberry Pi to stop blinking before unplugging it.")) return;
@@ -394,11 +507,8 @@ $("bkFile").addEventListener("change",async event=>{
 async function refresh(){
   try{
     const data=await api("/api/status");
-    if(!data.pairedComputer && !data.setupComplete){
-      try{ data.pairingCode=(await api("/api/pairing-code")).code; }catch(e){}
-      if(!downloads.length){
-        try{ downloads=(await api("/api/downloads")).downloads||[]; }catch(e){}
-      }
+    if(!data.pairedComputer && !data.setupComplete && !downloads.length){
+      try{ downloads=(await api("/api/downloads")).downloads||[]; }catch(e){}
     }
     render(data);
   }catch(error){
@@ -435,7 +545,7 @@ def downloads_page(downloads, enclosure_name: str, version: str) -> str:
             for item in downloads
         )
         body = (
-            '<h1>Easy Connect</h1>'
+            '<h1>Easy-Connect</h1>'
             '<div class="sub">Version {version}, the same version this PiTrac is running.</div>'
             '<div class="list">{items}</div>'
             '<div class="why">Windows may say it does not recognise the program. '
@@ -444,14 +554,14 @@ def downloads_page(downloads, enclosure_name: str, version: str) -> str:
     else:
         body = (
             "<h1>Nothing stored here</h1>"
-            '<div class="sub">This PiTrac is not carrying a copy of Easy Connect.</div>'
+            '<div class="sub">This PiTrac is not carrying a copy of Easy-Connect.</div>'
             '<div class="why">Ask whoever set it up for the installer.</div>'
         )
 
     return (
         "<!doctype html>\n<html lang=\"en\">\n<head>\n"
         '<meta charset="utf-8">\n<meta name="viewport" content="width=device-width, initial-scale=1">\n'
-        "<title>Easy Connect</title>\n<style>{style}"
+        "<title>Easy-Connect</title>\n<style>{style}"
         "\n  .tag{{font-size:.72rem;font-weight:700;color:var(--accent);flex:none}}"
         "\n  a.net{{text-decoration:none}}\n</style>\n</head>\n<body>\n<main>\n"
         '<div class="brand">{name}</div>\n{body}\n'

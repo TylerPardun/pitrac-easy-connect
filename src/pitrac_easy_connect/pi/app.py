@@ -24,7 +24,7 @@ from .service import DEFAULT_STATE_DIR, PiService, ServicePaths
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="pitrac-easy-connect",
-        description="The PiTrac Easy Connect service that runs on the enclosure",
+        description="The PiTrac Easy-Connect service that runs on the enclosure",
     )
     parser.add_argument(
         "--state-dir", type=Path, default=DEFAULT_STATE_DIR,
@@ -135,7 +135,7 @@ def main(argv=None) -> int:
         return 1
 
     identity = service.identity
-    print("PiTrac Easy Connect {} is running.".format(__version__))
+    print("PiTrac Easy-Connect {} is running.".format(__version__))
     print("  Enclosure:   {} ({})".format(identity.display_name, identity.device_id))
     print("  Setup page:  http://localhost:{}".format(portal.server_port))
     print("  Recovery:    {}".format(identity.recovery_address))

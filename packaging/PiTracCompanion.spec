@@ -17,6 +17,16 @@ MACOS = sys.platform == "darwin"
 ROOT = os.path.dirname(SPECPATH)
 ICON = os.path.join(SPECPATH, "icon", "PiTrac.ico" if WINDOWS else "PiTrac.icns")
 
+# pywebview draws the window with the platform's own browser engine — WKWebView
+# on macOS, WebView2 on Windows — which is what makes this a real app rather
+# than a browser in disguise. Its platform backend is chosen at runtime, so
+# PyInstaller cannot see it and it has to be named here.
+WINDOW_IMPORTS = ["webview"]
+if MACOS:
+    WINDOW_IMPORTS += ["webview.platforms.cocoa"]
+elif WINDOWS:
+    WINDOW_IMPORTS += ["webview.platforms.edgechromium", "clr_loader", "pythonnet"]
+
 analysis = Analysis(
     [os.path.join(SPECPATH, "companion_entry.py")],
     pathex=[os.path.join(ROOT, "src")],
@@ -38,7 +48,7 @@ analysis = Analysis(
         "pitrac_easy_connect.common.versions",
         "pitrac_easy_connect.pi.pairing",
         "pitrac_easy_connect.pi.pitrac",
-    ],
+    ] + WINDOW_IMPORTS,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
@@ -55,7 +65,7 @@ executable = EXE(
     analysis.binaries,
     analysis.datas,
     [],
-    name="PiTrac",
+    name="PiTrac Easy-Connect",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -73,12 +83,12 @@ executable = EXE(
 if MACOS:
     app = BUNDLE(
         executable,
-        name="PiTrac.app",
+        name="PiTrac Easy-Connect.app",
         icon=ICON if os.path.exists(ICON) else None,
         bundle_identifier="com.pitrac.easyconnect",
         info_plist={
-            "CFBundleName": "PiTrac",
-            "CFBundleDisplayName": "PiTrac",
+            "CFBundleName": "PiTrac Easy-Connect",
+            "CFBundleDisplayName": "PiTrac Easy-Connect",
             "CFBundleShortVersionString": os.environ.get("PITRAC_VERSION", "0.2.0"),
             "CFBundleVersion": os.environ.get("PITRAC_VERSION", "0.2.0"),
             "NSHighResolutionCapable": True,
@@ -86,7 +96,7 @@ if MACOS:
             # which macOS blocks by default without this.
             "NSAppTransportSecurity": {"NSAllowsLocalNetworking": True},
             "NSLocalNetworkUsageDescription":
-                "PiTrac finds your launch monitor on your local network.",
+                "PiTrac Easy-Connect finds your launch monitor on your local network.",
             "LSMinimumSystemVersion": "11.0",
         },
     )

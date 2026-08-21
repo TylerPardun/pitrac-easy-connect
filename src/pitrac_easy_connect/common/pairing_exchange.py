@@ -12,15 +12,20 @@ enclosure returns the pairing secret masked with a key derived from that. A
 passive listener sees two public values and a masked blob, and can compute
 nothing from them.
 
-The six-digit code is what stops an active attacker from standing in the middle:
-it is mixed into the proof each side sends, so a party who did not read the code
-off the enclosure's screen cannot produce a valid exchange. Guessing it online is
-possible in principle and is exactly what the pairing rate limit exists to stop —
-five wrong codes and the enclosure stops answering for ten minutes.
+Each side also sends a proof: an HMAC over its role and the two public values,
+under a key derived from the shared one. That shows the answer came from whoever
+holds the private half of the value the exchange started with, so the app knows
+it is still talking to the enclosure it began with and not something that joined
+partway through, and neither side's proof can be replayed back as the other's.
 
-This gives forward secrecy against passive capture and reduces active attack to
-online guessing of a rate-limited code. It is deliberately built from `pow`,
-`hmac`, and `secrets` so the enclosure needs no cryptography package installed.
+What this does not do is decide *whether* to pair. Nothing here is a password;
+there is no secret a human carries from one side to the other, so an attacker
+who can sit in the middle of the connection can run the exchange themselves.
+Standing in the way of that is `pairing.accepting`, and the trust boundary is
+the local network. See the note at the top of `pi/pairing.py`.
+
+So: forward secrecy against anything merely listening, and no cryptography
+package to install — it is built from `pow`, `hmac`, and `secrets` alone.
 """
 
 import hmac
@@ -83,14 +88,16 @@ def transcript(server_public: str, client_public: str) -> str:
     return "{}|{}".format(server_public, client_public)
 
 
-def proof(key: bytes, code: str, server_public: str, client_public: str, role: str) -> str:
-    """Bind the exchange to the six-digit code and to this side's role.
+def proof(key: bytes, server_public: str, client_public: str, role: str) -> str:
+    """Show this side derived the same key from the same two public values.
 
-    Including the code is what authenticates the exchange. Including the role
+    It proves the answer came from whoever holds the private half of
+    ``server_public`` — that the reply is from the enclosure the app started
+    talking to, not something that joined halfway through. Including the role
     stops one side's proof being replayed back as the other's.
     """
 
-    material = "{}|{}|{}".format(role, code, transcript(server_public, client_public))
+    material = "{}|{}".format(role, transcript(server_public, client_public))
     return hmac.new(derive(key, "proof"), material.encode("utf-8"), sha256).hexdigest()
 
 

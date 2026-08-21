@@ -27,6 +27,7 @@ from .backend import BackendError, PiBackend
 from .backup import BackupManager
 from .link_server import CompanionLinkServer, CompanionSession
 from .pairing import PairingManager
+from . import ml_models
 from .pitrac import PitracInstallation
 from .relay import DEFAULT_RELAY_PORTS, ShotRelay
 from .selftest import SelfTest, state_for
@@ -144,7 +145,7 @@ class PiService:
     # --- Boot -------------------------------------------------------------
 
     def start(self) -> None:
-        self._note("Easy Connect {} starting".format(self.version))
+        self._note("Easy-Connect {} starting".format(self.version))
 
         # 1. Networking first. Everything else can be reported once the
         #    enclosure is reachable; none of it can be reported if it is not.
@@ -177,7 +178,7 @@ class PiService:
         try:
             changed = self.pitrac.point_at_relay(self.relay.ports)
             if changed:
-                self._note("Pointed PiTrac at Easy Connect ({} settings)".format(len(changed)))
+                self._note("Pointed PiTrac at Easy-Connect ({} settings)".format(len(changed)))
         except OSError as exc:
             self._note("Could not update PiTrac settings: {}".format(exc))
 
@@ -444,7 +445,7 @@ class PiService:
             "renameComputer": lambda a: self._rename_computer(a),
             "revokeComputer": lambda a: self._revoke_computer(a),
             "resetNetwork": lambda a: self._reset_network(),
-            "prepareForNewOwner": lambda a: self._prepare_for_new_owner(),
+            "prepareForNewOwner": lambda a: self._prepare_for_new_owner(a),
             "restartPitrac": lambda a: self._restart_pitrac(),
             "reboot": lambda a: self._reboot(),
             "shutdown": lambda a: self._shutdown(),
@@ -508,21 +509,48 @@ class PiService:
             "network": result.as_dict(),
         }
 
-    def _prepare_for_new_owner(self) -> Dict[str, Any]:
+    def _prepare_for_new_owner(self, arguments: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """Strip this enclosure back to something that can be handed on.
+
+        The trained models have to go with everything else. Their licence is
+        non-transferable, so passing on a machine with them still on it is a
+        breach even when no money changes hands — the next owner has to get
+        their own copy under their own acceptance of PiTracLM's terms. See
+        ``ml_models`` for why the source clone goes too.
+        """
+
+        arguments = arguments or {}
         self.provisioner.forget_all_networks()
         self.pairings.revoke_all()
         self.settings.replace({})
+
+        removed = ["networks", "paired computers", "preferences"]
+        kept = ["installed software", "camera calibration"]
+        models: Dict[str, Any] = {}
+        if arguments.get("keepModels"):
+            # Only for a machine that is not actually leaving your hands.
+            kept.append("trained models")
+        else:
+            models = ml_models.remove(home=self._pitrac_home())
+            removed.append("trained models and the PiTrac source clone")
+
         self.identity_store.regenerate_setup_password()
         self.identity = self.identity_store.identity
         self.provisioner.setup_password = self.identity.setup_password
         result = self.provisioner.start_setup_hotspot()
         self.refresh()
         return {
-            "removed": ["networks", "paired computers", "preferences"],
-            "kept": ["installed software", "camera calibration"],
+            "removed": removed,
+            "kept": kept,
+            "models": models,
             "ownerCard": self.identity.owner_card(),
             "network": result.as_dict(),
         }
+
+    def _pitrac_home(self) -> Optional[str]:
+        """The home directory PiTrac was built in, not root's."""
+
+        return self.pitrac.owner_home()
 
     def _create_backup(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
         document = self.backups.create(
@@ -599,6 +627,8 @@ class PiService:
             "network": self.provisioner.status(),
             "pairedComputer": session.as_dict() if session else None,
             "trustedComputerCount": self.pairings.count,
+            "trustedComputers": self.pairings.trusted_computers(),
+            "pairing": self.pairings.status(),
             "simulator": simulator.value,
             "simulatorLabel": simulator.label,
             "simulatorStatus": simulator_status,

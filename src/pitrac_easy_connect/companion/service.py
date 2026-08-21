@@ -25,7 +25,7 @@ from ..common import pairing_exchange as exchange
 from ..common.configstore import ConfigStore
 from ..common.errors import (
     LINK_NOT_FOUND,
-    PAIR_CODE_INVALID,
+    PAIR_EXCHANGE_LOST,
     SIM_NOT_RUNNING,
     EasyConnectError,
     lookup,
@@ -80,6 +80,10 @@ class CompanionService:
                 "simulator": Simulator.GSPRO.value,
                 "enclosures": {},
                 "activeDeviceId": "",
+                #: Set once the owner has been walked through setup. Until then
+                #: the app leads them a step at a time instead of presenting a
+                #: window full of things to click.
+                "setupComplete": False,
             },
             schema_version=1,
             secret=True,
@@ -144,11 +148,14 @@ class CompanionService:
 
     # --- Pairing ----------------------------------------------------------
 
-    def pair(self, device_id: str, code: str, portal_port: Optional[int] = None) -> Dict[str, Any]:
-        """Redeem a six-digit code and store the resulting secret for this PC.
+    def pair(self, device_id: str, portal_port: Optional[int] = None) -> Dict[str, Any]:
+        """Ask an enclosure to connect, and store the secret it hands back.
 
-        The secret is derived from a key exchange rather than received, so it is
-        never carried over the network. See ``common.pairing_exchange``.
+        There is no code to type. The enclosure decides whether to accept — it
+        does while nothing is paired to it, and otherwise only in a window its
+        owner opened. The secret is derived from a key exchange rather than
+        received, so it is never carried over the network. See
+        ``common.pairing_exchange``.
         """
 
         enclosure = self._found_by_id(device_id)
@@ -159,10 +166,6 @@ class CompanionService:
             enclosure = self._found_by_id(device_id)
         if enclosure is None:
             raise EasyConnectError(LINK_NOT_FOUND, "that enclosure was not found on this network")
-
-        cleaned = "".join(character for character in str(code) if character.isdigit())
-        if len(cleaned) != 6:
-            raise EasyConnectError(PAIR_CODE_INVALID, "a pairing code is six digits")
 
         # The enclosure says where its setup page is; only fall back to the
         # default when an older enclosure did not advertise one.
@@ -177,17 +180,15 @@ class CompanionService:
             {
                 "sessionId": hello["sessionId"],
                 "clientPublic": public,
-                "code": cleaned,
-                "proof": exchange.proof(key, cleaned, hello["serverPublic"], public, "client"),
                 "computerName": self.computer_name,
             },
         )
 
-        expected = exchange.proof(key, cleaned, hello["serverPublic"], public, "server")
+        expected = exchange.proof(key, hello["serverPublic"], public, "server")
         if not exchange.verify_proof(expected, result.get("serverProof", "")):
             # The device answered but could not prove it ran the same exchange.
             raise EasyConnectError(
-                PAIR_CODE_INVALID, "that device could not prove it is your PiTrac"
+                PAIR_EXCHANGE_LOST, "that device could not prove it is your PiTrac"
             )
 
         secret = exchange.unmask_secret(key, result["maskedSecret"])
@@ -206,7 +207,33 @@ class CompanionService:
         self.connect(device_id)
         return {"deviceId": device_id, "displayName": enclosure.display_name}
 
+    def finish_setup(self, done: bool = True) -> Dict[str, Any]:
+        """Mark the guided setup as over, or send the owner back through it."""
+
+        self.store.set("setupComplete", bool(done))
+        return {"setupComplete": bool(done)}
+
     def forget(self, device_id: str) -> Dict[str, Any]:
+        """Give up this computer's access to an enclosure, on both sides.
+
+        Dropping only the local copy would leave the enclosure still trusting
+        this computer's secret — so "unpair" would not actually remove access,
+        and a stale entry would pile up every time someone did it. Telling the
+        enclosure needs the link that is about to be closed, so it happens
+        first, and a failure is not fatal: the local half still goes.
+        """
+
+        with self._lock:
+            record = (self.store.get("enclosures") or {}).get(device_id) or {}
+        pairing_id = record.get("pairingId")
+        if pairing_id and device_id == self.store.get("activeDeviceId"):
+            try:
+                self.command("revokeComputer", {"pairingId": pairing_id})
+            except EasyConnectError:
+                # Not connected, or the enclosure is off. The enclosure keeps
+                # the entry; its owner can remove it from the setup page.
+                pass
+
         with self._lock:
             enclosures = dict(self.store.get("enclosures") or {})
             enclosures.pop(device_id, None)
@@ -580,6 +607,7 @@ class CompanionService:
                 for key, value in sorted(self.paired_enclosures.items())
             ],
             "activeDeviceId": self.store.get("activeDeviceId", ""),
+            "setupComplete": bool(self.store.get("setupComplete")),
             "dashboardUrl": self._dashboard_url(),
             "update": self._update_status(),
             "shotLog": self.shots.status(),
@@ -675,7 +703,7 @@ def _post(url: str, body: Optional[Dict[str, Any]], timeout: float = 10.0) -> Di
         info = payload.get("error") or {}
         found = lookup(str(info.get("code", "")))
         raise EasyConnectError(
-            found or PAIR_CODE_INVALID, str(info.get("failed", "PiTrac refused that request"))
+            found or PAIR_EXCHANGE_LOST, str(info.get("failed", "PiTrac refused that request"))
         ) from error
     except urllib.error.URLError as error:
         # The enclosure was found, so this is not "no PiTrac on the network" —

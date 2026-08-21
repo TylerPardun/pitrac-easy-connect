@@ -119,20 +119,14 @@ def test_the_newest_exchange_still_works_after_eviction(tmp_path):
     from pitrac_easy_connect.common import pairing_exchange as exchange
 
     manager = PairingManager(tmp_path / "pairings.json", "P3V2PW2U")
-    code = manager.issue_code().code
     for _ in range(MAX_OPEN_EXCHANGES * 3):
         hello = manager.begin_exchange()
 
     private, public = exchange.client_start()
     key = exchange.shared_key(hello["serverPublic"], private)
-    result = manager.complete_exchange(
-        hello["sessionId"],
-        public,
-        code,
-        exchange.proof(key, code, hello["serverPublic"], public, "client"),
-        "Sim PC",
-    )
+    result = manager.complete_exchange(hello["sessionId"], public, "Sim PC")
     assert result["pairingId"]
+    assert exchange.unmask_secret(key, result["maskedSecret"])
 
 
 def test_shots_the_computer_never_confirms_are_given_up_on(monkeypatch):
@@ -232,7 +226,7 @@ def test_simultaneous_pairing_attempts_do_not_corrupt_the_store(tmp_path):
 
     def attempt():
         try:
-            results.append(manager.redeem(manager.issue_code().code, "PC"))
+            results.append(manager.create_pairing("PC"))
         except Exception as exc:
             errors.append(exc)
 

@@ -13,11 +13,7 @@ import pytest
 from pitrac_easy_connect import __version__
 from pitrac_easy_connect.common.errors import catalogue
 from pitrac_easy_connect.common.identity import HOTSPOT_SETUP_URL
-from pitrac_easy_connect.pi.pairing import (
-    CODE_LIFETIME_SECONDS,
-    FAILURE_WINDOW_SECONDS,
-    MAX_FAILURES,
-)
+from pitrac_easy_connect.pi.pairing import PAIRING_WINDOW_SECONDS
 from pitrac_easy_connect.pi.relay import DEFAULT_RELAY_PORTS
 from pitrac_easy_connect.pi.wifi import CONFIRMATION_SECONDS
 from pitrac_easy_connect.models import Simulator
@@ -46,11 +42,33 @@ def test_the_guides_print_the_address_the_hotspot_really_uses(path):
 
 
 @pytest.mark.parametrize("path", GUIDES, ids=lambda p: p.name)
-def test_the_guides_describe_the_real_pairing_limits(path):
-    text = read(path)
-    assert CODE_LIFETIME_SECONDS == 300.0 and "five minutes" in text
-    assert MAX_FAILURES == 5 and "five" in text
-    assert FAILURE_WINDOW_SECONDS == 600.0 and "ten minutes" in text
+def test_the_guides_describe_the_real_pairing_window(path):
+    assert PAIRING_WINDOW_SECONDS == 300.0
+    assert "five minutes" in read(path)
+
+
+@pytest.mark.parametrize("path", ALL_DOCS, ids=lambda p: p.name)
+def test_no_document_still_tells_anyone_to_enter_a_code(path):
+    """The code is gone from the product.
+
+    Explaining why it was removed is fine and worth keeping; what must not
+    survive is any instruction to find one, type one, or wait for a fresh one,
+    because there is nothing for a reader to do about it.
+    """
+
+    text = " ".join(read(path).lower().split())
+    for phrase in (
+        "type the six",
+        "type the code",
+        "enter the code",
+        "enter this code",
+        "read the code",
+        "new code",
+        "codes last",
+        "code has expired",
+        "asks for a six-digit",
+    ):
+        assert phrase not in text, "{} still tells the reader to use a code".format(path.name)
 
 
 @pytest.mark.parametrize("path", GUIDES, ids=lambda p: p.name)
@@ -170,3 +188,44 @@ def test_the_release_notes_warn_about_the_unsigned_builds():
     )
     assert "Run anyway" in workflow, "Windows users need to be told about SmartScreen"
     assert "right-click" in workflow.lower(), "macOS users need to be told about Gatekeeper"
+
+
+def test_the_app_calls_itself_one_thing():
+    """It is named separately from PiTrac, so the name has to be used as given.
+
+    The window title said "PiTrac Easy-Connect" while buttons inside it said
+    "Easy Connect", which reads as two different products.
+    """
+
+    import ast
+    from pathlib import Path
+
+    source = Path(__file__).resolve().parent.parent / "src" / "pitrac_easy_connect"
+    offenders = []
+    for path in sorted(source.rglob("*.py")):
+        if path.name == "protocols.py":
+            continue  # its DeviceID goes on the wire; that string is not a label
+        tree = ast.parse(path.read_text())
+
+        # Docstrings are prose about the code, not text anyone reads on screen.
+        # Everything else that is a string is fair game — including the pages,
+        # which are one enormous string literal each.
+        docstrings = set()
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+                first = node.body[0] if node.body else None
+                if isinstance(first, ast.Expr) and isinstance(first.value, ast.Constant):
+                    if isinstance(first.value.value, str):
+                        docstrings.add(id(first.value))
+
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Constant) or not isinstance(node.value, str):
+                continue
+            if id(node) in docstrings or "Easy Connect" not in node.value:
+                continue
+            line = node.value[node.value.index("Easy Connect") - 30:][:70]
+            offenders.append("{}:{} …{}…".format(path.name, node.lineno, line.strip()))
+
+    assert not offenders, "these say 'Easy Connect' rather than 'Easy-Connect': {}".format(
+        offenders
+    )

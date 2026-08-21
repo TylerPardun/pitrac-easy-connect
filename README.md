@@ -10,7 +10,7 @@ part that was missing: **getting the thing on the network and talking to your
 PC.** It deliberately does not reimplement anything PiTrac already does.
 
 - **Status:** working on real hardware, not yet released
-- **Version:** 0.2.0 · **Tests:** 368, passing on macOS and on the Raspberry Pi
+- **Version:** 0.2.0 · **Tests:** 403, passing on macOS and on the Raspberry Pi
 - **Dependencies:** none — Python standard library only
 - **Licence:** [MIT](LICENSE) · see [NOTICE.md](NOTICE.md) for how this relates
   to PiTrac's GPL
@@ -81,11 +81,13 @@ More in [docs/architecture.md](docs/architecture.md).
 | Never locked out | Journal, NetworkManager checkpoint, confirm-or-roll-back |
 | Setup hotspot | AP mode at 10.42.0.1 with DHCP, restores afterwards |
 | Discovery | UDP beacon and a static avahi mDNS record |
-| Pairing | Six-digit code over an authenticated Diffie-Hellman exchange |
+| Pairing | One click, over an ephemeral Diffie-Hellman exchange |
+| Paired computers | Listed on the enclosure, each removable |
+| Handing one on | Removes the models and the source clone, history included |
 | Shot relay | GSPro and E6 carried untouched, both directions |
 | Self-test | 14 checks; readiness recomputed, never latched |
 | Backup | Checksummed, with identity as an opt-in for card replacement |
-| App window | One window, three tabs, PiTrac's dashboard embedded |
+| App window | A real window of its own — its own icon, its own menu bar, no browser |
 | Software delivery | The enclosure hands out the PC app over its own signal |
 | Shot history | Every shot kept with the club, with averages and spread |
 | Shot images | PiTrac's own images for each measured shot, shown in the app |
@@ -105,9 +107,12 @@ simulator on another machine, and the reply came back unchanged.
 ### Next up
 
 - [ ] **Model licence permission.** Distributing an assembled unit needs
-      written permission from PiTracLM; see
-      [docs/licensing/model-permission-request.md](docs/licensing/model-permission-request.md).
-      Everything else about selling one is already clear.
+      written permission from PiTracLM under §6 of their model licence; see
+      [the request](docs/licensing/model-permission-request.md) and
+      [what it does and does not fix](docs/licensing/model-provisioning.md).
+      Fetching the models at first boot cures redistribution but not §3(f),
+      so the permission is the whole thing. Everything else about selling one
+      is already clear.
 - [ ] **Code signing.** Both native builds work but are unsigned, so Windows
       and macOS both warn about them. An Apple Developer account ($99/year) and
       a Windows OV or EV certificate are the remaining cost between a download
@@ -182,6 +187,15 @@ rather than by hand.
 - Every paired computer gets its own secret; there is no fleet-wide password.
 - The setup hotspot is never open and its password is unique per enclosure.
 
-Known limitation: someone already on your network who guesses the six-digit code
-within its five-minute life could pair. Five wrong attempts stop the enclosure
-answering for ten minutes.
+**How an enclosure decides who may connect.** One with nothing paired to it
+accepts the first computer that asks — it is a machine nobody has set up. After
+that it accepts nobody, until its owner opens a five-minute window from the
+setup page, and that window closes again as soon as one computer connects.
+
+There was a six-digit code here. It was removed. The enclosure has no screen and
+no button, so the only place a code could appear was its setup page — which any
+device on the same network can open and read. It excluded nobody it claimed to
+exclude, and once the app started showing that page itself, the code became
+something the app displayed and then asked you to type back to it. **The trust
+boundary is your home network**, and the rule above says so honestly instead of
+dressing it up.

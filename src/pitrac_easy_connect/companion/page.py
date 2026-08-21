@@ -12,7 +12,7 @@ PAGE = r"""<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>PiTrac</title>
+<title>PiTrac Easy-Connect</title>
 <style>
   :root{color-scheme:dark;
     --bg:#0b0f0d;--panel:#141b17;--line:#26312b;--line-soft:#1c2420;
@@ -120,6 +120,28 @@ PAGE = r"""<!doctype html>
 
   /* Pairing: only ever seen once. */
   .pick{margin-top:22px;display:flex;flex-direction:column;gap:8px}
+  body.pairing .status,body.pairing #do,body.pairing #pick,
+  body.pairing #update,body.pairing .adv{display:none}
+  .wiz{margin-bottom:26px}
+  .wizrail{display:flex;gap:6px;margin-bottom:10px}
+  .wizrail i{height:3px;flex:1;border-radius:2px;background:var(--line)}
+  .wizrail i.on{background:var(--green)}
+  .wizrail i.done{background:var(--muted)}
+  .wizstep{font-size:.7rem;font-weight:800;letter-spacing:.13em;
+    text-transform:uppercase;color:var(--faint)}
+  .help{margin-top:18px;border-top:1px solid var(--line);padding-top:14px}
+  .help summary{cursor:pointer;color:var(--muted);font-size:.86rem;list-style:none}
+  .help summary::-webkit-details-marker{display:none}
+  .help summary:before{content:"› ";color:var(--faint)}
+  .help[open] summary:before{content:"⌄ "}
+  .helpbody{color:var(--muted);font-size:.86rem;line-height:1.65;margin-top:10px}
+  .helpbody ol{margin:0;padding-left:20px}
+  .helpbody li{margin:6px 0}
+  .helpbody code{background:var(--line);padding:1px 5px;border-radius:4px;
+    font-size:.82rem}
+  .codeframe{width:100%;height:420px;border:1px solid var(--line);border-radius:14px;
+    background:var(--bg);display:block}
+  .codefall{color:var(--faint);font-size:.82rem;line-height:1.45;margin:2px 0 8px}
   .device{display:flex;justify-content:space-between;align-items:center;gap:12px;
     padding:14px 16px;border:1px solid var(--line);border-radius:11px;background:var(--panel);
     color:var(--text);cursor:pointer;text-align:left;width:100%}
@@ -131,7 +153,6 @@ PAGE = r"""<!doctype html>
     background:var(--panel);color:var(--text);font:inherit;font-size:1.7rem;font-weight:700;
     letter-spacing:.34em;text-align:center;font-variant-numeric:tabular-nums}
   input[type=text]::placeholder{color:#3a4941;letter-spacing:.34em}
-  label.field{display:block;color:var(--muted);font-size:.88rem;margin-bottom:9px}
 
   /* Advanced: present, quiet, never in the way. */
   details.adv{margin-top:34px;border-top:1px solid var(--line-soft);padding-top:16px}
@@ -169,7 +190,12 @@ PAGE = r"""<!doctype html>
 
 <div class="pane on" id="pane-play"><div class="centre">
 <main>
-  <div class="brand">PiTrac</div>
+  <div class="brand">PiTrac Easy-Connect</div>
+
+  <div class="wiz hidden" id="wiz">
+    <div class="wizrail" id="wizRail"></div>
+    <div class="wizstep" id="wizStep"></div>
+  </div>
 
   <div class="status">
     <div class="dot" id="dot"></div>
@@ -182,18 +208,21 @@ PAGE = r"""<!doctype html>
 
   <div id="err"></div>
 
+  <details class="help hidden" id="help">
+    <summary id="helpTitle"></summary>
+    <div class="helpbody" id="helpBody"></div>
+  </details>
+
   <div class="do" id="do"></div>
 
   <div id="update"></div>
 
   <div class="pick hidden" id="pick"></div>
 
-  <div class="pick hidden" id="codeBox">
-    <label class="field" for="code">Enter the six-digit code shown on the PiTrac setup page</label>
-    <input type="text" id="code" inputmode="numeric" maxlength="6" placeholder="000000"
-           autocomplete="off">
-    <button class="primary" id="doPair">Pair</button>
-    <button class="quiet" id="cancelPair">Cancel</button>
+  <div class="pick hidden" id="askBox">
+    <iframe class="codeframe" id="askFrame" title="PiTrac setup page"></iframe>
+    <div class="codefall" id="askFall"></div>
+    <button class="quiet" id="cancelPair">Back</button>
   </div>
 
   <details class="adv" id="adv">
@@ -219,7 +248,8 @@ PAGE = r"""<!doctype html>
 
       <h3>This computer</h3>
       <button class="quiet danger" id="forget">Unpair this computer</button>
-      <button class="quiet" id="quit">Stop Easy Connect</button>
+      <button class="quiet" id="setupAgain">Run setup again</button>
+      <button class="quiet" id="quit">Stop Easy-Connect</button>
 
       <h3>Details</h3>
       <dl class="kv" id="kv"></dl>
@@ -266,7 +296,12 @@ PAGE = r"""<!doctype html>
 <script>
 "use strict";
 const $=id=>document.getElementById(id);
-let status=null, pairing=null, busy=false;
+let status=null, busy=false;
+//: Which of the window's tabs is showing. Declared here because present() has
+//: to be able to send the window back to Play when the tabs disappear.
+let pane="play";
+//: True while the "PiTrac will not take another computer" panel is up.
+const asking=()=>!$("askBox").classList.contains("hidden");
 
 async function api(path, body){
   const options={method: body?"POST":"GET", headers:{}};
@@ -279,7 +314,9 @@ async function api(path, body){
 function esc(v){const d=document.createElement("div");d.textContent=v==null?"":String(v);return d.innerHTML;}
 
 function showError(error){
-  if(!error){$("err").innerHTML="";return;}
+  // Clearing it while the refusal panel is up would leave that panel with no
+  // explanation of why it appeared.
+  if(!error){ if(!asking()) $("err").innerHTML=""; return; }
   const info=error.info||{};
   $("err").innerHTML=`<div class="err"><h2>${esc(info.failed||error.message)}</h2>
     ${info.nextStep?`<p>${esc(info.nextStep)}</p>`:""}
@@ -296,6 +333,94 @@ async function run(button, work){
   finally{ busy=false; if(button){button.disabled=false;button.textContent=label;} await refresh(); }
 }
 
+// --- first run, led one step at a time -----------------------------------
+
+// Someone setting this up for the first time should never have to look for the
+// next thing. Until setup is finished the window shows exactly one step, in
+// order, with a way forward and nothing else to press. Afterwards it gets out
+// of the way and the whole app is theirs.
+const WIZARD=[
+  {key:"find",  label:"Connect"},
+  {key:"sim",   label:"Simulator"},
+  {key:"open",  label:"Open it"},
+  {key:"test",  label:"Test shot"},
+  {key:"done",  label:"Ready"},
+];
+let wizard={started:false, simPicked:false};
+
+const CANNOT_FIND=`<ol>
+  <li>Check the Raspberry Pi has power and its light is on.</li>
+  <li>Give it two minutes after switching on. It is slower than a phone.</li>
+  <li>If it has never been on your Wi-Fi, it makes its own network to be set up
+      through. On a phone or laptop, join the Wi-Fi network called
+      <code>PiTrac-</code> followed by four characters, using the password on
+      the card that came with it, then open <code>http://10.42.0.1</code> and
+      follow the three steps there.</li>
+  <li>Come back here and press Search again.</li>
+</ol>`;
+
+function wizardView(data){
+  const linked=data.link && data.link.connected;
+  const sim=data.simulatorStatus||{};
+  const steps={}; (data.chain||[]).forEach(s=>steps[s.key]=s);
+
+  if(!wizard.started) return {step:null,
+    dot:"", head:"Let's get you playing", sub:"",
+    why:"Three short steps: connect to your PiTrac, tell it which simulator "+
+        "you use, and hit one test shot to prove it works.",
+    actions:[{label:"Get started", id:"wizStart", primary:true}]};
+
+  if(!linked) return {step:"find",
+    dot:"busy", head:"Find your PiTrac", sub:"",
+    why:"It needs to be powered on and on this same Wi-Fi.",
+    actions:[{label:"Search again", id:"find", primary:true}], find:true,
+    help:{title:"I cannot find it", body:CANNOT_FIND}};
+
+  const name=(data.link.device&&data.link.device.displayName)||"PiTrac";
+
+  if(steps.pitrac && !steps.pitrac.ok) return {step:"find",
+    dot:"bad", head:"PiTrac needs attention", sub:esc(steps.pitrac.detail),
+    why:"Connected, but the launch monitor cannot measure a shot yet. This is "+
+        "usually the cameras. Fix it on PiTrac's own page, then come back.",
+    actions:[{label:"Open the PiTrac setup page", id:"setup", primary:true}]};
+
+  if(!wizard.simPicked) return {step:"sim",
+    dot:"", head:"Which simulator do you use?", sub:name,
+    why:"You can change this later.",
+    actions:[{label:"GSPro", id:"wizSimGspro", primary:data.simulator==="gspro"},
+             {label:"E6 Connect", id:"wizSimE6", primary:data.simulator==="e6"}]};
+
+  if(!sim.connected) return {step:"open",
+    dot:"bad", head:"Open "+esc(data.simulatorLabel), sub:name,
+    why:data.simulator==="gspro"
+      ? "In GSPro, open the Open Connect screen so it is waiting for a device."
+      : "In E6 Connect, start a session and step onto the tee.",
+    actions:[{label:"Check again", id:"check", primary:true},
+             {label:"Back", id:"wizBackSim", primary:false}]};
+
+  if(!sim.ready) return {step:"test",
+    dot:"busy", head:"One test shot", sub:esc(data.simulatorLabel)+" · "+name,
+    why:"This proves the whole path from the launch monitor to your simulator. "+
+        "It is a real shot, so close any open round first.",
+    actions:[{label:"Send a test shot", id:"test", primary:true}]};
+
+  return {step:"done",
+    dot:"good", head:"You're ready to play", sub:esc(data.simulatorLabel)+" · "+name,
+    why:"That's setup done. You will not see these steps again — next time you "+
+        "open this it goes straight to playing.",
+    actions:[{label:"Finish", id:"wizFinish", primary:true}]};
+}
+
+function renderWizard(view){
+  const showing=!!(view && view.step!==undefined);
+  $("wiz").classList.toggle("hidden", !showing || !view.step);
+  if(!showing || !view.step) return;
+  const at=WIZARD.findIndex(s=>s.key===view.step);
+  $("wizRail").innerHTML=WIZARD.map((s,i)=>
+    `<i class="${i===at?"on":(i<at?"done":"")}"></i>`).join("");
+  $("wizStep").textContent="Step "+(at+1)+" of "+WIZARD.length+" · "+WIZARD[at].label;
+}
+
 // --- the single line, and the single thing to do about it ----------------
 
 function present(data){
@@ -303,12 +428,10 @@ function present(data){
   const sim=data.simulatorStatus||{};
   const steps={}; (data.chain||[]).forEach(s=>steps[s.key]=s);
 
-  if(!data.pairedEnclosures.length && !pairing) return {
+  if(!data.pairedEnclosures.length) return {
     dot:"", head:"Set up PiTrac", sub:"Let's find your enclosure.",
     why:"PiTrac needs to be powered on and on this network.",
     actions:[{label:"Find my PiTrac", id:"find", primary:true}], find:true};
-
-  if(pairing) return {dot:"busy", head:"Pairing", sub:"", why:"", actions:[]};
 
   if(!linked) return {
     dot:"busy", head:"Looking for PiTrac", sub:"",
@@ -319,7 +442,7 @@ function present(data){
 
   if(steps.pitrac && !steps.pitrac.ok) return {
     dot:"bad", head:"PiTrac needs attention", sub:esc(steps.pitrac.detail),
-    why:"Easy Connect is connected, but the launch monitor cannot measure a shot yet.",
+    why:"Easy-Connect is connected, but the launch monitor cannot measure a shot yet.",
     actions:[{label:"Open the PiTrac setup page", id:"setup", primary:true}]};
 
   if(!sim.connected) return {
@@ -341,7 +464,13 @@ function present(data){
 
 function render(data){
   status=data;
-  const view=present(data);
+  const guiding=!data.setupComplete;
+  const view=guiding ? wizardView(data) : present(data);
+  renderWizard(guiding?view:null);
+
+  const help=view.help;
+  $("help").classList.toggle("hidden", !help);
+  if(help){ $("helpTitle").textContent=help.title; $("helpBody").innerHTML=help.body; }
 
   $("dot").className="dot "+view.dot;
   $("head").textContent=view.head;
@@ -363,9 +492,15 @@ function render(data){
   renderUpdate(data.update);
   renderShots(data.shotLog);
   renderImages(data.enclosure);
-  $("adv").classList.toggle("hidden", !data.pairedEnclosures.length);
+  // Nothing else is offered while the wizard is running. Somewhere to wander
+  // off to is the thing that makes a first run confusing.
+  $("adv").classList.toggle("hidden", guiding || !data.pairedEnclosures.length);
   // The other tabs only mean anything once there is an enclosure to show.
-  $("tabs").classList.toggle("hidden", !(data.link && data.link.connected));
+  const linkedNow=!!(data.link && data.link.connected);
+  $("tabs").classList.toggle("hidden", guiding || !linkedNow);
+  // The tabs go away when the link does, so anyone left on one of the other
+  // panes would be looking at an empty window with nothing to press.
+  if(!linkedNow && pane!=="play") showPane("play");
   loadFrames();
   document.querySelectorAll("[data-sim]").forEach(b=>{
     b.classList.toggle("primary", b.dataset.sim===data.simulator);
@@ -377,6 +512,13 @@ function render(data){
 }
 
 function doAction(id, button){
+  if(id==="wizStart"){ wizard.started=true; return refresh(); }
+  if(id==="wizBackSim"){ wizard.simPicked=false; return refresh(); }
+  if(id==="wizSimGspro"||id==="wizSimE6") return run(button, async()=>{
+    await api("/api/simulator",{simulator:id==="wizSimGspro"?"gspro":"e6"});
+    wizard.simPicked=true;
+  });
+  if(id==="wizFinish") return run(button, ()=>api("/api/finish-setup",{done:true}));
   if(id==="find") return run(button, findDevices);
   if(id==="check") return run(button, ()=>api("/api/check",{}));
   if(id==="test") return run(button, async()=>{
@@ -421,7 +563,7 @@ function renderDetails(data){
     ["Wi-Fi",(network.connection&&network.connection.ssid)||"-"],
     ["Shots sent",shots.delivered!=null?shots.delivered:"-"],
     ["Not delivered",shots.lost!=null?shots.lost:"-"],
-    ["PiTrac",device.version||"-"],["This computer",data.version],
+    ["PiTrac",device.version||"-"],["Easy-Connect",data.version],
     ["Versions match",update.enclosureVersion?(update.versionsMatch?"yes":"no — update both"):"-"],
     ["Updates",update.detail||"-"]];
   $("kv").innerHTML=rows.map(([k,v])=>`<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join("");
@@ -449,23 +591,47 @@ async function findDevices(){
     host.querySelectorAll(".device").forEach(button=>button.addEventListener("click",()=>{
       const id=button.dataset.id;
       if(button.dataset.paired) return run(button, ()=>api("/api/connect",{deviceId:id}));
-      pairing=id; host.classList.add("hidden");
-      $("codeBox").classList.remove("hidden"); $("code").focus();
+      // There is nothing to type. Ask, and let the enclosure decide.
+      run(button, async()=>{
+        try{ await api("/api/pair",{deviceId:id}); }
+        catch(error){ showAsk(data.enclosures.find(e=>e.deviceId===id)); throw error; }
+      });
     }));
   }catch(error){ showError(error); host.classList.add("hidden"); }
 }
 
-$("cancelPair").addEventListener("click",()=>{
-  pairing=null; $("codeBox").classList.add("hidden"); refresh();
-});
-$("doPair").addEventListener("click",e=>run(e.target, async()=>{
-  const code=$("code").value.replace(/\D/g,"");
-  const target=pairing;
-  pairing=null;
-  await api("/api/pair",{deviceId:target, code});
-  $("codeBox").classList.add("hidden"); $("code").value="";
+// An enclosure that already belongs to a computer will not take another one
+// until its owner says so. Show its own page, so whoever is here can do that
+// without being told to go and find a browser.
+function showAsk(enclosure){
+  const address=enclosure && enclosure.address ? enclosure.address.split(":")[0] : "";
+  const port=(enclosure && enclosure.portalPort) || 80;
+  const base=address ? "http://"+address+(port===80?"":":"+port) : "";
+  const frame=$("askFrame"), fallback=$("askFall");
+  if(base){
+    frame.style.display=""; frame.src=base;
+    fallback.textContent="You can also do this at "+base+" from any device on this Wi-Fi.";
+  }else{
+    frame.style.display="none"; frame.removeAttribute("src");
+    fallback.textContent="";
+  }
+  document.body.classList.add("pairing");
+  $("askBox").classList.remove("hidden");
+}
+
+function closeAsk(){
+  $("askFrame").removeAttribute("src");  // stop it polling once it is hidden
+  document.body.classList.remove("pairing");
+  $("askBox").classList.add("hidden");
+  $("err").innerHTML="";  // the panel is gone, so the reason for it is stale
+}
+
+$("cancelPair").addEventListener("click",()=>{ closeAsk(); refresh(); });
+
+$("setupAgain").addEventListener("click",e=>run(e.target, async()=>{
+  wizard={started:true, simPicked:false};
+  await api("/api/finish-setup",{done:false});
 }));
-$("code").addEventListener("keydown",e=>{ if(e.key==="Enter") $("doPair").click(); });
 
 // --- advanced ------------------------------------------------------------
 
@@ -486,10 +652,10 @@ $("forget").addEventListener("click",e=>run(e.target, async()=>{
   await api("/api/forget",{deviceId:status.activeDeviceId});
 }));
 $("quit").addEventListener("click",e=>run(e.target, async()=>{
-  if(!confirm("Stop Easy Connect?\n\nShots will stop reaching your simulator until you start it again.")) return;
+  if(!confirm("Stop Easy-Connect?\n\nShots will stop reaching your simulator until you start it again.")) return;
   await api("/api/quit",{});
-  document.body.innerHTML='<main><div class="brand">PiTrac</div>'+
-    '<div class="status"><div class="dot"></div><div><h1>Easy Connect has stopped</h1>'+
+  document.body.innerHTML='<main><div class="brand">PiTrac Easy-Connect</div>'+
+    '<div class="status"><div class="dot"></div><div><h1>Easy-Connect has stopped</h1>'+
     '<div class="sub">You can close this window.</div></div></div></main>';
 }));
 $("makeBackup").addEventListener("click",e=>run(e.target, async()=>{
@@ -519,8 +685,6 @@ $("bkFile").addEventListener("change",async event=>{
 });
 
 // --- the window's tabs ---------------------------------------------------
-
-let pane="play";
 
 function showPane(name){
   pane=name;
@@ -680,13 +844,13 @@ async function refresh(){
   try{ render(await api("/api/status")); }
   catch(error){
     $("dot").className="dot bad";
-    $("head").textContent="Easy Connect has stopped";
+    $("head").textContent="Easy-Connect has stopped";
     $("sub").textContent="You can close this window.";
     $("why").textContent="";
   }
 }
 refresh();
-setInterval(()=>{ if(!busy && !pairing) refresh(); }, 3000);
+setInterval(()=>{ if(!busy && !asking()) refresh(); }, 3000);
 </script>
 </body>
 </html>

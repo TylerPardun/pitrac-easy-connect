@@ -1,4 +1,4 @@
-name: Test and build
+name: Test, build, and publish
 
 on:
   workflow_dispatch:
@@ -39,17 +39,17 @@ jobs:
         include:
           - os: windows-latest
             artifact: PiTrac-windows
-            path: dist/PiTrac.exe
+            path: dist/PiTrac Easy-Connect.exe
           - os: macos-latest
             artifact: PiTrac-macos
-            path: dist/PiTrac-macos.zip
+            path: dist/PiTrac-Easy-Connect-macos.zip
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
-      - run: python -m pip install --upgrade pip pyinstaller pillow
+      - run: python -m pip install --upgrade pip pyinstaller pillow pywebview
 
       - name: Generate icons
         run: python packaging/icon/make-icons.py packaging/icon
@@ -65,7 +65,7 @@ jobs:
       # bit, which leaves a download that cannot be opened.
       - name: Package the macOS app
         if: runner.os == 'macOS'
-        run: ditto -c -k --keepParent dist/PiTrac.app dist/PiTrac-macos.zip
+        run: ditto -c -k --keepParent "dist/PiTrac Easy-Connect.app" dist/PiTrac-Easy-Connect-macos.zip
 
       - uses: actions/upload-artifact@v4
         with:
@@ -106,14 +106,34 @@ jobs:
           body: |
             Download the build for your computer.
 
-            **Windows** — `PiTrac.exe`. Windows will warn that it does not
-            recognise the program; choose **More info**, then **Run anyway**.
+            **Windows** — `PiTrac Easy-Connect.exe`. Windows will warn that it
+            does not recognise the program; choose **More info**, then **Run
+            anyway**.
 
-            **macOS** — `PiTrac-macos.zip`. Unzip it, then right-click the app
-            and choose **Open** the first time.
+            **macOS** — `PiTrac-Easy-Connect-macos.zip`. Unzip it, then
+            right-click the app and choose **Open** the first time.
 
             **Any computer with Python 3.9+** — the `.pyz` runs without
             installation.
 
             Neither build is code-signed yet, which is why both operating
             systems warn about them.
+
+  pages:
+    if: github.ref == 'refs/heads/main'
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+      - id: deploy
+        uses: actions/deploy-pages@v4

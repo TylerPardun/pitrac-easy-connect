@@ -381,7 +381,7 @@ class ShotRelay:
                 connection.send(
                     unavailable_reply(
                         simulator,
-                        "PiTrac Easy Connect is not connected to a computer running your simulator",
+                        "PiTrac Easy-Connect is not connected to a computer running your simulator",
                     )
                 )
             except OSError:

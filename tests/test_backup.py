@@ -58,7 +58,7 @@ def test_a_backup_carries_calibration_and_preferences(tmp_path):
 
 def test_secrets_are_left_out_unless_asked_for(tmp_path):
     identity, _settings, _pitrac, pairings, manager = build(tmp_path)
-    pairings.redeem(pairings.issue_code().code, "Sim PC")
+    pairings.create_pairing("Sim PC")
 
     plain = manager.create_bytes()
     assert identity.identity.setup_password.encode() not in plain
@@ -72,7 +72,7 @@ def test_secrets_are_left_out_unless_asked_for(tmp_path):
 
 def test_secrets_are_included_when_explicitly_requested(tmp_path):
     identity, _settings, _pitrac, pairings, manager = build(tmp_path)
-    pairings.redeem(pairings.issue_code().code, "Sim PC")
+    pairings.create_pairing("Sim PC")
 
     full = manager.create_bytes(include_identity=True, include_pairings=True)
     info = manager.inspect(full)
@@ -270,7 +270,7 @@ def test_a_rebuilt_card_can_become_the_same_enclosure_again(tmp_path):
     """
 
     identity, _settings, _pitrac, pairings, manager = build(tmp_path, "original")
-    pairings.redeem(pairings.issue_code().code, "Sim Room PC")
+    pairings.create_pairing("Sim Room PC")
     original = identity.identity
     backup = manager.create_bytes(include_identity=True, include_pairings=True)
 

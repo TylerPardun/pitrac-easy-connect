@@ -73,6 +73,10 @@ class SimulatedPi(PiBackend):
     def __post_init__(self) -> None:
         self._lock = threading.RLock()
         self._profiles: Dict[str, FakeAccessPoint] = {}
+        #: Networks the Pi already knew before Easy Connect existed — what
+        #: netplan set up on a real machine. Easy Connect must never change
+        #: these, but it does list them.
+        self._preexisting_ssids: List[str] = []
         self._hotspot: Optional[ActiveConnection] = None
         self._active: Optional[ActiveConnection] = None
         self._checkpoints: Dict[str, Optional[ActiveConnection]] = {}
@@ -139,6 +143,14 @@ class SimulatedPi(PiBackend):
         with self._lock:
             return sorted(self._profiles)
 
+    def known_ssids(self) -> List[str]:
+        with self._lock:
+            return sorted(
+                access_point.ssid
+                for profile, access_point in self._profiles.items()
+                if profile != HOTSPOT_PROFILE
+            ) + sorted(self._preexisting_ssids)
+
     def profile_name_for(self, ssid: str) -> str:
         return "{}{}".format(PROFILE_PREFIX, ssid)
 
@@ -179,7 +191,7 @@ class SimulatedPi(PiBackend):
 
     def forget_profile(self, profile: str) -> None:
         if not profile.startswith(PROFILE_PREFIX):
-            raise BackendError("Easy Connect only removes profiles it created")
+            raise BackendError("Easy-Connect only removes profiles it created")
         with self._lock:
             self._profiles.pop(profile, None)
             if self._active and self._active.profile == profile:

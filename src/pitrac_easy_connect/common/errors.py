@@ -138,35 +138,36 @@ NET_COUNTRY_INVALID = _define(
 
 # Pairing and ownership -----------------------------------------------------
 
-PAIR_CODE_INVALID = _define(
+PAIR_NOT_ACCEPTING = _define(
     "PT-PAIR-001",
-    "That pairing code is not correct.",
+    "PiTrac is not letting new computers connect right now.",
     "No computer was given access.",
-    "Read the six-digit code from the PiTrac setup page and type it again.",
+    "On the PiTrac setup page, open Advanced and press Pair another computer, "
+    "then try again within five minutes.",
 )
-PAIR_CODE_EXPIRED = _define(
+PAIR_EXCHANGE_LOST = _define(
     "PT-PAIR-002",
-    "That pairing code has expired.",
+    "That connection attempt did not finish in time.",
     "No computer was given access.",
-    "Open the PiTrac setup page and press Show pairing code to get a fresh one.",
+    "Press Connect again.",
 )
 PAIR_RATE_LIMITED = _define(
     "PT-PAIR-003",
-    "Too many incorrect pairing codes were entered.",
+    "Too many connection attempts were refused.",
     "No computer was given access and your settings are untouched.",
-    "Wait a few minutes and try once more with the code shown on the PiTrac setup page.",
+    "Wait a few minutes, then try once more.",
 )
 PAIR_NOT_PAIRED = _define(
     "PT-PAIR-004",
     "This computer is not paired with that PiTrac.",
     "Nothing was changed on the enclosure.",
-    "Press Pair this computer and enter the six-digit code shown by PiTrac.",
+    "In Easy-Connect, press Search and choose that PiTrac to connect again.",
 )
 PAIR_REVOKED = _define(
     "PT-PAIR-005",
     "This computer's access was removed from that PiTrac.",
     "Nothing was changed on the enclosure.",
-    "Pair again with a new six-digit code, or ask the owner to restore access.",
+    "Ask the owner to press Pair another computer on the PiTrac setup page.",
 )
 
 # Enclosure hardware and services ------------------------------------------
@@ -192,7 +193,7 @@ PI_MEASURE_STOPPED = _define(
 PI_WEB_STOPPED = _define(
     "PT-PI-004",
     "The PiTrac dashboard service is not running.",
-    "Nothing was lost. Easy Connect is still reachable.",
+    "Nothing was lost. Easy-Connect is still reachable.",
     "Press Restart PiTrac on the maintenance screen, then reload the dashboard.",
 )
 PI_LOW_STORAGE = _define(
@@ -229,7 +230,7 @@ PI_UNSUPPORTED_HARDWARE = _define(
     "PT-PI-010",
     "This is not a supported Raspberry Pi model or operating system for this release.",
     "Nothing was changed.",
-    "Easy Connect needs a Raspberry Pi 5 running 64-bit Raspberry Pi OS. See the guide.",
+    "Easy-Connect needs a Raspberry Pi 5 running 64-bit Raspberry Pi OS. See the guide.",
 )
 
 # Companion and the link between the PC and the enclosure -------------------
@@ -256,7 +257,7 @@ LINK_NO_COMPUTER = _define(
     "PT-LINK-005",
     "No paired computer is connected to PiTrac yet.",
     "Everything on the enclosure is working and nothing was changed.",
-    "Open PiTrac Easy Connect on your Windows PC. It will find this enclosure and connect.",
+    "Open PiTrac Easy-Connect on your Windows PC. It will find this enclosure and connect.",
 )
 LINK_PORTAL_UNREACHABLE = _define(
     "PT-LINK-006",
@@ -269,7 +270,7 @@ LINK_BUSY = _define(
     "PT-LINK-004",
     "Another computer is already connected to that PiTrac.",
     "Nothing was changed.",
-    "Close Easy Connect on the other computer, or remove it from the trusted list on the maintenance screen.",
+    "Close Easy-Connect on the other computer, or remove it from the trusted list on the maintenance screen.",
 )
 
 # Simulators ----------------------------------------------------------------
@@ -300,7 +301,7 @@ SIM_NO_RESPONSE = _define(
 )
 SIM_BAD_RESPONSE = _define(
     "PT-SIM-005",
-    "The simulator sent a reply Easy Connect does not understand.",
+    "The simulator sent a reply Easy-Connect does not understand.",
     "No shot was scored and nothing was changed.",
     "Check that the simulator version is one this release supports. The versions are in the guide.",
 )
@@ -315,9 +316,9 @@ CFG_WRITE_FAILED = _define(
 )
 CFG_SCHEMA_NEWER = _define(
     "PT-CFG-002",
-    "These settings were written by a newer version of Easy Connect.",
+    "These settings were written by a newer version of Easy-Connect.",
     "The settings file was left untouched.",
-    "Update Easy Connect on this enclosure, then open this screen again.",
+    "Update Easy-Connect on this enclosure, then open this screen again.",
 )
 CFG_BACKUP_INVALID = _define(
     "PT-CFG-003",

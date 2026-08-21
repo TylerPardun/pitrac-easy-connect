@@ -267,6 +267,23 @@ class PitracInstallation:
             self._restore_owner(owner)
         return changed
 
+    def owner_home(self) -> Optional[str]:
+        """The home directory of whoever PiTrac belongs to on this machine.
+
+        Easy Connect runs as root, so anything that looks for PiTrac's own
+        files under ``~`` would look in root's home and find nothing.
+        """
+
+        owner = self._intended_owner()
+        if owner is None:
+            return None
+        try:
+            import pwd
+
+            return pwd.getpwuid(owner[0]).pw_dir
+        except Exception:
+            return None
+
     def _intended_owner(self) -> Optional[Tuple[int, int]]:
         """Who should own the settings file after we write it.
 

@@ -98,9 +98,6 @@ class PortalHandler(BaseHTTPRequestHandler):
         if path == "/api/networks":
             self._guarded(lambda: {"networks": [n.as_dict() for n in self._service().provisioner.scan()]})
             return
-        if path == "/api/pairing-code":
-            self._guarded(self._pairing_code)
-            return
         if path == "/api/pair-hello":
             self._guarded(self._pair_hello)
             return
@@ -131,12 +128,12 @@ class PortalHandler(BaseHTTPRequestHandler):
             "/api/direct-mode": lambda body: self._service().command(
                 "setDirectMode", {"enabled": bool(body.get("enabled"))}
             ),
-            "/api/pairing-code": lambda body: self._pairing_code(bool(body.get("refresh"))),
+            "/api/pair-remove": lambda body: self._remove_computer(str(body.get("pairingId", ""))),
+            "/api/pair-open": lambda body: self._open_pairing(),
+            "/api/pair-close": lambda body: self._close_pairing(),
             "/api/pair": lambda body: self._service().pairings.complete_exchange(
                 str(body.get("sessionId", "")),
                 str(body.get("clientPublic", "")),
-                str(body.get("code", "")),
-                str(body.get("proof", "")),
                 str(body.get("computerName", "")),
             ),
             "/api/backup/inspect": lambda body: self._service().command(
@@ -144,6 +141,7 @@ class PortalHandler(BaseHTTPRequestHandler):
             ),
             "/api/backup/restore": lambda body: self._service().command("restoreBackup", body),
             "/api/restart-pitrac": lambda body: self._service().command("restartPitrac"),
+            "/api/new-owner": lambda body: self._service().command("prepareForNewOwner", {}),
             "/api/reset-network": lambda body: self._service().command("resetNetwork"),
             "/api/shutdown": lambda body: self._service().command("shutdown"),
             "/api/reboot": lambda body: self._service().command("reboot"),
@@ -293,10 +291,28 @@ class PortalHandler(BaseHTTPRequestHandler):
         )
         return started
 
-    def _pairing_code(self, refresh: bool = False) -> Dict[str, Any]:
+    def _remove_computer(self, pairing_id: str) -> Dict[str, Any]:
+        """Take away one computer's access, from the enclosure's own page.
+
+        A computer that was unpaired while the enclosure was off, or one that
+        no longer exists, leaves an entry only this can clear.
+        """
+
+        service = self._service()
+        service.command("revokeComputer", {"pairingId": pairing_id})
+        return {"computers": service.pairings.trusted_computers()}
+
+    def _open_pairing(self) -> Dict[str, Any]:
+        """Let one more computer connect, for a few minutes."""
+
         pairings = self._service().pairings
-        code = pairings.issue_code() if refresh else pairings.code_for_display()
-        return code.as_dict(pairings.clock())
+        pairings.open_window()
+        return pairings.status()
+
+    def _close_pairing(self) -> Dict[str, Any]:
+        pairings = self._service().pairings
+        pairings.close_window()
+        return pairings.status()
 
     # --- Wire -------------------------------------------------------------
 
@@ -323,12 +339,19 @@ class PortalHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(length))
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
-        self.send_header("X-Frame-Options", "DENY")
         self.send_header("Referrer-Policy", "no-referrer")
+        # The app shows this page inside its own window, so framing has to be
+        # allowed from loopback — and only from loopback. A website cannot be
+        # served from 127.0.0.1 on the visitor's machine, so this still stops
+        # the clickjacking that X-Frame-Options: DENY was there to stop.
+        # X-Frame-Options is deliberately absent: browsers ignore it when
+        # frame-ancestors is present, and leaving both in place invited the
+        # bug where the app's Setup tab silently showed nothing.
         self.send_header(
             "Content-Security-Policy",
             "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; "
-            "connect-src 'self'; form-action 'none'; frame-ancestors 'none'",
+            "connect-src 'self'; form-action 'none'; "
+            "frame-ancestors 'self' http://127.0.0.1:* http://localhost:*",
         )
         self.end_headers()
 

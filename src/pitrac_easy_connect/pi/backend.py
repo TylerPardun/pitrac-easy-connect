@@ -28,6 +28,9 @@ class WifiNetwork:
     security: str
     in_use: bool = False
     frequency_mhz: int = 0
+    #: The enclosure already has this network's password saved, so joining it
+    #: asks for nothing. Filled in by the provisioner, which is what knows.
+    known: bool = False
 
     @property
     def band(self) -> str:
@@ -62,6 +65,7 @@ class WifiNetwork:
             "supported": self.supported,
             "security": self.security,
             "inUse": self.in_use,
+            "known": self.known,
         }
 
 
@@ -156,7 +160,22 @@ class PiBackend:
         raise NotImplementedError
 
     def saved_profiles(self) -> List[str]:
-        """Profile names Easy Connect created. Never includes netplan profiles."""
+        """Profile names Easy Connect created. Never includes netplan profiles.
+
+        This is the list of profiles Easy Connect may *change*, which is why it
+        stops at its own. To find out what the Pi merely knows about, including
+        what netplan set up, use ``known_ssids``.
+        """
+
+        raise NotImplementedError
+
+    def known_ssids(self) -> List[str]:
+        """Every network this Pi already has credentials for, whoever saved it.
+
+        Read-only, and deliberately wider than ``saved_profiles``: netplan owns
+        some profiles and Easy Connect must not touch them, but the person
+        choosing a network still wants to see that the Pi knows them.
+        """
 
         raise NotImplementedError
 

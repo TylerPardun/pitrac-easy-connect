@@ -1,13 +1,18 @@
 """Deciding which computers are allowed to talk to this enclosure.
 
-Pairing has to satisfy two things that pull against each other: a person who
-cannot use a terminal must be able to do it in a few seconds, and a neighbour on
-the same Wi-Fi must not be able to do it at all.
+There used to be a six-digit code here. It was removed, because it could not do
+the job it claimed to do. The enclosure has no screen and no button, so the only
+place a code can appear is its setup page — and that page is reachable by
+anything on the same Wi-Fi. Anyone who could be stopped by the code could also
+read it. Meanwhile the app grew to show that page itself, so the code became
+something the app displayed and then asked you to type back to it.
 
-The compromise is a six-digit code that is only visible to someone with physical
-access — it appears on the setup page, which is reachable over the enclosure's
-own hotspot, and on the maintenance screen, which needs an existing pairing.
-Codes expire, work once, and are rate limited.
+What is left is the honest version of the same boundary. The first computer to
+ask may pair, because an enclosure with nothing paired to it is one nobody has
+set up yet. After that, pairing is closed until the owner opens a short window
+from the setup page. So a computer can never pair without someone deciding, at
+that moment, to let it — and the trust boundary is your home network, which is
+what it always really was.
 
 Each paired computer gets its own random secret. There is no fleet-wide
 password, so revoking one PC cannot affect another, and a secret taken from one
@@ -30,15 +35,16 @@ from typing import Any, Callable, Dict, List, Optional
 from ..common import pairing_exchange as exchange
 from ..common.configstore import ConfigStore
 from ..common.errors import (
-    PAIR_CODE_EXPIRED,
-    PAIR_CODE_INVALID,
+    PAIR_EXCHANGE_LOST,
+    PAIR_NOT_ACCEPTING,
     PAIR_NOT_PAIRED,
     PAIR_RATE_LIMITED,
     PAIR_REVOKED,
     EasyConnectError,
 )
 
-CODE_LIFETIME_SECONDS = 300.0
+#: How long the owner's "let another computer pair" window stays open.
+PAIRING_WINDOW_SECONDS = 300.0
 EXCHANGE_LIFETIME_SECONDS = 120.0
 
 #: How many pairing exchanges may be in flight at once. Starting an exchange
@@ -48,19 +54,9 @@ EXCHANGE_LIFETIME_SECONDS = 120.0
 MAX_OPEN_EXCHANGES = 8
 MAX_FAILURES = 5
 FAILURE_WINDOW_SECONDS = 600.0
+#: A refused attempt is not a wrong guess any more, so this is only here to stop
+#: something hammering the enclosure.
 SECRET_BYTES = 32
-
-
-@dataclass(frozen=True)
-class PairingCode:
-    code: str
-    expires_at: float
-
-    def seconds_left(self, now: float) -> float:
-        return max(0.0, self.expires_at - now)
-
-    def as_dict(self, now: float) -> Dict[str, Any]:
-        return {"code": self.code, "secondsLeft": round(self.seconds_left(now))}
 
 
 @dataclass(frozen=True)
@@ -73,11 +69,6 @@ class NewPairing:
 
     def as_dict(self) -> Dict[str, str]:
         return {"pairingId": self.pairing_id, "secret": self.secret, "deviceId": self.device_id}
-
-
-def _now_code() -> str:
-    # secrets.randbelow avoids the modulo bias a naive randint-on-digits has.
-    return "{:06d}".format(secrets.randbelow(1_000_000))
 
 
 class PairingManager:
@@ -96,30 +87,46 @@ class PairingManager:
             schema_version=1,
             secret=True,
         )
-        self._code: Optional[PairingCode] = None
+        self._open_until: float = 0.0
         self._failures: List[float] = []
         self._exchanges: Dict[str, Dict[str, Any]] = {}
 
-    # --- Offering a code --------------------------------------------------
+    # --- Deciding whether anyone may pair right now -----------------------
 
-    def issue_code(self) -> PairingCode:
-        """Make a fresh code, replacing any code that is still outstanding."""
+    def open_window(self) -> float:
+        """Let one more computer pair, for a few minutes. The owner asks for this."""
 
         with self._lock:
-            self._code = PairingCode(_now_code(), self.clock() + CODE_LIFETIME_SECONDS)
-            return self._code
+            self._open_until = self.clock() + PAIRING_WINDOW_SECONDS
+            return PAIRING_WINDOW_SECONDS
 
-    def current_code(self) -> Optional[PairingCode]:
+    def close_window(self) -> None:
         with self._lock:
-            if self._code and self._code.seconds_left(self.clock()) > 0:
-                return self._code
-            self._code = None
-            return None
+            self._open_until = 0.0
 
-    def code_for_display(self) -> PairingCode:
-        return self.current_code() or self.issue_code()
+    def window_seconds_left(self) -> float:
+        with self._lock:
+            return max(0.0, self._open_until - self.clock())
 
-    # --- Redeeming one ----------------------------------------------------
+    def accepting(self) -> bool:
+        """Whether a computer asking to pair right now would be allowed.
+
+        Open in exactly two situations: nothing has ever been paired, so this is
+        an enclosure nobody has set up; or the owner opened a window just now.
+        Note the first case is also the way back in if every computer is
+        unpaired — otherwise an enclosure could be left with no way to reach it.
+        """
+
+        with self._lock:
+            return self.count == 0 or self.window_seconds_left() > 0
+
+    def status(self) -> Dict[str, Any]:
+        with self._lock:
+            return {
+                "accepting": self.accepting(),
+                "windowSecondsLeft": round(self.window_seconds_left()),
+                "firstSetup": self.count == 0,
+            }
 
     def _check_rate_limit(self) -> None:
         now = self.clock()
@@ -127,36 +134,24 @@ class PairingManager:
         if len(self._failures) >= MAX_FAILURES:
             raise EasyConnectError(
                 PAIR_RATE_LIMITED,
-                "{} incorrect codes within {:.0f} minutes".format(
+                "{} refused attempts within {:.0f} minutes".format(
                     len(self._failures), FAILURE_WINDOW_SECONDS / 60
                 ),
             )
 
-    def redeem(self, code: str, computer_name: str = "") -> NewPairing:
+    def create_pairing(self, computer_name: str = "") -> NewPairing:
+        """Record a pairing. Whether to allow it is the caller's decision."""
+
         with self._lock:
-            self._check_rate_limit()
             now = self.clock()
-            offered = str(code or "").strip()
-
-            outstanding = self._code
-            if outstanding is None or outstanding.seconds_left(now) <= 0:
-                self._code = None
-                self._failures.append(now)
-                raise EasyConnectError(PAIR_CODE_EXPIRED, "no code is currently valid")
-
-            # Constant-time so the response time does not leak how much of the
-            # code was right.
-            if not hmac.compare_digest(offered, outstanding.code):
-                self._failures.append(now)
-                raise EasyConnectError(PAIR_CODE_INVALID, "the code did not match")
-
-            # Single use: burn it whether or not anything later fails.
-            self._code = None
+            # A window is for one computer. Close it so a second cannot follow
+            # through the same opening.
+            self._open_until = 0.0
             self._failures = []
 
             pairing_id = secrets.token_hex(8)
             secret = secrets.token_hex(SECRET_BYTES)
-            name = " ".join(str(computer_name or "").split())[:40] or "Windows PC"
+            name = " ".join(str(computer_name or "").split())[:40] or "This computer"
 
             pairings = dict(self._store.get("pairings") or {})
             pairings[pairing_id] = {
@@ -200,15 +195,14 @@ class PairingManager:
         self,
         session_id: str,
         client_public: str,
-        code: str,
-        client_proof: str,
         computer_name: str = "",
     ) -> Dict[str, str]:
         """Finish the exchange and hand back the pairing secret, masked.
 
-        The rate limit is applied to the whole exchange, not just the code, so a
-        caller cannot get unlimited attempts by starting a new exchange each
-        time.
+        The exchange keeps the secret off the wire: it is masked with a key only
+        this enclosure and that computer can derive, so anything listening on
+        the network learns nothing it could reuse. What the exchange does not do
+        is decide *whether* to pair — ``accepting`` does that, above.
         """
 
         with self._lock:
@@ -217,42 +211,32 @@ class PairingManager:
             session = getattr(self, "_exchanges", {}).get(session_id)
             if session is None or session["expiresAt"] <= now:
                 self._failures.append(now)
-                raise EasyConnectError(PAIR_CODE_EXPIRED, "the pairing exchange expired")
+                raise EasyConnectError(PAIR_EXCHANGE_LOST, "the pairing exchange expired")
 
             try:
                 key = exchange.shared_key(client_public, session["private"])
             except ValueError as exc:
                 self._exchanges.pop(session_id, None)
                 self._failures.append(now)
-                raise EasyConnectError(PAIR_CODE_INVALID, str(exc)) from exc
+                raise EasyConnectError(PAIR_EXCHANGE_LOST, str(exc)) from exc
 
-            outstanding = self._code
-            if outstanding is None or outstanding.seconds_left(now) <= 0:
-                self._exchanges.pop(session_id, None)
-                self._code = None
-                self._failures.append(now)
-                raise EasyConnectError(PAIR_CODE_EXPIRED, "no code is currently valid")
-
-            expected = exchange.proof(
-                key, outstanding.code, session["public"], client_public, "client"
-            )
-            if not exchange.verify_proof(expected, client_proof):
-                # One attempt per exchange. Reusing it would turn the rate limit
-                # into a formality.
+            if not self.accepting():
+                # Checked here rather than at the start, so an enclosure that is
+                # not accepting still costs an attempt against the rate limit.
                 self._exchanges.pop(session_id, None)
                 self._failures.append(now)
-                raise EasyConnectError(PAIR_CODE_INVALID, "the code did not match")
+                raise EasyConnectError(
+                    PAIR_NOT_ACCEPTING, "this enclosure is not accepting new computers"
+                )
 
             self._exchanges.pop(session_id, None)
 
-        pairing = self.redeem(outstanding.code, computer_name)
+        pairing = self.create_pairing(computer_name)
         return {
             "pairingId": pairing.pairing_id,
             "deviceId": self.device_id,
             "maskedSecret": exchange.mask_secret(key, pairing.secret),
-            "serverProof": exchange.proof(
-                key, outstanding.code, session["public"], client_public, "server"
-            ),
+            "serverProof": exchange.proof(key, session["public"], client_public, "server"),
         }
 
     # --- Proving identity on every connection ----------------------------
@@ -364,7 +348,7 @@ class PairingManager:
             revoked = list(self._store.get("revoked") or [])
             revoked.extend(self._store.get("pairings") or {})
             self._store.update({"pairings": {}, "revoked": revoked[-50:]})
-            self._code = None
+            self._open_until = 0.0
 
     def export(self) -> Dict[str, Any]:
         """The full pairing records, secrets included, for a backup.
@@ -387,7 +371,7 @@ class PairingManager:
         }
         with self._lock:
             self._store.set("pairings", cleaned)
-            self._code = None
+            self._open_until = 0.0
 
     @property
     def count(self) -> int:

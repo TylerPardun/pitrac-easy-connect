@@ -4,7 +4,7 @@ Starts a stand-in golf simulator on this computer and the real Companion, finds
 your PiTrac on the network, and then gets out of the way so you can do the rest
 through the two web pages exactly as a new owner would.
 
-What this proves: a computer finds the enclosure by itself, pairs with a code
+What this proves: a computer finds the enclosure by itself, pairs in one click
 read off the enclosure's own page, and carries a shot from PiTrac into the
 simulator. None of it involves logging into the Pi.
 
@@ -58,7 +58,7 @@ def find_enclosure(companion, timeout=25.0):
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(
-        description="Try PiTrac Easy Connect against your own enclosure"
+        description="Try PiTrac Easy-Connect against your own enclosure"
     )
     parser.add_argument("simulator", nargs="?", default="gspro",
                         choices=[item.value for item in Simulator])
@@ -67,7 +67,7 @@ def main(argv=None) -> int:
     args = parser.parse_args(argv)
     simulator = Simulator(args.simulator)
 
-    say("{}PiTrac Easy Connect {} - hands-on test{}".format(BOLD, __version__, OFF))
+    say("{}PiTrac Easy-Connect {} - hands-on test{}".format(BOLD, __version__, OFF))
     say("{}This starts a stand-in {} on this computer. Nothing on the Pi is changed.{}".format(
         DIM, simulator.label, OFF))
 
@@ -103,12 +103,11 @@ def main(argv=None) -> int:
         companion_url = "http://127.0.0.1:{}".format(server.server_port)
 
         heading("Do this, in your browser:")
-        say("  1. Easy Connect is open at   {}{}{}".format(BOLD, companion_url, OFF))
+        say("  1. Easy-Connect is open at   {}{}{}".format(BOLD, companion_url, OFF))
         say("  2. The PiTrac setup page is  {}{}{}".format(BOLD, setup_page, OFF))
         say("")
-        say("  3. On the PiTrac setup page, find the six-digit code under 'Pair your PC'.")
-        say("  4. In Easy Connect, press Search, click your enclosure, and type that code.")
-        say("  5. Press 'Send a test shot'. Watch this window - the shot appears below.")
+        say("  3. In Easy-Connect, press Search, then click your enclosure. That pairs it.")
+        say("  4. Press 'Send a test shot'. Watch this window - the shot appears below.")
         say("")
         say("{}Everything you just did was through two web pages. No terminal on the Pi.{}"
             .format(DIM, OFF))

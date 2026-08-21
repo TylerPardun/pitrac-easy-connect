@@ -1,9 +1,11 @@
 import pytest
 
+from pitrac_easy_connect.common import pairing_exchange as exchange
 from pitrac_easy_connect.common.errors import EasyConnectError
 from pitrac_easy_connect.pi.pairing import (
     FAILURE_WINDOW_SECONDS,
     MAX_FAILURES,
+    PAIRING_WINDOW_SECONDS,
     PairingManager,
 )
 
@@ -25,93 +27,128 @@ def build(tmp_path, clock=None):
 
 
 def pair_one(manager, name="Sim Room PC"):
-    return manager.redeem(manager.issue_code().code, name)
+    return manager.create_pairing(name)
 
 
-# --- Codes ----------------------------------------------------------------
+# --- Who is allowed to pair, and when -------------------------------------
 
 
-def test_a_code_is_six_digits(tmp_path):
+def ask_to_pair(manager, name="Sim Room PC"):
+    """Everything a computer does to pair, with nothing typed by a human."""
+
+    hello = manager.begin_exchange()
+    private, public = exchange.client_start()
+    result = manager.complete_exchange(hello["sessionId"], public, name)
+    key = exchange.shared_key(hello["serverPublic"], private)
+    # The computer checks the enclosure ran the same exchange before trusting it.
+    assert exchange.verify_proof(
+        exchange.proof(key, hello["serverPublic"], public, "server"),
+        result["serverProof"],
+    )
+    return exchange.unmask_secret(key, result["maskedSecret"])
+
+
+def test_the_first_computer_may_pair_with_nothing_asked_of_it(tmp_path):
+    """An enclosure with nothing paired to it is one nobody has set up yet."""
+
     manager, _ = build(tmp_path)
-    code = manager.issue_code().code
-    assert len(code) == 6 and code.isdigit()
+    assert manager.accepting()
+    assert ask_to_pair(manager)
+    assert manager.count == 1
 
 
-def test_a_code_works_exactly_once(tmp_path):
+def test_a_second_computer_is_refused_until_the_owner_opens_a_window(tmp_path):
     manager, _ = build(tmp_path)
-    code = manager.issue_code().code
-    manager.redeem(code, "First PC")
+    ask_to_pair(manager, "Owner PC")
+
+    assert not manager.accepting()
     with pytest.raises(EasyConnectError) as caught:
-        manager.redeem(code, "Second PC")
-    assert caught.value.info.code == "PT-PAIR-002"
+        ask_to_pair(manager, "Someone else's laptop")
+    assert caught.value.info.code == "PT-PAIR-001"
+
+    manager.open_window()
+    assert ask_to_pair(manager, "Kitchen laptop")
+    assert manager.count == 2
 
 
-def test_a_code_expires(tmp_path):
-    manager, clock = build(tmp_path)
-    code = manager.issue_code().code
-    clock.advance(301)
-    with pytest.raises(EasyConnectError) as caught:
-        manager.redeem(code, "Late PC")
-    assert caught.value.info.code == "PT-PAIR-002"
+def test_a_window_lets_in_one_computer_and_then_closes(tmp_path):
+    """Otherwise opening it once would leave the enclosure open to everything."""
 
-
-def test_an_expired_code_is_not_shown_as_current(tmp_path):
-    manager, clock = build(tmp_path)
-    manager.issue_code()
-    clock.advance(301)
-    assert manager.current_code() is None
-    assert manager.code_for_display().seconds_left(clock()) > 0
-
-
-def test_a_wrong_code_is_rejected(tmp_path):
     manager, _ = build(tmp_path)
-    manager.issue_code()
+    ask_to_pair(manager, "Owner PC")
+    manager.open_window()
+    ask_to_pair(manager, "Second PC")
+
+    assert not manager.accepting()
     with pytest.raises(EasyConnectError) as caught:
-        manager.redeem("000000" if manager.current_code().code != "000000" else "111111", "PC")
+        ask_to_pair(manager, "Third PC")
     assert caught.value.info.code == "PT-PAIR-001"
 
 
-def test_guessing_is_rate_limited(tmp_path):
+def test_a_window_left_open_expires_on_its_own(tmp_path):
     manager, clock = build(tmp_path)
-    real = manager.issue_code().code
-    wrong = "999999" if real != "999999" else "888888"
+    ask_to_pair(manager, "Owner PC")
+    manager.open_window()
+
+    clock.advance(PAIRING_WINDOW_SECONDS + 1)
+    assert not manager.accepting()
+    with pytest.raises(EasyConnectError):
+        ask_to_pair(manager, "Much later PC")
+
+
+def test_unpairing_everything_is_the_way_back_in(tmp_path):
+    """Without this an enclosure whose only computer died could not be reached."""
+
+    manager, _ = build(tmp_path)
+    ask_to_pair(manager, "Owner PC")
+    assert not manager.accepting()
+
+    manager.revoke_all()
+    assert manager.accepting()
+    assert ask_to_pair(manager, "Replacement PC")
+
+
+def test_refused_attempts_are_rate_limited(tmp_path):
+    manager, _ = build(tmp_path)
+    ask_to_pair(manager, "Owner PC")
 
     for _ in range(MAX_FAILURES):
         with pytest.raises(EasyConnectError):
-            manager.redeem(wrong, "Attacker")
+            ask_to_pair(manager, "Persistent stranger")
 
     with pytest.raises(EasyConnectError) as caught:
-        manager.redeem(wrong, "Attacker")
+        ask_to_pair(manager, "Persistent stranger")
     assert caught.value.info.code == "PT-PAIR-003"
 
 
 def test_the_rate_limit_lifts_after_the_window(tmp_path):
     manager, clock = build(tmp_path)
-    real = manager.issue_code().code
-    wrong = "999999" if real != "999999" else "888888"
+    ask_to_pair(manager, "Owner PC")
     for _ in range(MAX_FAILURES):
         with pytest.raises(EasyConnectError):
-            manager.redeem(wrong, "Attacker")
+            ask_to_pair(manager, "Stranger")
 
-    # The owner comes back later and asks the setup page for a fresh code. The
-    # lockout must not outlive the window, or a mistyped code would strand them.
+    # The owner comes back later and opens a window. The lockout must not
+    # outlive its own duration, or their own computer would be stranded.
     clock.advance(FAILURE_WINDOW_SECONDS + 1)
-    assert manager.redeem(manager.issue_code().code, "Owner PC").pairing_id
+    manager.open_window()
+    assert ask_to_pair(manager, "Owner's second PC")
 
 
-def test_a_successful_pairing_clears_earlier_failures(tmp_path):
-    manager, _ = build(tmp_path)
-    real = manager.issue_code().code
-    wrong = "999999" if real != "999999" else "888888"
+def test_a_successful_pairing_clears_earlier_refusals(tmp_path):
+    manager, clock = build(tmp_path)
+    ask_to_pair(manager, "Owner PC")
     for _ in range(MAX_FAILURES - 1):
         with pytest.raises(EasyConnectError):
-            manager.redeem(wrong, "Fumbling user")
-    manager.redeem(real, "Owner PC")
+            ask_to_pair(manager, "Stranger")
 
-    # A user who mistyped a few times and then succeeded is not left one
-    # attempt away from being locked out next time.
-    second = manager.issue_code().code
-    assert manager.redeem(second, "Second PC").pairing_id
+    manager.open_window()
+    ask_to_pair(manager, "Second PC")
+
+    # Someone who was refused a few times and then let in is not left one
+    # attempt away from a lockout next time.
+    manager.open_window()
+    assert ask_to_pair(manager, "Third PC")
 
 
 # --- Secrets --------------------------------------------------------------

@@ -99,6 +99,9 @@ rm -rf "$APP_DIR"
 install -d -m 0755 "$APP_DIR"
 cp -r "$HERE/../../src/pitrac_easy_connect" "$APP_DIR/"
 find "$APP_DIR" -name '__pycache__' -type d -prune -exec rm -rf {} + 2>/dev/null || true
+# Source copied from a Mac carries AppleDouble sidecars. Python ignores them,
+# but they clutter the install and confuse anyone reading it.
+find "$APP_DIR" -name '._*' -type f -delete 2>/dev/null || true
 say "Installed to $APP_DIR"
 
 # Settings, pairings, and the device identity live here and survive upgrades.

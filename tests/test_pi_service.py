@@ -129,7 +129,7 @@ def test_joining_a_network_and_confirming_it(service):
 
 
 def test_resetting_the_network_keeps_pairings_and_calibration(service):
-    pairing = service.pairings.redeem(service.pairings.issue_code().code, "Sim PC")
+    pairing = service.pairings.create_pairing("Sim PC")
     service.command("joinNetwork", {"ssid": "Ferndale", "password": "GoodPassword1"})
     service.command("confirmNetwork")
 
@@ -140,7 +140,7 @@ def test_resetting_the_network_keeps_pairings_and_calibration(service):
 
 
 def test_preparing_for_a_new_owner_removes_pairings_and_changes_the_setup_password(service):
-    pairing = service.pairings.redeem(service.pairings.issue_code().code, "Old owner PC")
+    pairing = service.pairings.create_pairing("Old owner PC")
     before = service.identity.setup_password
 
     result = service.command("prepareForNewOwner")
@@ -179,6 +179,30 @@ def test_the_setup_page_loads(portal):
     assert "PiTrac setup" in body
 
 
+def test_the_app_may_frame_the_setup_page_but_a_website_may_not(portal):
+    """The app embeds this page in its Setup tab, so loopback must be allowed.
+
+    It was blocked outright for a while, which made the tab silently blank —
+    no error, just nothing — and left the pairing code with nowhere to appear.
+    """
+
+    _server, base = portal
+    with urllib.request.urlopen(base + "/", timeout=5) as response:
+        policy = response.headers.get("Content-Security-Policy") or ""
+        # Browsers ignore X-Frame-Options when frame-ancestors is present, so
+        # having both is how the two ended up disagreeing in the first place.
+        assert response.headers.get("X-Frame-Options") is None
+
+    ancestors = policy.split("frame-ancestors")[1].split(";")[0]
+    assert "http://127.0.0.1:*" in ancestors, "the app window could not show this page"
+    assert "'none'" not in ancestors
+    # Only loopback. A website cannot be served from the visitor's own machine,
+    # so this still refuses the clickjacking case.
+    assert "*" not in ancestors.replace("http://127.0.0.1:*", "").replace(
+        "http://localhost:*", ""
+    )
+
+
 def test_status_reports_the_state_in_plain_language(portal):
     _server, base = portal
     status, data = request(base + "/api/status")
@@ -210,14 +234,27 @@ def test_joining_through_the_page_reports_a_wrong_password_specifically(portal):
     assert data["error"]["nextStep"]
 
 
-def test_a_pairing_code_is_offered_and_can_be_replaced(portal):
+def test_the_setup_page_can_open_and_close_the_pairing_window(portal, service):
     _server, base = portal
-    _status, first = request(base + "/api/pairing-code")
-    assert len(first["code"]) == 6
-    _status, again = request(base + "/api/pairing-code")
-    assert again["code"] == first["code"], "the same code stands until it is replaced"
-    _status, fresh = request(base + "/api/pairing-code", {"refresh": True})
-    assert fresh["code"] != first["code"]
+    service.pairings.create_pairing("Owner PC")  # so pairing is not open already
+    assert not service.pairings.accepting()
+
+    _status, opened = request(base + "/api/pair-open", {})
+    assert opened["accepting"] is True
+    assert opened["windowSecondsLeft"] > 0
+
+    _status, closed = request(base + "/api/pair-close", {})
+    assert closed["accepting"] is False
+    assert closed["windowSecondsLeft"] == 0
+
+
+def test_the_setup_page_will_not_hand_out_a_way_in(portal):
+    """There is no route that gives a caller anything it could pair with."""
+
+    _server, base = portal
+    for path in ("/api/pairing-code", "/api/pair-code", "/api/secret"):
+        status, _body = request(base + path)
+        assert status == 404, "{} should not exist".format(path)
 
 
 # --- Guards on the page ---------------------------------------------------
@@ -462,3 +499,33 @@ def test_the_images_directory_can_be_set_explicitly(tmp_path):
         ]
     )
     assert build_pitrac(args).images_dir == elsewhere
+
+
+def test_a_computer_can_be_removed_from_the_enclosures_own_page(portal, service):
+    """A computer unpaired while the enclosure was off leaves an entry behind.
+
+    Nothing else can clear it: that computer is gone, and the enclosure will go
+    on refusing new ones because it still counts as paired.
+    """
+
+    first = service.pairings.create_pairing("Old PC")
+    service.pairings.create_pairing("Current PC")
+    assert service.pairings.count == 2
+
+    _status, body = request(base_of(portal) + "/api/pair-remove", {"pairingId": first.pairing_id})
+    assert [c["name"] for c in body["computers"]] == ["Current PC"]
+    assert service.pairings.count == 1
+
+
+def test_the_enclosure_says_which_computers_it_trusts(portal, service):
+    service.pairings.create_pairing("Sim Room PC")
+    _status, body = request(base_of(portal) + "/api/status")
+    listed = body["trustedComputers"]
+    assert [c["name"] for c in listed] == ["Sim Room PC"]
+    # The list is shown on a page anyone on the network can open.
+    assert all("secret" not in c for c in listed)
+
+
+def base_of(portal):
+    _server, base = portal
+    return base

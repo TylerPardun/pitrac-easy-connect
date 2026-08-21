@@ -246,6 +246,6 @@ class Updater:
             self._last = None
         return {
             "applied": True,
-            "detail": "Updated. Restart PiTrac Easy Connect to use the new version.",
+            "detail": "Updated. Restart PiTrac Easy-Connect to use the new version.",
             "needsRestart": True,
         }

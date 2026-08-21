@@ -28,7 +28,7 @@ requested the change.
 
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
@@ -249,10 +249,22 @@ class WifiProvisioner:
                 )
 
     def scan(self) -> List[WifiNetwork]:
+        """What is in range, with the ones this enclosure already knows marked.
+
+        Someone changing network needs to tell "the one I am on" and "the one I
+        used at the old house" apart from a list of strangers' networks, and
+        signal strength alone does not do that.
+        """
+
         if not self.backend.wifi_country():
             raise EasyConnectError(NET_COUNTRY_REQUIRED, "no wireless country is set")
+        try:
+            known = set(self.backend.known_ssids())
+        except Exception:
+            # Never let this cost the user the list itself.
+            known = set()
         return [
-            network
+            replace(network, known=network.ssid in known)
             for network in self.backend.scan()
             if network.ssid != self.setup_ssid
         ]
@@ -310,7 +322,7 @@ class WifiProvisioner:
             return ProvisioningResult(
                 True,
                 self.mode,
-                "PiTrac joined {}. Reconnect this computer to {} and open Easy Connect to "
+                "PiTrac joined {}. Reconnect this computer to {} and open Easy-Connect to "
                 "finish.".format(ssid, ssid),
                 awaiting_confirmation=True,
                 ssid=connection.ssid or ssid,

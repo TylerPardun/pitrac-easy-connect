@@ -1,13 +1,18 @@
-"""Opening the Companion as a window rather than a browser tab.
+"""The application window.
 
-Modern browsers can open a page as a standalone application window: no tabs, no
-address bar, its own taskbar entry and icon. That is what ``--app=`` does, and it
-gets us an app-shaped window without bundling a browser engine or adding a
-dependency.
+Three ways of putting the interface on screen, tried in order:
 
-It is a stepping stone rather than the end state. A packaged release should use
-a native window, but this is testable today on any machine and behaves the same
-way from the user's point of view.
+1. **A native window** through pywebview — WKWebView on macOS, WebView2 on
+   Windows. This is a real application: its own icon in the dock or taskbar, its
+   own menu bar, and it closes like anything else. This is what a packaged build
+   uses.
+2. **A browser in application mode** (``--app=``), which looks close but is
+   still the browser: it borrows the browser's dock icon and menu bar. Kept as a
+   fallback for machines where the native backend will not load.
+3. **An ordinary browser tab**, so the interface is never simply unreachable.
+
+The native backend is an optional import. The Raspberry Pi service must never
+depend on it, and a PC without it should degrade rather than fail.
 """
 
 import os
@@ -17,8 +22,8 @@ import sys
 import webbrowser
 from typing import List, Optional
 
-#: Browsers that support application mode, in the order we would rather use.
-#: Edge first on Windows because it is always present there.
+#: Browsers that support application mode, in preference order. Edge first on
+#: Windows because it is always present there.
 _CANDIDATES = {
     "nt": [
         r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
@@ -38,6 +43,37 @@ _CANDIDATES = {
         "google-chrome", "google-chrome-stable", "chromium", "chromium-browser",
     ],
 }
+
+
+def native_available() -> bool:
+    """Whether a real application window can be drawn on this machine."""
+
+    try:
+        import webview  # noqa: F401
+    except Exception:
+        return False
+    return True
+
+
+def run_native(url: str, title: str = "PiTrac Easy-Connect", width: int = 480, height: int = 900) -> bool:
+    """Open a native window and block until the user closes it.
+
+    Must be called on the main thread: the macOS and Windows toolkits both
+    require it. Returns False if a native window could not be created, so the
+    caller can fall back rather than leaving the user with nothing.
+    """
+
+    try:
+        import webview
+    except Exception:
+        return False
+
+    try:
+        webview.create_window(title, url, width=width, height=height, min_size=(380, 560))
+        webview.start()
+        return True
+    except Exception:
+        return False
 
 
 def _candidates() -> List[str]:
@@ -60,10 +96,10 @@ def find_browser() -> Optional[str]:
     return None
 
 
-def open_window(url: str, width: int = 460, height: int = 820) -> bool:
-    """Open ``url`` as an application window. Falls back to a normal tab.
+def open_window(url: str, width: int = 480, height: int = 900) -> bool:
+    """Open the interface in an application-mode browser window.
 
-    Returns whether an application window was opened, so the caller can say
+    Returns whether a chromeless window was opened, so the caller can say
     something useful when it could not be.
     """
 
@@ -72,11 +108,9 @@ def open_window(url: str, width: int = 460, height: int = 820) -> bool:
         webbrowser.open(url)
         return False
 
-    # A profile of its own keeps this window out of the user's browsing session
-    # and stops it inheriting or disturbing their tabs.
-    profile = os.path.join(
-        os.path.expanduser("~"), ".pitrac-easy-connect", "window-profile"
-    )
+    # A profile of its own keeps this out of the user's browsing session and
+    # stops it inheriting or disturbing their tabs.
+    profile = os.path.join(os.path.expanduser("~"), ".pitrac-easy-connect", "window-profile")
     try:
         os.makedirs(profile, exist_ok=True)
     except OSError:

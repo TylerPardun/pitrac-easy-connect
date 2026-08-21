@@ -57,8 +57,9 @@ class CompanionHandler(BaseHTTPRequestHandler):
         path = urlparse(self.path).path
         routes: Dict[str, Callable[[Dict[str, Any]], Any]] = {
             "/api/search": lambda body: {"enclosures": service.search()},
-            "/api/pair": lambda body: service.pair(
-                str(body.get("deviceId", "")), str(body.get("code", ""))
+            "/api/pair": lambda body: service.pair(str(body.get("deviceId", ""))),
+            "/api/finish-setup": lambda body: service.finish_setup(
+                bool(body.get("done", True))
             ),
             "/api/connect": lambda body: service.connect(str(body.get("deviceId", ""))),
             "/api/forget": lambda body: service.forget(str(body.get("deviceId", ""))),
@@ -151,9 +152,9 @@ class CompanionHandler(BaseHTTPRequestHandler):
                 HTTPStatus.INTERNAL_SERVER_ERROR,
                 {
                     "error": {
-                        "failed": "Easy Connect could not complete that: {}".format(exc),
+                        "failed": "Easy-Connect could not complete that: {}".format(exc),
                         "stillSafe": "Nothing was changed on PiTrac.",
-                        "nextStep": "Try again. If it keeps failing, restart Easy Connect.",
+                        "nextStep": "Try again. If it keeps failing, restart Easy-Connect.",
                     }
                 },
             )

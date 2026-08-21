@@ -63,12 +63,9 @@ class Rig:
             time.sleep(0.1)
         raise AssertionError("the enclosure was never discovered")
 
-    def pair(self, code=None):
+    def pair(self):
         self.find()
-        code = code or self.pi.pairings.code_for_display().code
-        return self.companion.pair(
-            self.pi.identity.device_id, code, portal_port=self.portal_port
-        )
+        return self.companion.pair(self.pi.identity.device_id, portal_port=self.portal_port)
 
     def wait_linked(self, timeout=8.0):
         deadline = time.monotonic() + timeout
@@ -143,25 +140,32 @@ def test_the_pairing_secret_is_never_sent_over_the_network(rig, monkeypatch):
         assert secret not in str(payload), "the pairing secret crossed the wire"
 
 
-def test_a_wrong_code_is_refused(rig):
-    rig.find()
-    real = rig.pi.pairings.code_for_display().code
-    wrong = "111111" if real != "111111" else "222222"
-    with pytest.raises(EasyConnectError) as caught:
-        rig.companion.pair(rig.pi.identity.device_id, wrong, portal_port=rig.portal_port)
-    assert caught.value.info.code in ("PT-PAIR-001", "PT-PAIR-002")
+def test_an_enclosure_that_already_has_a_computer_refuses_another(rig):
+    """This is the whole of the protection now that there is no code to type."""
 
+    rig.pair()
+    rig.companion.forget(rig.pi.identity.device_id)  # this PC forgets it locally
 
-def test_a_code_that_is_not_six_digits_is_refused_before_it_is_sent(rig):
-    rig.find()
     with pytest.raises(EasyConnectError) as caught:
-        rig.companion.pair(rig.pi.identity.device_id, "12", portal_port=rig.portal_port)
+        rig.pair()
     assert caught.value.info.code == "PT-PAIR-001"
+    # The message has to say what to actually do about it.
+    assert "Pair another computer" in caught.value.info.next_step
+
+
+def test_the_owner_opening_a_window_lets_the_computer_in(rig):
+    rig.pair()
+    rig.companion.forget(rig.pi.identity.device_id)
+    with pytest.raises(EasyConnectError):
+        rig.pair()
+
+    rig.pi.pairings.open_window()
+    assert rig.pair()["deviceId"] == rig.pi.identity.device_id
 
 
 def test_pairing_an_enclosure_that_was_never_found_is_refused(rig):
     with pytest.raises(EasyConnectError) as caught:
-        rig.companion.pair("NOTREAL0", "123456", portal_port=rig.portal_port)
+        rig.companion.pair("NOTREAL0", portal_port=rig.portal_port)
     assert caught.value.info.code == "PT-LINK-001"
 
 
@@ -326,15 +330,26 @@ def test_a_degenerate_public_value_is_rejected():
             exchange.shared_key(bad, private)
 
 
-def test_the_proof_is_useless_without_the_code():
+def test_a_proof_cannot_be_replayed_as_the_other_side():
+    """Otherwise the enclosure's own answer could be echoed back as the app's."""
+
     server_private = exchange.generate_private()
     server_public = exchange.public_for(server_private)
     client_private, client_public = exchange.client_start()
     key = exchange.shared_key(server_public, client_private)
 
-    right = exchange.proof(key, "123456", server_public, client_public, "client")
-    wrong = exchange.proof(key, "123457", server_public, client_public, "client")
-    assert not exchange.verify_proof(right, wrong)
+    client = exchange.proof(key, server_public, client_public, "client")
+    server = exchange.proof(key, server_public, client_public, "server")
+    assert not exchange.verify_proof(client, server)
+
+
+def test_a_proof_is_bound_to_the_two_public_values():
+    """A proof from some other exchange must not pass for this one."""
+
+    key = exchange.derive(b"k" * 32, "test")
+    mine = exchange.proof(key, "aa", "bb", "server")
+    theirs = exchange.proof(key, "aa", "cc", "server")
+    assert not exchange.verify_proof(mine, theirs)
 
 
 def test_masking_hides_the_secret_and_reverses_exactly():
@@ -461,11 +476,9 @@ def test_pairing_works_even_if_the_caller_did_not_search_first(rig):
     """A caller that discovered the enclosure some other way must still be able
     to pair, rather than being told nothing was found."""
 
-    code = rig.pi.pairings.code_for_display().code
     # Deliberately do not call rig.find() first.
     assert rig.companion._found == []
-    result = rig.companion.pair(
-        rig.pi.identity.device_id, code, portal_port=rig.portal_port
+    result = rig.companion.pair(rig.pi.identity.device_id, portal_port=rig.portal_port
     )
     assert result["deviceId"] == rig.pi.identity.device_id
     assert rig.wait_linked() is True
@@ -479,8 +492,7 @@ def test_pairing_uses_the_port_the_enclosure_advertises(rig):
     assert entry["portalPort"] == rig.portal_port, "the enclosure must say where its page is"
 
     # No portal_port passed: it has to come from discovery.
-    code = rig.pi.pairings.code_for_display().code
-    result = rig.companion.pair(rig.pi.identity.device_id, code)
+    result = rig.companion.pair(rig.pi.identity.device_id)
     assert result["deviceId"] == rig.pi.identity.device_id
 
 
@@ -496,8 +508,37 @@ def test_an_unreachable_setup_page_is_not_reported_as_a_missing_enclosure(rig):
             dataclasses.replace(item, portal_port=9) for item in rig.companion._found
         ]
 
-    code = rig.pi.pairings.code_for_display().code
     with pytest.raises(EasyConnectError) as caught:
-        rig.companion.pair(rig.pi.identity.device_id, code)
+        rig.companion.pair(rig.pi.identity.device_id)
     assert caught.value.info.code == "PT-LINK-006"
     assert "did not answer" in caught.value.info.failed
+
+
+def test_unpairing_removes_this_computer_from_the_enclosure_too(rig):
+    """Otherwise "unpair" removes nothing.
+
+    The enclosure went on trusting the secret, so the computer could have
+    reconnected, and every unpair left another dead entry behind.
+    """
+
+    rig.pair()
+    assert rig.wait_linked()
+    assert rig.pi.pairings.count == 1
+
+    rig.companion.forget(rig.pi.identity.device_id)
+    assert rig.pi.pairings.count == 0, "the enclosure still trusts a computer that left"
+
+    # And with nothing paired, the enclosure is reachable again rather than
+    # stuck refusing everything.
+    assert rig.pi.pairings.accepting()
+
+
+def test_unpairing_still_works_when_the_enclosure_cannot_be_reached(rig):
+    """The local half must go even if the enclosure never hears about it."""
+
+    rig.pair()
+    assert rig.wait_linked()
+    rig.companion.disconnect()
+
+    rig.companion.forget(rig.pi.identity.device_id)
+    assert not rig.companion.paired_enclosures
