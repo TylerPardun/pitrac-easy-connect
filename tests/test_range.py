@@ -247,3 +247,50 @@ def test_the_opening_camera_is_one_a_button_can_reproduce():
     setview = page.split("function setView(")[1].split("\n  }")[0]
     assert "VIEWS[name]" in setview
     assert "yaw:0.62" not in setview, "the numbers belong in VIEWS, once"
+
+
+# --- The stand-in launch monitor -------------------------------------------
+
+
+def test_the_ball_machine_produces_shots_the_relay_understands():
+    """It stands in for the hardware, so it must speak the hardware's protocol."""
+
+    from pitrac_easy_connect import ballmachine
+    from pitrac_easy_connect.models import Simulator
+    from pitrac_easy_connect.pi.relay import is_shot_message
+
+    shot = ballmachine.one_shot("7 iron")
+    assert is_shot_message(Simulator.GSPRO, shot["payload"])
+    ball = shot["payload"]["BallData"]
+    for field in ("Speed", "VLA", "HLA", "BackSpin", "SideSpin"):
+        assert field in ball
+
+
+def test_every_ball_machine_club_actually_flies():
+    """A club whose numbers the model rejects would be a silent hole in testing."""
+
+    from pitrac_easy_connect import ballmachine
+
+    for name, _s, _l, _sp, _sd, _d in ballmachine.CLUBS:
+        for _attempt in range(20):
+            shot = ballmachine.one_shot(name)["payload"]["BallData"]
+            result = flight.simulate(shot["Speed"], shot["VLA"], shot["HLA"],
+                                     shot["BackSpin"], shot["SideSpin"])
+            assert result["carryYards"] > 0, "{} produced an unflyable shot".format(name)
+
+
+def test_the_clubs_come_out_in_a_sensible_order():
+    """If a wedge out-carried a driver the test data would be misleading."""
+
+    from pitrac_easy_connect import ballmachine
+
+    carries = {}
+    for name, _s, _l, _sp, _sd, _d in ballmachine.CLUBS:
+        runs = []
+        for _attempt in range(40):
+            b = ballmachine.one_shot(name)["payload"]["BallData"]
+            runs.append(flight.simulate(b["Speed"], b["VLA"], b["HLA"],
+                                        b["BackSpin"], b["SideSpin"])["carryYards"])
+        carries[name] = sum(runs) / len(runs)
+    ordered = [carries[c[0]] for c in ballmachine.CLUBS]
+    assert ordered == sorted(ordered, reverse=True), carries
