@@ -2,11 +2,10 @@
 
 **Wi-Fi provisioning, pairing, and shot relay for the PiTrac golf launch monitor — no terminal, no SSH, and no IP addresses.**
 
-PiTrac Easy-Connect is a two-part system: a background service on the Raspberry Pi inside the enclosure, and a desktop app for macOS and Windows. The service puts the enclosure on your home Wi-Fi, announces itself on the network, and forwards every measured shot; the app finds the enclosure by itself, pairs with it in one click, relays the shots into GSPro or E6 Connect, and shows PiTrac's own dashboard in a tab. Setup is a five-step wizard, and moving the enclosure to a different house means picking a new network off a list — nothing about PiTrac's own configuration changes.
+PiTrac Easy-Connect is a two-part system: a background service on the Raspberry Pi inside the enclosure, and a desktop app for macOS and Windows. The service puts the enclosure on your home Wi-Fi, announces itself on the network, and forwards every measured shot; the app finds the enclosure by itself, pairs with it in one click, relays the shots into GSPro or E6 Connect, and shows PiTrac's own dashboard in a tab. Setup is a five-step wizard, and moving the enclosure to a different residence means picking a new network off a list — nothing about PiTrac's own configuration changes.
 
 - **Download:** <https://tylerpardun.github.io/pitrac-easy-connect/>
 - **Version:** 0.2.0, running on real hardware
-- **Tests:** 416, passing on macOS, Windows, Linux, and the Raspberry Pi
 - **Dependencies:** none — Python standard library only
 - **Licence:** [MIT](LICENSE)
 
@@ -133,8 +132,6 @@ PYTHONPATH=src python3 -m pitrac_easy_connect.tryit gspro
 python3 -m pytest -q
 ```
 
-416 tests, no hardware required. Failure modes that would otherwise strand a user are driven from a simulated Pi: wrong Wi-Fi password, a network with no DHCP, an isolating guest network, and power loss mid-change.
-
 ---
 
 ## Guides
@@ -153,7 +150,4 @@ python3 -m pytest -q
 ## Licensing
 
 **Easy-Connect is MIT.** PiTrac itself is GPL-2.0 and belongs to [PiTracLM](https://github.com/PiTracLM/PiTrac).
-
-PiTrac's two trained models are neither. They are proprietary, and their licence is **non-transferable**, which matters if an enclosure is ever given away, sold, or lent. **Advanced → Prepare for a new owner** removes them along with everything personal; [docs/model-licence.md](docs/model-licence.md) explains what the licence requires and why the source clone is removed with them.
-
-PiTrac is the hard part, and it is not my work. Easy-Connect only handles the setup around it.
+PiTrac is the hard part, and it is not my work. Easy-Connect only handles the setup and connectivity around it, making it an easier user experience.

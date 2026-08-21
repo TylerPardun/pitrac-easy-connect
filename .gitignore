@@ -8,7 +8,7 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 *.egg-info/
-
+docs/
 # Generated icons — made by packaging/icon/make-icons.py at build time
 packaging/icon/PiTrac.icns
 packaging/icon/PiTrac.ico
