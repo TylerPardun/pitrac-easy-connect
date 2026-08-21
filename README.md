@@ -143,7 +143,6 @@ python3 -m pytest -q
 | [Quickstart](docs/quickstart.md) | Adding Easy-Connect to a Pi already running PiTrac |
 | [Operator guide](docs/operator-guide.md) | Additional Pis and computers, upgrades, and diagnosis |
 | [Architecture](docs/architecture.md) | How the pieces fit together, and why |
-| [The trained models](docs/model-licence.md) | Why the software removes them when an enclosure changes hands |
 
 ---
 

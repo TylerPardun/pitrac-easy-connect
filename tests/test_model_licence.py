@@ -82,15 +82,22 @@ def test_removal_is_safe_to_repeat(tmp_path):
 
 
 def test_the_licence_situation_is_written_down():
-    """A future reader has to be able to find out why this code exists."""
+    """A future reader has to be able to find out why this code exists.
 
-    docs = Path(__file__).resolve().parent.parent / "docs"
-    note = (docs / "model-licence.md").read_text().lower()
+    It lives in the module rather than in a document, so it travels with the
+    code it explains and cannot be left behind when the docs change.
+    """
+
+    source = (
+        Path(__file__).resolve().parent.parent
+        / "src" / "pitrac_easy_connect" / "pi" / "ml_models.py"
+    ).read_text().lower()
+    explanation = source.split('"""')[1]
     for point in ("non-transferable", "commercial", "written permission"):
-        assert point in note
+        assert point in explanation
     # The git-history point is the non-obvious one; losing it would make the
     # removal look like overreach and invite someone to "fix" it.
-    assert "history" in note
+    assert "history" in explanation
 
 
 def test_the_owner_can_reach_the_transfer_from_the_setup_page():
