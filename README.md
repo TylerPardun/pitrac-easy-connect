@@ -9,8 +9,9 @@ PiTrac already measures the ball and has a good dashboard. Easy Connect adds the
 part that was missing: **getting the thing on the network and talking to your
 PC.** It deliberately does not reimplement anything PiTrac already does.
 
-- **Status:** working on real hardware, not yet released
-- **Version:** 0.2.0 · **Tests:** 403, passing on macOS and on the Raspberry Pi
+- **Download:** <https://tylerpardun.github.io/pitrac-easy-connect/>
+- **Status:** working on real hardware; 0.2.0 published
+- **Version:** 0.2.0 · **Tests:** 416, passing on macOS and on the Raspberry Pi
 - **Dependencies:** none — Python standard library only
 - **Licence:** [MIT](LICENSE) · see [NOTICE.md](NOTICE.md) for how this relates
   to PiTrac's GPL
