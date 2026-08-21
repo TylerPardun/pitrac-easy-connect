@@ -239,3 +239,71 @@ def test_the_app_calls_itself_one_thing():
     assert not offenders, "these say 'Easy Connect' rather than 'Easy-Connect': {}".format(
         offenders
     )
+
+
+def test_the_error_reference_is_current():
+    """Generated from the catalogue, so it cannot drift.
+
+    A code added, renumbered, or reworded in ``common/errors.py`` fails this
+    until the reference has been regenerated:
+
+        python3 packaging/make-error-reference.py
+    """
+
+    guide = DOCS / "operator-guide.md"
+    if not guide.exists():
+        pytest.skip("the operator guide is not published; it is kept locally only")
+
+    import subprocess
+    import sys
+
+    root = Path(__file__).resolve().parent.parent
+    result = subprocess.run(
+        [sys.executable, str(root / "packaging" / "make-error-reference.py"), "--check"],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_every_error_code_is_in_the_reference():
+    """A code nobody documented is one nobody can look up when it appears."""
+
+    guide = DOCS / "operator-guide.md"
+    if not guide.exists():
+        pytest.skip("the operator guide is not published; it is kept locally only")
+
+    text = read(guide)
+    missing = [code for code in sorted(catalogue()) if "`{}`".format(code) not in text]
+    assert not missing, "not in the operator guide: {}".format(missing)
+
+
+def test_the_two_beginner_guides_cover_the_same_steps():
+    """The printable HTML is maintained by hand alongside the markdown.
+
+    Two copies of the same instructions drift, and the one that drifts is
+    whichever the author did not have open. This catches a step added to one
+    and forgotten in the other.
+    """
+
+    import html as html_module
+    import re
+
+    md_path, html_path = DOCS / "beginner-guide.md", DOCS / "beginner-guide.html"
+    if not md_path.exists() or not html_path.exists():
+        pytest.skip("the guides are not published; they are kept locally only")
+
+    def normalise(title):
+        title = re.sub(r"^Step\s+\S+\s*[-\u2014]\s*", "", title.strip())
+        return re.sub(r"[^a-z ]", "", title.lower()).strip()
+
+    in_md = {normalise(m) for m in re.findall(r"^## (.+)$", read(md_path), re.M)}
+    in_html = {
+        normalise(html_module.unescape(re.sub("<[^>]+>", "", m)))
+        for m in re.findall(r"<h2[^>]*>(.*?)</h2>", read(html_path), re.S)
+    }
+
+    # Wording differs a little between the two; only whole missing steps matter.
+    only_md = {s for s in in_md if not any(s[:14] in h for h in in_html)}
+    only_html = {s for s in in_html if not any(h[:14] in s for s in in_md for h in [s])}
+    assert not only_md, "in the markdown guide but not the printable one: {}".format(only_md)

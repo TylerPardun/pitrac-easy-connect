@@ -4,7 +4,7 @@
 
 PiTrac Easy-Connect is a two-part system: a background service on the Raspberry Pi inside the enclosure, and a desktop app for macOS and Windows. The service puts the enclosure on your home Wi-Fi, announces itself on the network, and forwards every measured shot; the app finds the enclosure by itself, pairs with it in one click, relays the shots into GSPro or E6 Connect, and shows PiTrac's own dashboard in a tab. Setup is a five-step wizard, and moving the enclosure to a different residence means picking a new network off a list — nothing about PiTrac's own configuration changes.
 
-- **Download:** <https://tylerpardun.github.io/pitrac-easy-connect/>
+- **Status:** private while it settles; build from source below
 - **Version:** 0.2.0, running on real hardware
 - **Dependencies:** none — Python standard library only
 - **Licence:** [MIT](LICENSE)
@@ -22,7 +22,7 @@ PiTrac Easy-Connect is a two-part system: a background service on the Raspberry 
 | **Pairing** | One click. An ephemeral Diffie-Hellman exchange gives each computer its own secret, derived at both ends rather than transmitted; the enclosure accepts the first computer and refuses the rest until its owner opens a window |
 | **Shot relay** | GSPro and E6 Connect protocols passed through byte-for-byte in both directions; shots are never retried, since a duplicate scored shot is worse than a missing one |
 | **Guided first run** | Five steps, one action per screen, with the simulator choice and a "cannot find it" path built in; it does not appear again once setup is finished |
-| **Self-test** | Fourteen checks across cameras, calibration, temperature, power supply, storage, clock, and services; recomputed every time and never latched, so readiness is never claimed without proof |
+| **Self-test** | Fifteen checks across cameras, calibration, detection models, temperature, power supply, storage, clock, and services; recomputed every time and never latched, so readiness is never claimed without proof |
 | **Shot history** | Every shot retained with its club, with average, best, worst, and spread per club, alongside PiTrac's captured still images |
 | **Embedded dashboard** | PiTrac's own web dashboard in a tab, rather than a reimplementation of it |
 | **Backup and restore** | Checksummed archive of calibration and settings, with identity as an explicit opt-in for memory-card replacement |
@@ -65,24 +65,10 @@ The installer checks the hardware, installs and starts the service, points PiTra
 
 Re-run the same installer to upgrade. Identity, saved networks, paired computers, and camera calibration are preserved.
 
-### 2. Install the app on your computer
+### 2. Build the app for your computer
 
-Download from the [latest release](https://github.com/TylerPardun/pitrac-easy-connect/releases/latest):
-
-| Platform | File |
-|---|---|
-| macOS 11+, Apple silicon or Intel | `PiTrac-Easy-Connect-macos.zip` |
-| Windows 10 and 11 | `PiTrac.Easy-Connect.exe` |
-| Linux, or any OS with Python 3.9+ | `PiTrac-Easy-Connect-0.2.0.pyz` |
-
-Neither native build is code signed, so both operating systems warn on first launch:
-
-| Platform | What to do |
-|---|---|
-| macOS | Right-click the app and choose **Open** rather than double-clicking |
-| Windows | Choose **More info**, then **Run anyway** |
-
-### 3. Or build the app from source
+While this repository is private there are no published downloads, so the app
+is built from source. That is one command:
 
 Requires Python 3.9+. PyInstaller bundles the interpreter of the machine it runs on, so a Windows executable must be built on Windows and a macOS app on macOS. There is no cross-compiling.
 
@@ -92,7 +78,14 @@ cd pitrac-easy-connect
 ./packaging/build-app.sh
 ```
 
-The result is written to `dist/`. PyInstaller and pywebview are installed automatically if missing; both are build-time only and are not runtime dependencies.
+The result is written to `dist/` — `PiTrac Easy-Connect.app` on macOS,
+`PiTrac Easy-Connect.exe` on Windows. PyInstaller and pywebview are installed
+automatically if missing; both are build-time only and are not runtime
+dependencies.
+
+Neither native build is code signed, so both operating systems warn on first
+launch: on macOS right-click the app and choose **Open** rather than
+double-clicking; on Windows choose **More info**, then **Run anyway**.
 
 | Flag | Description |
 |---|---|
@@ -100,7 +93,7 @@ The result is written to `dist/`. PyInstaller and pywebview are installed automa
 | `--pyz` | Portable single file, runs anywhere Python 3.9+ is installed |
 | `--all` | Both |
 
-### 4. First run
+### 3. First run
 
 Open the app and follow the five steps: find the enclosure, choose your simulator, open it, send one test shot, play. The wizard does not return after that; **Advanced → Run setup again** brings it back if needed.
 
