@@ -1,0 +1,8 @@
+# Build tools only. Neither the Raspberry Pi service nor running from
+# source needs any of this -- see NOTICE.md.
+#
+# Pinned so that two builds of the same commit contain the same code.
+# Unpinned, the packaged app quietly changes between builds, and the
+# licences listed in NOTICE.md stop matching what actually shipped.
+pyinstaller==6.22.2
+pywebview==6.2.1

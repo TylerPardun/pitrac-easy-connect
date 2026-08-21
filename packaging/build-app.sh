@@ -52,17 +52,12 @@ fi
 
 if [ "$WANT_APP" = yes ]; then
     step "Native app"
-    if ! python3 -c "import PyInstaller" 2>/dev/null; then
-        say "Installing PyInstaller (build-time only; not shipped)"
-        python3 -m pip install --quiet --disable-pip-version-check pyinstaller
-    fi
-
-    # pywebview gives the app a real window with its own icon in the Dock or
-    # taskbar. It is bundled into the build, so nothing is needed on the
-    # machine that runs it.
-    if ! python3 -c "import webview" 2>/dev/null; then
-        say "Installing pywebview (bundled into the app)"
-        python3 -m pip install --quiet --disable-pip-version-check pywebview
+    # Pinned, so two builds of the same commit contain the same code and the
+    # licences in NOTICE.md keep matching what actually shipped.
+    if ! python3 -c "import PyInstaller, webview" 2>/dev/null; then
+        say "Installing build tools (not shipped; see NOTICE.md)"
+        python3 -m pip install --quiet --disable-pip-version-check \
+            -r packaging/build-requirements.txt
     fi
 
     if [ ! -f packaging/icon/PiTrac.icns ] || [ ! -f packaging/icon/PiTrac.ico ]; then
@@ -75,7 +70,7 @@ if [ "$WANT_APP" = yes ]; then
     fi
 
     python3 -m PyInstaller --noconfirm --clean \
-        --distpath "$OUT" --workpath "$HERE/build" packaging/PiTracCompanion.spec
+        --distpath "$OUT" --workpath "$HERE/build" packaging/PiTrac-Easy-Connect.spec
 
     case "$(uname -s 2>/dev/null || echo Windows)" in
         Darwin)

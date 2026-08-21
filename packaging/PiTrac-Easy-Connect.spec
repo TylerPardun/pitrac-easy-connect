@@ -4,7 +4,7 @@
 # PyInstaller bundles the interpreter of the machine it runs on, so a Windows
 # build needs a Windows machine — there is no cross-compiling this.
 #
-#   python -m PyInstaller packaging/PiTracCompanion.spec
+#   python -m PyInstaller packaging/PiTrac-Easy-Connect.spec
 
 import os
 import sys
@@ -28,7 +28,7 @@ elif WINDOWS:
     WINDOW_IMPORTS += ["webview.platforms.edgechromium", "clr_loader", "pythonnet"]
 
 analysis = Analysis(
-    [os.path.join(SPECPATH, "companion_entry.py")],
+    [os.path.join(SPECPATH, "app_entry.py")],
     pathex=[os.path.join(ROOT, "src")],
     binaries=[],
     datas=[],
@@ -56,7 +56,24 @@ analysis = Analysis(
     runtime_hooks=[],
     # Nothing here draws with a GUI toolkit; the interface is a web page in an
     # application window. Excluding these keeps the download small.
-    excludes=["tkinter", "unittest", "pydoc", "test", "PIL", "numpy"],
+    # Nothing here draws with a GUI toolkit, and the window loads a URL from
+    # our own loopback server rather than using pywebview's built-in one. That
+    # optional server drags in a web framework, a template engine, an event
+    # loop and a TLS stack, none of which this program ever calls.
+    #
+    # Cutting them is not only about size. Every bundled package is a licence
+    # to honour in a binary that gets distributed, and `readline` in particular
+    # is GPL-3: shipping it inside a proprietary or MIT binary is a problem
+    # that does not need to exist, since a windowed app has no use for a
+    # terminal line editor.
+    excludes=[
+        "tkinter", "unittest", "pydoc", "test", "PIL", "numpy",
+        "readline", "curses", "_curses",
+        "cryptography", "OpenSSL",
+        "bottle", "tornado", "jinja2", "markupsafe",
+        "uvloop", "colorama",
+        "pdb", "doctest", "distutils", "lib2to3",
+    ],
     noarchive=False,
 )
 pyz = PYZ(analysis.pure)

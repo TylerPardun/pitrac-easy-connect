@@ -170,7 +170,7 @@ def test_the_build_spec_names_every_module_the_app_loads_at_runtime():
 
     import re
 
-    spec = read(Path(__file__).resolve().parent.parent / "packaging" / "PiTracCompanion.spec")
+    spec = read(Path(__file__).resolve().parent.parent / "packaging" / "PiTrac-Easy-Connect.spec")
     hidden = set(re.findall(r'"(pitrac_easy_connect\.[A-Za-z_.]+)"', spec))
 
     source_root = Path(__file__).resolve().parent.parent / "src" / "pitrac_easy_connect"
@@ -187,7 +187,7 @@ def test_the_build_spec_names_every_module_the_app_loads_at_runtime():
 def test_the_packaged_entry_point_opens_a_window():
     """Double-clicking a packaged build must not open a browser tab."""
 
-    entry = read(Path(__file__).resolve().parent.parent / "packaging" / "companion_entry.py")
+    entry = read(Path(__file__).resolve().parent.parent / "packaging" / "app_entry.py")
     assert "frozen" in entry
     assert '"--window"' in entry
 

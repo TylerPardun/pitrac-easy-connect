@@ -2,7 +2,28 @@
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
+[project]
+name = "pitrac-easy-connect"
+version = "0.2.0"
+description = "Wi-Fi setup, pairing, shot relay and a practice range for the PiTrac golf launch monitor"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+
+# Deliberately empty. Everything shipped uses the Python standard library, so
+# installing this on a Raspberry Pi needs no packages at all. What the packaged
+# macOS and Windows apps bundle is a separate matter, described in NOTICE.md.
+dependencies = []
+
+[project.scripts]
+pitrac-easy-connect = "pitrac_easy_connect.pi.app:main"
+pitrac-easy-connect-app = "pitrac_easy_connect.companion.app:main"
+pitrac-easy-connect-demo = "pitrac_easy_connect.demo:main"
+pitrac-ball-machine = "pitrac_easy_connect.ballmachine:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
 [tool.pytest.ini_options]
 pythonpath = ["src"]
 testpaths = ["tests"]
-
