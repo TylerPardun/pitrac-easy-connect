@@ -67,6 +67,25 @@ class Rig:
         self.find()
         return self.companion.pair(self.pi.identity.device_id, portal_port=self.portal_port)
 
+    def wait_state(self, state, timeout=8.0):
+        """Wait for a state the enclosure has to tell us about.
+
+        The enclosure's self-test arrives over the link a moment after pairing.
+        Until it does the companion reports RECOVERY REQUIRED, which is correct
+        — it will not claim a readiness it has not been told about — so a test
+        that reads the state immediately is racing that first report rather
+        than testing anything.
+        """
+
+        deadline = time.monotonic() + timeout
+        seen = None
+        while time.monotonic() < deadline:
+            seen = self.companion.status()["state"]
+            if seen == state:
+                return True
+            time.sleep(0.05)
+        raise AssertionError("state was {}, waited for {}".format(seen, state))
+
     def wait_linked(self, timeout=8.0):
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
@@ -215,10 +234,10 @@ def test_reaching_ready_requires_an_accepted_test_shot(rig):
     assert rig.wait_linked() is True
     rig.companion.check_simulator()
 
+    rig.wait_state(State.CONNECTED.value)
     connected = rig.companion.status()
     assert connected["simulatorStatus"]["connected"] is True
     assert connected["ready"] is False
-    assert connected["state"] == State.CONNECTED.value
 
     tested = rig.companion.send_test_shot()
     assert tested["ready"] is True
