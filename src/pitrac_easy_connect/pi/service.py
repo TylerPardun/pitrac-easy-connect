@@ -447,6 +447,8 @@ class PiService:
             "renameComputer": lambda a: self._rename_computer(a),
             "revokeComputer": lambda a: self._revoke_computer(a),
             "resetNetwork": lambda a: self._reset_network(),
+            "modelLicence": lambda a: ml_models.licence_text(),
+            "installModels": lambda a: self._install_models(a),
             "prepareForNewOwner": lambda a: self._prepare_for_new_owner(a),
             "restartPitrac": lambda a: self._restart_pitrac(),
             "reboot": lambda a: self._reboot(),
@@ -548,6 +550,35 @@ class PiService:
             "ownerCard": self.identity.owner_card(),
             "network": result.as_dict(),
         }
+
+    def _install_models(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
+        """Download PiTracLM's models, once their terms have been accepted.
+
+        The acceptance is not a formality we can supply on the owner's behalf.
+        Their licence is granted to whoever accepts it, and the whole reason
+        this software fetches rather than ships the models is so that person is
+        the owner of the machine rather than whoever built it.
+        """
+
+        from ..common.errors import PI_MODEL_DOWNLOAD_FAILED, PI_MODELS_NOT_ACCEPTED
+
+        if not arguments.get("accepted"):
+            raise EasyConnectError(
+                PI_MODELS_NOT_ACCEPTED, "the terms were not accepted"
+            )
+        try:
+            result = ml_models.install_from_source(
+                owner=self.pitrac.intended_owner_ids(),
+            )
+        except EasyConnectError:
+            raise
+        except Exception as exc:
+            raise EasyConnectError(PI_MODEL_DOWNLOAD_FAILED, str(exc)) from exc
+
+        self.settings.update({"modelsAcceptedAt": time.time()})
+        self.refresh()
+        result["state"] = self.state.value
+        return result
 
     def _pitrac_home(self) -> Optional[str]:
         """The home directory PiTrac was built in, not root's."""

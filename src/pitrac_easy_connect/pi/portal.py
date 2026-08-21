@@ -137,6 +137,10 @@ class PortalHandler(BaseHTTPRequestHandler):
                 "setDirectMode", {"enabled": bool(body.get("enabled"))}
             ),
             "/api/pair-remove": lambda body: self._remove_computer(str(body.get("pairingId", ""))),
+            "/api/model-licence": lambda body: self._service().command("modelLicence", {}),
+            "/api/install-models": lambda body: self._service().command(
+                "installModels", {"accepted": bool(body.get("accepted"))}
+            ),
             "/api/pair-open": lambda body: self._open_pairing(),
             "/api/pair-close": lambda body: self._close_pairing(),
             "/api/pair": lambda body: self._service().pairings.complete_exchange(

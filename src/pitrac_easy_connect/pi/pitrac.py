@@ -267,6 +267,11 @@ class PitracInstallation:
             self._restore_owner(owner)
         return changed
 
+    def intended_owner_ids(self):
+        """The uid and gid PiTrac's own files carry, for anything we install."""
+
+        return self._intended_owner()
+
     def owner_home(self) -> Optional[str]:
         """The home directory of whoever PiTrac belongs to on this machine.
 

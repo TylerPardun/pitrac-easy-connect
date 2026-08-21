@@ -54,6 +54,9 @@ STYLE = r"""
   .net:hover{border-color:#3b4a42}
   .net[disabled]{opacity:.4;cursor:not-allowed}
   .net small{display:block;color:var(--faint);margin-top:3px;font-size:.8rem}
+  .licence{max-height:260px;overflow-y:auto;border:1px solid var(--line);
+    border-radius:12px;padding:12px 14px;font-size:.78rem;line-height:1.6;
+    color:var(--muted);white-space:pre-wrap;background:var(--bg);margin-bottom:12px}
   .netgroup{margin:14px 0 3px;font-size:.7rem;font-weight:800;letter-spacing:.13em;
     text-transform:uppercase;color:var(--faint)}
   .netgroup:first-child{margin-top:0}
@@ -174,6 +177,7 @@ const COUNTRIES=[["US","United States"],["CA","Canada"],["GB","United Kingdom"],
  ["ZA","South Africa"],["MX","Mexico"],["BR","Brazil"]];
 
 const $=id=>document.getElementById(id);
+const LICENCE_PAGE="https://github.com/PiTracLM/PiTrac/blob/main/LICENSE.MODEL.md";
 // A padlock, drawn rather than written, so it reads at a glance and needs no
 // font that might not be there.
 const LOCK='<svg class="lock" viewBox="0 0 11 14" fill="none" aria-label="Password needed">'+
@@ -242,6 +246,15 @@ function decide(data){
   const onHotspot=net.connection&&net.connection.isHotspot;
   if(onHotspot && !net.directMode) return {step:1, ...networkView()};
 
+  if(view==="models") return {step:2, ...modelsView()};
+
+  if(needsModels(data)) return {step:2, dot:"bad",
+    head:"PiTrac needs its detection models", sub:"",
+    why:"These are made by PiTracLM and are licensed to you by them directly, "+
+        "free of charge. They are not included with this machine. It takes "+
+        "one step and about 11 MB.",
+    body:"", actions:[{label:"Read the terms and install", id:"models", primary:true}]};
+
   if(!data.pairedComputer && !data.setupComplete) return {step:2, dot:"busy",
     head:"Connect your computer", sub:"",
     why:"Open PiTrac Easy-Connect on your computer and choose this PiTrac."+
@@ -255,6 +268,37 @@ function decide(data){
     why:"",
     body:"", actions:[{label:"View shot data", id:"dash", primary:false},
                       {label:"Change Wi-Fi network", id:"changeWifi", primary:false}]};
+}
+
+async function loadLicence(){
+  const box=$("licenceBox");
+  if(!box) return;
+  try{
+    const data=await api("/api/model-licence",{});
+    box.textContent = data.text ||
+      "The terms could not be loaded. Open the link below to read them.";
+  }catch(e){
+    box.textContent="The terms could not be loaded. Open the link below to read them.";
+  }
+}
+
+function needsModels(data){
+  const check=(data.selfTest&&data.selfTest.checks||[]).find(c=>c.key==="pitracModels");
+  return !!check && check.status!=="pass";
+}
+
+function modelsView(){
+  return {dot:"", head:"PiTracLM's terms", sub:"",
+    why:"PiTrac's ball-detection models belong to PiTracLM, not to whoever "+
+        "built this machine. Downloading them means taking a licence from them. "+
+        "In short: they are free, they are for your own personal, "+
+        "non-commercial use, and you may not pass them on to anyone else \u2014 "+
+        "including with this machine if you ever sell it.",
+    body:`<div class="licence" id="licenceBox">Loading the terms\u2026</div>
+      <a class="linkbtn quiet" href="${LICENCE_PAGE}" target="_blank"
+         rel="noopener">Read them on PiTracLM's site</a>`,
+    actions:[{label:"Accept and install", id:"acceptModels", primary:true},
+             {label:"Not now", id:"declineModels", primary:false}]};
 }
 
 function countryPicker(){
@@ -349,6 +393,15 @@ function act(id, button){
     if(!result.ok) showError({message:result.message, info:result.error});
   });
   if(id==="changeWifi"){ view="networks"; chosen=null; networks=null; return render(status); }
+  if(id==="models"){ view="models"; refresh(); return loadLicence(); }
+  if(id==="declineModels"){ view=null; return refresh(); }
+  if(id==="acceptModels") return run(button, async()=>{
+    // The accept flag is what the enclosure checks; it will refuse without it.
+    await api("/api/install-models",{accepted:true});
+    view=null;
+    $("note").innerHTML='<div class="note good">Models installed. '+
+      'PiTrac can measure a shot now.</div>';
+  });
   if(id==="donePairing") return run(button, async()=>{ await api("/api/pair-close",{}); view=null; });
   if(id==="openPairing") return run(button, async()=>{ await api("/api/pair-open",{}); });
   if(id==="keepWifi"){ view=null; chosen=null; return render(status); }

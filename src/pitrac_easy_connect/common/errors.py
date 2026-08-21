@@ -233,6 +233,19 @@ PI_NO_MODELS = _define(
     "The models come from PiTracLM and are licensed to you directly by them. "
     "Open the PiTrac setup page and follow the step for installing them.",
 )
+PI_MODELS_NOT_ACCEPTED = _define(
+    "PT-PI-012",
+    "PiTracLM's terms for the detection models were not accepted.",
+    "Nothing was downloaded and nothing was changed.",
+    "Read the terms on the setup page and choose Accept if you agree to them.",
+)
+PI_MODEL_DOWNLOAD_FAILED = _define(
+    "PT-PI-013",
+    "The detection models could not be downloaded from PiTracLM.",
+    "Nothing was changed; PiTrac works as before, minus ball detection.",
+    "Check PiTrac is on a network with internet access and try again. If it "
+    "keeps failing, the files may have moved in PiTracLM's repository.",
+)
 PI_UNSUPPORTED_HARDWARE = _define(
     "PT-PI-010",
     "This is not a supported Raspberry Pi model or operating system for this release.",

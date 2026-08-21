@@ -23,10 +23,12 @@ cure the redistribution problem, but not the separate clause forbidding
 commercial use without written permission, so it is not a way around that.
 """
 
+import hashlib
 import os
 import shutil
+import tempfile
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 #: Where PiTrac's installer puts the models for the launch monitor to load.
 INSTALLED_DIR = Path(os.environ.get("PITRAC_MODELS_DIR", "/etc/pitrac/models"))
@@ -39,6 +41,27 @@ REPO_MODELS_SUBPATH = Path("Software/LMSourceCode/ml_models")
 
 #: Places a PiTrac clone is normally found. Searched in order.
 REPO_CANDIDATES = ("~/PiTrac", "~/pitrac", "/opt/PiTrac", "/usr/src/PiTrac")
+
+#: The two files PiTrac's own installer copies for each model.
+MODEL_FILES = ("best.ncnn.param", "best.ncnn.bin")
+
+#: Where the models come from. PiTracLM's own repository and nowhere else —
+#: serving a copy of these from anywhere of ours would be redistribution, which
+#: their licence forbids outright. The download goes straight from them to the
+#: person who accepted their terms.
+SOURCE_BASE = (
+    "https://raw.githubusercontent.com/PiTracLM/PiTrac/main/Software/LMSourceCode/ml_models"
+)
+
+#: Their licence, shown before anything is fetched. Read live rather than
+#: bundled, so what somebody agrees to is the current text and not a stale copy.
+LICENCE_URL = "https://raw.githubusercontent.com/PiTracLM/PiTrac/main/LICENSE.MODEL.md"
+LICENCE_PAGE = "https://github.com/PiTracLM/PiTrac/blob/main/LICENSE.MODEL.md"
+
+#: A model file that arrives far outside this range is a proxy error page or a
+#: truncated transfer rather than a model.
+MIN_FILE_BYTES = 512
+MAX_FILE_BYTES = 200 * 1024 * 1024
 
 
 def find_repo(candidates=REPO_CANDIDATES, home: Optional[str] = None) -> Optional[Path]:
@@ -132,3 +155,110 @@ def remove(
         "clear": not after["installed"] and not after["repoCopy"] and not after["repoHistory"],
         "remaining": after,
     }
+
+
+# --- Obtaining them, which is the owner's decision and not ours -------------
+
+
+def licence_text(timeout: float = 15.0) -> Dict[str, Any]:
+    """PiTracLM's current model licence, for the owner to read before deciding."""
+
+    import urllib.request
+
+    try:
+        with urllib.request.urlopen(LICENCE_URL, timeout=timeout) as response:
+            return {"text": response.read().decode("utf-8", "replace"), "url": LICENCE_PAGE}
+    except Exception as exc:
+        # Never block on this; the page still links out to the same document.
+        return {"text": "", "url": LICENCE_PAGE, "error": str(exc)}
+
+
+def _download(url: str, destination: Path, timeout: float) -> str:
+    import urllib.request
+
+    request = urllib.request.Request(url, headers={"User-Agent": "PiTrac-Easy-Connect"})
+    digest = hashlib.sha256()
+    written = 0
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        with open(destination, "wb") as handle:
+            while True:
+                chunk = response.read(64 * 1024)
+                if not chunk:
+                    break
+                written += len(chunk)
+                if written > MAX_FILE_BYTES:
+                    raise ValueError("{} is larger than expected".format(url))
+                digest.update(chunk)
+                handle.write(chunk)
+    if written < MIN_FILE_BYTES:
+        raise ValueError("{} returned {} bytes, which is too small".format(url, written))
+    return digest.hexdigest()
+
+
+def install_from_source(
+    installed_dir: Path = INSTALLED_DIR,
+    source_base: str = SOURCE_BASE,
+    owner: Optional[tuple] = None,
+    timeout: float = 120.0,
+    progress: Optional[Callable[[str], None]] = None,
+) -> Dict[str, Any]:
+    """Fetch the models from PiTracLM and install them where PiTrac looks.
+
+    The caller is responsible for having obtained the owner's agreement to
+    PiTracLM's terms first: this function performs the download, it does not
+    decide that the download should happen. That distinction is the whole point
+    — the person at the machine is the one taking a licence, not us.
+
+    Everything lands in a temporary directory first, so a failure halfway
+    through leaves the previous state rather than half a model.
+    """
+
+    note = progress or (lambda _message: None)
+    staged = Path(tempfile.mkdtemp(prefix="pitrac-models-"))
+    hashes: Dict[str, str] = {}
+    try:
+        for name in MODEL_NAMES:
+            (staged / name).mkdir(parents=True, exist_ok=True)
+            for filename in MODEL_FILES:
+                url = "{}/{}/{}".format(source_base.rstrip("/"), name, filename)
+                note("Downloading {}/{}".format(name, filename))
+                hashes["{}/{}".format(name, filename)] = _download(
+                    url, staged / name / filename, timeout
+                )
+
+        installed_dir.mkdir(parents=True, exist_ok=True)
+        for name in MODEL_NAMES:
+            target = installed_dir / name
+            if target.exists():
+                shutil.rmtree(target, ignore_errors=True)
+            shutil.move(str(staged / name), str(target))
+
+        _apply_ownership(installed_dir, owner)
+        note("Installed")
+        return {
+            "installed": True,
+            "installedDir": str(installed_dir),
+            "files": hashes,
+            "source": source_base,
+        }
+    finally:
+        shutil.rmtree(staged, ignore_errors=True)
+
+
+def _apply_ownership(installed_dir: Path, owner: Optional[tuple]) -> None:
+    """Match what PiTrac's own installer leaves behind.
+
+    Easy-Connect runs as root, so without this the launch monitor — which does
+    not — could find the files unreadable.
+    """
+
+    for path in [installed_dir] + list(installed_dir.rglob("*")):
+        try:
+            os.chmod(path, 0o755 if path.is_dir() else 0o644)
+        except OSError:
+            pass
+        if owner and hasattr(os, "chown"):
+            try:
+                os.chown(path, owner[0], owner[1])
+            except OSError:
+                pass
