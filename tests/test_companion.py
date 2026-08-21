@@ -87,9 +87,19 @@ class Rig:
         raise AssertionError("state was {}, waited for {}".format(seen, state))
 
     def wait_linked(self, timeout=8.0):
+        """Wait until the link is up *and* the enclosure has reported itself.
+
+        These are two events, not one. The socket connects first; the
+        enclosure's self-test arrives a moment later. Until it does the
+        companion will not claim the enclosure is healthy — correctly, since
+        nobody has told it so — which means anything asserting on readiness
+        between the two is racing rather than testing.
+        """
+
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
-            if self.companion.status()["link"]["connected"]:
+            status = self.companion.status()
+            if status["link"]["connected"] and status.get("enclosure"):
                 return True
             time.sleep(0.05)
         return False
@@ -279,7 +289,7 @@ def test_reaching_ready_requires_an_accepted_test_shot(rig):
 
 def test_losing_the_simulator_removes_ready(rig):
     rig.pair()
-    rig.wait_linked()
+    assert rig.wait_linked() is True
     rig.companion.send_test_shot()
     assert rig.companion.status()["ready"] is True
 
@@ -292,7 +302,7 @@ def test_losing_the_simulator_removes_ready(rig):
 
 def test_switching_simulators_clears_the_accepted_test_shot(rig):
     rig.pair()
-    rig.wait_linked()
+    assert rig.wait_linked() is True
     rig.companion.send_test_shot()
     assert rig.companion.status()["ready"] is True
 
