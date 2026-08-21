@@ -144,7 +144,7 @@ PAGE = r"""<!doctype html>
     text-transform:uppercase;color:var(--green)}
   .rangebar{position:absolute;left:0;right:0;bottom:0;display:flex;
     align-items:center;justify-content:space-between;gap:10px;padding:10px 12px;
-    background:linear-gradient(to top,rgba(8,12,10,.85),transparent)}
+    background:linear-gradient(to top,rgba(8,12,10,.92) 40%,rgba(8,12,10,.55) 75%,transparent)}
   .views,.rangeright{display:flex;gap:6px;align-items:center}
   .viewbtn{background:rgba(20,26,23,.9);color:var(--muted);border:1px solid var(--line);
     border-radius:9px;padding:7px 11px;font-size:.76rem;font-weight:600;cursor:pointer;
@@ -152,7 +152,8 @@ PAGE = r"""<!doctype html>
   .viewbtn:hover{color:var(--text)}
   .viewbtn.on{background:var(--green);color:#0b0f0d;border-color:var(--green)}
   .viewbtn:focus-visible{outline:2px solid var(--green);outline-offset:2px}
-  .rangecount{font-size:.72rem;color:var(--faint);font-variant-numeric:tabular-nums}
+  .rangecount{font-size:.72rem;color:var(--muted);font-variant-numeric:tabular-nums;
+    text-align:right;line-height:1.25}
   .rangeclubs{flex:none;max-height:34%;overflow-y:auto;padding:12px 16px 16px;
     border-top:1px solid var(--line)}
   .rangeclub{display:flex;align-items:baseline;gap:10px;padding:7px 0;
@@ -789,7 +790,8 @@ document.querySelectorAll("#tabs button").forEach(button=>
 
 const YARD = 0.9144;
 const RANGE = (function(){
-  let gl=null, canvas=null, program=null, buffers=null, raf=null, lost=false;
+  let gl=null, canvas=null, programs=null, raf=null, lost=false;
+  let meshes={}, dynamic={}, skyBuffer=null, lastViewProj=null;
   let shots=[], byClub=[], targets=[], markers=[], count=0;
   // Kept in one place: the declaration and setView must not drift apart, or
   // the range opens on a camera no button can reproduce.
@@ -803,28 +805,145 @@ const RANGE = (function(){
   const reduced = window.matchMedia &&
     window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
-  // --- shader sources ---------------------------------------------------
-  const VERT = `#version 300 es
-    in vec3 aPos; in vec3 aColor;
-    uniform mat4 uViewProj;
-    uniform float uPointSize;
-    out vec3 vColor; out float vDepth;
+  // --- shaders ----------------------------------------------------------
+  //
+  // Four programs rather than one that does everything: a sky, lit ground with
+  // procedural grass, lit solid geometry, and unlit lines. Each stays short
+  // enough to read, and none of them branches on what it is drawing.
+
+  const SUN = [0.38, 0.82, -0.42];        // direction toward the sun
+  const SKY_TOP = [0.204, 0.361, 0.573];
+  const SKY_HORIZON = [0.663, 0.741, 0.792];
+
+  // A full-screen triangle, coloured by the direction each pixel looks in.
+  const SKY_VERT = `#version 300 es
+    in vec2 aClip;
+    uniform mat4 uInverseViewProj;
+    out vec3 vRay;
     void main(){
-      vec4 clip = uViewProj * vec4(aPos, 1.0);
-      gl_Position = clip;
-      gl_PointSize = uPointSize;
-      vColor = aColor;
-      vDepth = clamp(clip.w / 400.0, 0.0, 1.0);
+      gl_Position = vec4(aClip, 1.0, 1.0);
+      vec4 near = uInverseViewProj * vec4(aClip, -1.0, 1.0);
+      vec4 far  = uInverseViewProj * vec4(aClip,  1.0, 1.0);
+      vRay = normalize(far.xyz/far.w - near.xyz/near.w);
     }`;
-  const FRAG = `#version 300 es
+  const SKY_FRAG = `#version 300 es
     precision highp float;
-    in vec3 vColor; in float vDepth;
+    in vec3 vRay;
+    uniform vec3 uTop, uHorizon, uSun;
+    out vec4 outColor;
+    void main(){
+      vec3 ray = normalize(vRay);
+      float height = clamp(ray.y * 1.6 + 0.05, 0.0, 1.0);
+      vec3 sky = mix(uHorizon, uTop, pow(height, 0.62));
+      // A soft sun, and the glow it throws across the sky near it.
+      float toSun = max(dot(ray, normalize(uSun)), 0.0);
+      sky += vec3(1.0, 0.92, 0.76) * pow(toSun, 220.0) * 0.85;
+      sky += vec3(0.98, 0.86, 0.66) * pow(toSun, 7.0) * 0.14;
+      // Ground haze below the horizon, so the turf meets something.
+      sky = mix(vec3(0.596, 0.678, 0.729), sky, smoothstep(-0.055, 0.004, ray.y));
+      outColor = vec4(sky, 1.0);
+    }`;
+
+  // Ground: procedural turf. Mowing stripes, value noise for mottling, and a
+  // little normal jitter so it catches the light unevenly instead of reading
+  // as a sheet of plastic.
+  const GROUND_VERT = `#version 300 es
+    in vec3 aPos;
+    uniform mat4 uViewProj;
+    out vec3 vWorld;
+    void main(){ vWorld = aPos; gl_Position = uViewProj * vec4(aPos, 1.0); }`;
+  const GROUND_FRAG = `#version 300 es
+    precision highp float;
+    in vec3 vWorld;
+    uniform vec3 uSun, uEye;
+    out vec4 outColor;
+
+    float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+    float noise(vec2 p){
+      vec2 i = floor(p), f = fract(p);
+      vec2 u = f*f*(3.0-2.0*f);
+      return mix(mix(hash(i), hash(i+vec2(1,0)), u.x),
+                 mix(hash(i+vec2(0,1)), hash(i+vec2(1,1)), u.x), u.y);
+    }
+    float turf(vec2 p){
+      return noise(p*1.7)*0.55 + noise(p*7.3)*0.28 + noise(p*23.0)*0.17;
+    }
+
+    void main(){
+      vec2 p = vWorld.xz;
+      float grain = turf(p * 0.9);
+
+      // Mown stripes: alternating bands cut in opposite directions, which is
+      // why a real fairway shows light and dark rows.
+      float band = floor(vWorld.z / 9.144);
+      float stripe = mod(band, 2.0) < 1.0 ? 1.06 : 0.90;
+      stripe *= 1.0 + (turf(p * 0.35) - 0.5) * 0.10;
+
+      vec3 base = mix(vec3(0.220, 0.396, 0.216), vec3(0.310, 0.522, 0.290), grain);
+      base *= stripe;
+
+      // Bare, darker ground once past the mown range.
+      float mown = 1.0 - smoothstep(58.0, 132.0, abs(vWorld.x));
+      mown *= 1.0 - smoothstep(275.0, 400.0, vWorld.z);
+      mown *= smoothstep(-70.0, -14.0, vWorld.z);
+      base = mix(vec3(0.196, 0.271, 0.165) * (0.72 + grain*0.55), base, mown);
+
+      // Lighting: a directional sun, and sky light from above.
+      vec3 jitter = normalize(vec3((turf(p*4.1)-0.5)*0.45, 1.0, (turf(p*4.7+9.0)-0.5)*0.45));
+      float sun = max(dot(jitter, normalize(uSun)), 0.0);
+      float ambient = 0.62 + 0.20 * jitter.y;
+      vec3 lit = base * (ambient + sun * 0.52);
+
+      // Distance haze, so the far end of the range recedes.
+      float away = clamp(length(vWorld - uEye) / 620.0, 0.0, 1.0);
+      lit = mix(lit, vec3(0.612, 0.694, 0.745), pow(away, 1.9) * 0.80);
+      outColor = vec4(lit, 1.0);
+    }`;
+
+  // Lit solid geometry: the ball, the flags, the target greens.
+  const SOLID_VERT = `#version 300 es
+    in vec3 aPos; in vec3 aNormal; in vec3 aColor;
+    uniform mat4 uViewProj;
+    out vec3 vNormal; out vec3 vColor; out vec3 vWorld;
+    void main(){
+      vNormal = aNormal; vColor = aColor; vWorld = aPos;
+      gl_Position = uViewProj * vec4(aPos, 1.0);
+    }`;
+  const SOLID_FRAG = `#version 300 es
+    precision highp float;
+    in vec3 vNormal; in vec3 vColor; in vec3 vWorld;
+    uniform vec3 uSun, uEye;
     uniform float uAlpha;
     out vec4 outColor;
     void main(){
-      // Fade with distance so the far end of the range reads as far away.
-      vec3 haze = vec3(0.055, 0.075, 0.065);
-      outColor = vec4(mix(vColor, haze, vDepth * 0.55), uAlpha);
+      vec3 n = normalize(vNormal);
+      vec3 toSun = normalize(uSun);
+      float sun = max(dot(n, toSun), 0.0);
+      float ambient = 0.55 + 0.26 * clamp(n.y * 0.5 + 0.5, 0.0, 1.0);
+      // A tight highlight, which is what makes a golf ball read as a golf ball.
+      vec3 toEye = normalize(uEye - vWorld);
+      float spec = pow(max(dot(reflect(-toSun, n), toEye), 0.0), 42.0);
+      vec3 lit = vColor * (ambient + sun * 0.58) + vec3(1.0, 0.97, 0.90) * spec * 0.60;
+      float away = clamp(length(vWorld - uEye) / 620.0, 0.0, 1.0);
+      lit = mix(lit, vec3(0.612, 0.694, 0.745), pow(away, 1.9) * 0.70);
+      outColor = vec4(lit, uAlpha);
+    }`;
+
+  // Unlit lines: tracers and markings. These are annotation, not scenery, and
+  // lighting them would only make them harder to follow.
+  const LINE_VERT = `#version 300 es
+    in vec3 aPos; in vec3 aColor;
+    uniform mat4 uViewProj;
+    out vec3 vColor; out vec3 vWorld;
+    void main(){ vColor = aColor; vWorld = aPos; gl_Position = uViewProj * vec4(aPos,1.0); }`;
+  const LINE_FRAG = `#version 300 es
+    precision highp float;
+    in vec3 vColor; in vec3 vWorld;
+    uniform vec3 uEye; uniform float uAlpha;
+    out vec4 outColor;
+    void main(){
+      float away = clamp(length(vWorld - uEye) / 660.0, 0.0, 1.0);
+      outColor = vec4(mix(vColor, vec3(0.612,0.694,0.745), pow(away,1.9)*0.55), uAlpha);
     }`;
 
   function compile(src, kind){
@@ -836,27 +955,21 @@ const RANGE = (function(){
     return s;
   }
 
-  function build(){
-    program = gl.createProgram();
-    gl.attachShader(program, compile(VERT, gl.VERTEX_SHADER));
-    gl.attachShader(program, compile(FRAG, gl.FRAGMENT_SHADER));
-    gl.linkProgram(program);
-    if(!gl.getProgramParameter(program, gl.LINK_STATUS))
-      throw new Error(gl.getProgramInfoLog(program) || "program failed to link");
-    gl.useProgram(program);
-    buffers = {pos: gl.createBuffer(), color: gl.createBuffer(), vao: gl.createVertexArray()};
-    gl.bindVertexArray(buffers.vao);
-    const aPos = gl.getAttribLocation(program, "aPos");
-    const aColor = gl.getAttribLocation(program, "aColor");
-    gl.bindBuffer(gl.ARRAY_BUFFER, buffers.pos);
-    gl.enableVertexAttribArray(aPos);
-    gl.vertexAttribPointer(aPos, 3, gl.FLOAT, false, 0, 0);
-    gl.bindBuffer(gl.ARRAY_BUFFER, buffers.color);
-    gl.enableVertexAttribArray(aColor);
-    gl.vertexAttribPointer(aColor, 3, gl.FLOAT, false, 0, 0);
-    gl.enable(gl.DEPTH_TEST);
-    gl.enable(gl.BLEND);
-    gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+  function link(vertSrc, fragSrc, attribs){
+    const prog = gl.createProgram();
+    gl.attachShader(prog, compile(vertSrc, gl.VERTEX_SHADER));
+    gl.attachShader(prog, compile(fragSrc, gl.FRAGMENT_SHADER));
+    gl.linkProgram(prog);
+    if(!gl.getProgramParameter(prog, gl.LINK_STATUS))
+      throw new Error(gl.getProgramInfoLog(prog) || "program failed to link");
+    const record = {prog: prog, attrib: {}, uniform: {}};
+    attribs.forEach(function(name){ record.attrib[name] = gl.getAttribLocation(prog, name); });
+    const count = gl.getProgramParameter(prog, gl.ACTIVE_UNIFORMS);
+    for(let i=0;i<count;i++){
+      const info = gl.getActiveUniform(prog, i);
+      record.uniform[info.name] = gl.getUniformLocation(prog, info.name);
+    }
+    return record;
   }
 
   // --- small matrix helpers --------------------------------------------
@@ -881,142 +994,408 @@ const RANGE = (function(){
   function norm(v){ const l=Math.hypot(v[0],v[1],v[2])||1; return [v[0]/l,v[1]/l,v[2]/l]; }
 
   // --- geometry ---------------------------------------------------------
-  function scene(){
-    const pos=[], col=[];
-    const line=(a,b,c)=>{ pos.push(a[0],a[1],a[2], b[0],b[1],b[2]); col.push(c[0],c[1],c[2], c[0],c[1],c[2]); };
 
-    const far = 320*YARD, wide = 70*YARD;
-
-    // Ground beyond the mown range, so the turf does not end at a hard edge
-    // into nothing. The distance haze in the shader takes care of the rest.
-    const out = 900*YARD, back = 120*YARD;
-    pos.push(-out,-0.05,-back,  out,-0.05,-back,  out,-0.05,out,
-             -out,-0.05,-back,  out,-0.05,out,   -out,-0.05,out);
-    for(let i=0;i<6;i++) col.push(0.052,0.086,0.062);
-
-    // Mown stripes, alternating, which is what makes it read as turf.
-    for(let y=0; y<320; y+=10){
-      const shade = (y/10)%2 ? [0.135,0.235,0.155] : [0.108,0.196,0.130];
-      const z0=y*YARD, z1=Math.min(y+10,320)*YARD;
-      pos.push(-wide,0,z0,  wide,0,z0,  wide,0,z1,
-               -wide,0,z0,  wide,0,z1, -wide,0,z1);
-      for(let i=0;i<6;i++) col.push(shade[0],shade[1],shade[2]);
-    }
-    const groundVerts = pos.length/3;
-
-    // Distance markers, and a line across the range at each.
-    markers.forEach(function(yards){
-      const z = yards*YARD, grey=[0.30,0.36,0.32];
-      line([-wide,0.02,z],[wide,0.02,z],grey);
-      [-1,1].forEach(function(side){
-        const x = side*wide*0.86;
-        for(let h=0; h<3; h++)
-          line([x,h*0.6,z],[x,(h+1)*0.6-0.15,z],[0.55,0.62,0.55]);
-      });
-    });
-
-    // Target greens: a ring on the ground, plus a flag.
-    targets.forEach(function(yards){
-      const z=yards*YARD, r=9*YARD, ring=[0.35,0.72,0.45];
-      let prev=null;
-      for(let a=0;a<=48;a++){
-        const th=a/48*Math.PI*2, pt=[Math.cos(th)*r, 0.03, z+Math.sin(th)*r];
-        if(prev) line(prev, pt, ring);
-        prev = pt;
-      }
-      line([0,0,z],[0,2.2,z],[0.85,0.88,0.85]);
-      line([0,2.2,z],[0.9,1.95,z],[0.90,0.30,0.30]);
-      line([0.9,1.95,z],[0,1.75,z],[0.90,0.30,0.30]);
-    });
-
-    // Centre line down the range.
-    line([0,0.02,0],[0,0.02,far],[0.22,0.30,0.24]);
-    return {pos:new Float32Array(pos), col:new Float32Array(col), ground:groundVerts};
+  function mesh(parts){
+    // parts: {pos:[], normal:[], color:[]} -> buffers ready to draw.
+    return {
+      pos: new Float32Array(parts.pos),
+      normal: parts.normal ? new Float32Array(parts.normal) : null,
+      color: new Float32Array(parts.color),
+      count: parts.pos.length / 3,
+    };
   }
 
-  let staticScene=null;
+  function groundMesh(){
+    // One large quad. All the detail is in the fragment shader, so there is no
+    // reason to tessellate it.
+    const far = 1100*YARD, side = 800*YARD, back = 160*YARD;
+    return mesh({pos:[-side,0,-back,  side,0,-back,  side,0,far,
+                      -side,0,-back,  side,0,far,   -side,0,far], color:new Array(18).fill(0)});
+  }
+
+  function sphere(cx, cy, cz, radius, colour, rings, segments){
+    const pos=[], normal=[], color=[];
+    for(let r=0;r<rings;r++){
+      const p0 = Math.PI*r/rings, p1 = Math.PI*(r+1)/rings;
+      for(let s=0;s<segments;s++){
+        const t0 = 2*Math.PI*s/segments, t1 = 2*Math.PI*(s+1)/segments;
+        const corner = function(phi, theta){
+          return [Math.sin(phi)*Math.cos(theta), Math.cos(phi), Math.sin(phi)*Math.sin(theta)];
+        };
+        const a=corner(p0,t0), b=corner(p1,t0), c=corner(p1,t1), d=corner(p0,t1);
+        [a,b,c, a,c,d].forEach(function(n){
+          pos.push(cx+n[0]*radius, cy+n[1]*radius, cz+n[2]*radius);
+          normal.push(n[0], n[1], n[2]);
+          color.push(colour[0], colour[1], colour[2]);
+        });
+      }
+    }
+    return {pos:pos, normal:normal, color:color};
+  }
+
+  function ringDisc(cz, radius, colour, y){
+    // A filled disc for a target green, facing up.
+    const pos=[], normal=[], color=[], steps=44;
+    for(let i=0;i<steps;i++){
+      const a0=2*Math.PI*i/steps, a1=2*Math.PI*(i+1)/steps;
+      [[0,0],[Math.cos(a0),Math.sin(a0)],[Math.cos(a1),Math.sin(a1)]].forEach(function(pt){
+        pos.push(pt[0]*radius, y, cz+pt[1]*radius);
+        normal.push(0,1,0);
+        color.push(colour[0], colour[1], colour[2]);
+      });
+    }
+    return {pos:pos, normal:normal, color:color};
+  }
+
+  function box(x0,y0,z0, x1,y1,z1, colour){
+    const pos=[], normal=[], color=[];
+    const face = function(a,b,c,d,n){
+      [a,b,c, a,c,d].forEach(function(v){
+        pos.push(v[0],v[1],v[2]); normal.push(n[0],n[1],n[2]);
+        color.push(colour[0],colour[1],colour[2]);
+      });
+    };
+    face([x0,y0,z1],[x1,y0,z1],[x1,y1,z1],[x0,y1,z1],[0,0,1]);
+    face([x1,y0,z0],[x0,y0,z0],[x0,y1,z0],[x1,y1,z0],[0,0,-1]);
+    face([x1,y0,z1],[x1,y0,z0],[x1,y1,z0],[x1,y1,z1],[1,0,0]);
+    face([x0,y0,z0],[x0,y0,z1],[x0,y1,z1],[x0,y1,z0],[-1,0,0]);
+    face([x0,y1,z1],[x1,y1,z1],[x1,y1,z0],[x0,y1,z0],[0,1,0]);
+    return {pos:pos, normal:normal, color:color};
+  }
+
+  function join(pieces){
+    const out={pos:[], normal:[], color:[]};
+    pieces.forEach(function(part){
+      out.pos.push.apply(out.pos, part.pos);
+      out.normal.push.apply(out.normal, part.normal);
+      out.color.push.apply(out.color, part.color);
+    });
+    return out;
+  }
+
+  function furnitureMesh(){
+    // Target greens, flagsticks and the 100-yard distance posts, all lit.
+    const parts=[];
+    targets.forEach(function(yards){
+      const z = yards*YARD;
+      parts.push(ringDisc(z, 9.5*YARD, [0.310, 0.510, 0.267], 0.035));
+      parts.push(ringDisc(z, 8.2*YARD, [0.396, 0.612, 0.325], 0.045));
+      parts.push(box(-0.045, 0, z-0.045, 0.045, 2.35, z+0.045, [0.88,0.89,0.86]));   // pole
+      parts.push(box(0.045, 1.85, z-0.02, 0.80, 2.30, z+0.02, [0.784,0.235,0.216])); // flag
+    });
+    markers.forEach(function(yards){
+      const z = yards*YARD;
+      [-1,1].forEach(function(side){
+        const x = side*62*YARD;
+        parts.push(box(x-0.09, 0, z-0.09, x+0.09, 1.5, z+0.09, [0.62,0.64,0.60]));
+        parts.push(box(x-0.55, 1.5, z-0.03, x+0.55, 2.1, z+0.03, [0.90,0.91,0.88]));
+      });
+    });
+    return parts.length ? mesh(join(parts)) : null;
+  }
+
+  function markingsMesh(){
+    // Flat lines on the turf: the yard lines and the centre line.
+    const pos=[], col=[];
+    const line=(a,b,c)=>{ pos.push(a[0],a[1],a[2], b[0],b[1],b[2]);
+                          col.push(c[0],c[1],c[2], c[0],c[1],c[2]); };
+    const wide = 62*YARD;
+    markers.forEach(function(yards){
+      line([-wide,0.03,yards*YARD],[wide,0.03,yards*YARD],[0.48,0.55,0.47]);
+    });
+    line([0,0.03,0],[0,0.03,320*YARD],[0.32,0.40,0.33]);
+    return {pos:new Float32Array(pos), color:new Float32Array(col), count:pos.length/3};
+  }
+
+  function ballMesh(){
+    return mesh(sphere(0, 0, 0, 0.30, [0.965, 0.969, 0.945], 12, 18));
+  }
+
+  function shadowMesh(){
+    // A soft blob under the ball. Cheap, and the thing that stops the ball
+    // looking like it is pasted on top of the picture.
+    const pos=[], normal=[], color=[], steps=28;
+    for(let i=0;i<steps;i++){
+      const a0=2*Math.PI*i/steps, a1=2*Math.PI*(i+1)/steps;
+      pos.push(0,0,0, Math.cos(a0),0,Math.sin(a0), Math.cos(a1),0,Math.sin(a1));
+      normal.push(0,1,0, 0,1,0, 0,1,0);
+      color.push(0.02,0.03,0.02, 0.02,0.03,0.02, 0.02,0.03,0.02);
+    }
+    return mesh({pos:pos, normal:normal, color:color});
+  }
+
+  function build(){
+    programs = {
+      sky:    link(SKY_VERT, SKY_FRAG, ["aClip"]),
+      ground: link(GROUND_VERT, GROUND_FRAG, ["aPos", "aColor"]),
+      solid:  link(SOLID_VERT, SOLID_FRAG, ["aPos", "aNormal", "aColor"]),
+      line:   link(LINE_VERT, LINE_FRAG, ["aPos", "aColor"]),
+    };
+    gl.bindVertexArray(gl.createVertexArray());
+
+    // One oversized triangle covering the screen, for the sky.
+    skyBuffer = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, skyBuffer);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 3,-1, -1,3]), gl.STATIC_DRAW);
+
+    dynamic = {};
+    meshes = {
+      ground: groundMesh(),
+      markings: markingsMesh(),
+      furniture: furnitureMesh(),
+      ball: ballMesh(),
+      shadow: shadowMesh(),
+    };
+
+    gl.enable(gl.DEPTH_TEST);
+    gl.enable(gl.BLEND);
+    gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+    gl.clearColor(SKY_HORIZON[0], SKY_HORIZON[1], SKY_HORIZON[2], 1);
+  }
+
+  function rebuildScenery(){
+    // Targets and markers arrive from the companion, so the furniture cannot
+    // be built until the first status has landed.
+    if(!gl || !programs) return;
+    meshes.markings = markingsMesh();
+    meshes.furniture = furnitureMesh();
+  }
+
 
   function camera(aspect){
+    let eye, focus, up=[0,1,0], fov=Math.PI/4;
     if(view==="top"){
       // Looking straight down at the middle of the range. High enough, and
       // through a narrow enough lens, that it reads as a plan rather than as a
       // trapezoid: this view exists to show dispersion, and perspective would
       // make the far shots look tighter than they were.
       const mid = 150*YARD;
-      return multiply(perspective(Math.PI/7, aspect, 1.0, 1600),
-                      lookAt([0, 560, mid], [0, 0, mid], [0,0,1]));
+      eye=[0, 560, mid]; focus=[0, 0, mid]; up=[0,0,1]; fov=Math.PI/7;
+    }else{
+      // Behind and down-the-line are the same orbiting camera at different
+      // starting points, so dragging works identically in both.
+      focus = [0, 12, 105*YARD];
+      const flat = orbit.dist*Math.cos(orbit.pitch);
+      eye = [focus[0] + Math.sin(orbit.yaw)*flat,
+             focus[1] + orbit.dist*Math.sin(orbit.pitch),
+             focus[2] - Math.cos(orbit.yaw)*flat];
     }
-    // Behind and down-the-line are the same orbiting camera at different
-    // starting points, so dragging works identically in both.
-    const focus = [0, 12, 105*YARD];
-    const flat = orbit.dist*Math.cos(orbit.pitch);
-    const eye = [focus[0] + Math.sin(orbit.yaw)*flat,
-                 focus[1] + orbit.dist*Math.sin(orbit.pitch),
-                 focus[2] - Math.cos(orbit.yaw)*flat];
-    return multiply(perspective(Math.PI/4, aspect, 0.5, 1200),
-                    lookAt(eye, focus, [0,1,0]));
+    const proj = perspective(fov, aspect, 0.4, 2600);
+    const matrix = multiply(proj, lookAt(eye, focus, up));
+    lastViewProj = matrix;
+    return {matrix: matrix, eye: eye, inverse: invert(matrix)};
+  }
+
+  function invert(m){
+    // Full 4x4 inverse. The sky shader turns clip-space corners back into
+    // world-space directions, which needs it.
+    const inv = new Array(16);
+    inv[0]=m[5]*m[10]*m[15]-m[5]*m[11]*m[14]-m[9]*m[6]*m[15]+m[9]*m[7]*m[14]+m[13]*m[6]*m[11]-m[13]*m[7]*m[10];
+    inv[4]=-m[4]*m[10]*m[15]+m[4]*m[11]*m[14]+m[8]*m[6]*m[15]-m[8]*m[7]*m[14]-m[12]*m[6]*m[11]+m[12]*m[7]*m[10];
+    inv[8]=m[4]*m[9]*m[15]-m[4]*m[11]*m[13]-m[8]*m[5]*m[15]+m[8]*m[7]*m[13]+m[12]*m[5]*m[11]-m[12]*m[7]*m[9];
+    inv[12]=-m[4]*m[9]*m[14]+m[4]*m[10]*m[13]+m[8]*m[5]*m[14]-m[8]*m[6]*m[13]-m[12]*m[5]*m[10]+m[12]*m[6]*m[9];
+    inv[1]=-m[1]*m[10]*m[15]+m[1]*m[11]*m[14]+m[9]*m[2]*m[15]-m[9]*m[3]*m[14]-m[13]*m[2]*m[11]+m[13]*m[3]*m[10];
+    inv[5]=m[0]*m[10]*m[15]-m[0]*m[11]*m[14]-m[8]*m[2]*m[15]+m[8]*m[3]*m[14]+m[12]*m[2]*m[11]-m[12]*m[3]*m[10];
+    inv[9]=-m[0]*m[9]*m[15]+m[0]*m[11]*m[13]+m[8]*m[1]*m[15]-m[8]*m[3]*m[13]-m[12]*m[1]*m[11]+m[12]*m[3]*m[9];
+    inv[13]=m[0]*m[9]*m[14]-m[0]*m[10]*m[13]-m[8]*m[1]*m[14]+m[8]*m[2]*m[13]+m[12]*m[1]*m[10]-m[12]*m[2]*m[9];
+    inv[2]=m[1]*m[6]*m[15]-m[1]*m[7]*m[14]-m[5]*m[2]*m[15]+m[5]*m[3]*m[14]+m[13]*m[2]*m[7]-m[13]*m[3]*m[6];
+    inv[6]=-m[0]*m[6]*m[15]+m[0]*m[7]*m[14]+m[4]*m[2]*m[15]-m[4]*m[3]*m[14]-m[12]*m[2]*m[7]+m[12]*m[3]*m[6];
+    inv[10]=m[0]*m[5]*m[15]-m[0]*m[7]*m[13]-m[4]*m[1]*m[15]+m[4]*m[3]*m[13]+m[12]*m[1]*m[7]-m[12]*m[3]*m[5];
+    inv[14]=-m[0]*m[5]*m[14]+m[0]*m[6]*m[13]+m[4]*m[1]*m[14]-m[4]*m[2]*m[13]-m[12]*m[1]*m[6]+m[12]*m[2]*m[5];
+    inv[3]=-m[1]*m[6]*m[11]+m[1]*m[7]*m[10]+m[5]*m[2]*m[11]-m[5]*m[3]*m[10]-m[9]*m[2]*m[7]+m[9]*m[3]*m[6];
+    inv[7]=m[0]*m[6]*m[11]-m[0]*m[7]*m[10]-m[4]*m[2]*m[11]+m[4]*m[3]*m[10]+m[8]*m[2]*m[7]-m[8]*m[3]*m[6];
+    inv[11]=-m[0]*m[5]*m[11]+m[0]*m[7]*m[9]+m[4]*m[1]*m[11]-m[4]*m[3]*m[9]-m[8]*m[1]*m[7]+m[8]*m[3]*m[5];
+    inv[15]=m[0]*m[5]*m[10]-m[0]*m[6]*m[9]-m[4]*m[1]*m[10]+m[4]*m[2]*m[9]+m[8]*m[1]*m[6]-m[8]*m[2]*m[5];
+    let det = m[0]*inv[0]+m[1]*inv[4]+m[2]*inv[8]+m[3]*inv[12];
+    if(!det) return inv;
+    det = 1.0/det;
+    return inv.map(v=>v*det);
+  }
+
+  function bindMesh(program, m, withNormal){
+    if(!m.buffers){
+      m.buffers = {pos: gl.createBuffer(), color: gl.createBuffer()};
+      gl.bindBuffer(gl.ARRAY_BUFFER, m.buffers.pos);
+      gl.bufferData(gl.ARRAY_BUFFER, m.pos, gl.STATIC_DRAW);
+      gl.bindBuffer(gl.ARRAY_BUFFER, m.buffers.color);
+      gl.bufferData(gl.ARRAY_BUFFER, m.color, gl.STATIC_DRAW);
+      if(m.normal){
+        m.buffers.normal = gl.createBuffer();
+        gl.bindBuffer(gl.ARRAY_BUFFER, m.buffers.normal);
+        gl.bufferData(gl.ARRAY_BUFFER, m.normal, gl.STATIC_DRAW);
+      }
+    }
+    attach(program.attrib.aPos, m.buffers.pos, 3);
+    attach(program.attrib.aColor, m.buffers.color, 3);
+    if(withNormal && m.buffers.normal) attach(program.attrib.aNormal, m.buffers.normal, 3);
+  }
+
+  function attach(location, buffer, size){
+    if(location === undefined || location < 0) return;
+    gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+    gl.enableVertexAttribArray(location);
+    gl.vertexAttribPointer(location, size, gl.FLOAT, false, 0, 0);
+  }
+
+  function drawSky(inverseViewProj){
+    const p = programs.sky;
+    gl.useProgram(p.prog);
+    gl.depthMask(false);
+    gl.disable(gl.DEPTH_TEST);
+    attach(p.attrib.aClip, skyBuffer, 2);
+    gl.uniformMatrix4fv(p.uniform.uInverseViewProj, false, new Float32Array(inverseViewProj));
+    gl.uniform3fv(p.uniform.uTop, SKY_TOP);
+    gl.uniform3fv(p.uniform.uHorizon, SKY_HORIZON);
+    gl.uniform3fv(p.uniform.uSun, SUN);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+    gl.enable(gl.DEPTH_TEST);
+    gl.depthMask(true);
   }
 
   function draw(){
-    if(!gl || lost) return;
+    if(!gl || lost || !programs) return;
     const w=canvas.width, h=canvas.height;
     gl.viewport(0,0,w,h);
-    // A dusk sky rather than black, so the horizon is a horizon.
-    gl.clearColor(0.055,0.075,0.088,1);
     gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
-    if(!staticScene) return;
 
-    const vp = camera(w/Math.max(h,1));
-    gl.uniformMatrix4fv(gl.getUniformLocation(program,"uViewProj"), false, new Float32Array(vp));
-    gl.uniform1f(gl.getUniformLocation(program,"uPointSize"), Math.max(3, w/260));
-    const alpha = gl.getUniformLocation(program,"uAlpha");
+    const view = camera(w/Math.max(h,1));
+    const vp = new Float32Array(view.matrix);
+    drawSky(view.inverse);
 
-    // Ground and furniture.
-    upload(staticScene.pos, staticScene.col);
-    gl.uniform1f(alpha, 1.0);
-    gl.drawArrays(gl.TRIANGLES, 0, staticScene.ground);
-    gl.drawArrays(gl.LINES, staticScene.ground,
-                  staticScene.pos.length/3 - staticScene.ground);
+    // Ground.
+    let p = programs.ground;
+    gl.useProgram(p.prog);
+    bindMesh(p, meshes.ground, false);
+    gl.uniformMatrix4fv(p.uniform.uViewProj, false, vp);
+    gl.uniform3fv(p.uniform.uSun, SUN);
+    gl.uniform3fv(p.uniform.uEye, view.eye);
+    gl.drawArrays(gl.TRIANGLES, 0, meshes.ground.count);
 
-    // Tracers, oldest faintest.
+    // Greens, flags, posts.
+    p = programs.solid;
+    gl.useProgram(p.prog);
+    gl.uniformMatrix4fv(p.uniform.uViewProj, false, vp);
+    gl.uniform3fv(p.uniform.uSun, SUN);
+    gl.uniform3fv(p.uniform.uEye, view.eye);
+    gl.uniform1f(p.uniform.uAlpha, 1.0);
+    if(meshes.furniture){
+      bindMesh(p, meshes.furniture, true);
+      gl.drawArrays(gl.TRIANGLES, 0, meshes.furniture.count);
+    }
+
+    // Markings, then tracers.
+    p = programs.line;
+    gl.useProgram(p.prog);
+    gl.uniformMatrix4fv(p.uniform.uViewProj, false, vp);
+    gl.uniform3fv(p.uniform.uEye, view.eye);
+    gl.uniform1f(p.uniform.uAlpha, 0.55);
+    bindMesh(p, meshes.markings, false);
+    gl.drawArrays(gl.LINES, 0, meshes.markings.count);
+
     const traced = shots.filter(s=>s.points && s.points.length>1);
+    let ballAt = null;
     traced.forEach(function(shot, index){
-      const age = traced.length-1-index;
       const fresh = index===traced.length-1;
       let pts = shot.points;
       if(fresh && animation) pts = pts.slice(0, Math.max(2, animation.upto));
+      if(fresh) ballAt = pts[pts.length-1];
+
       const pos=[], col=[];
-      const tint = fresh ? [0.80,0.95,0.35] : [0.42,0.55,0.40];
-      // The physics reports x downrange and z offline; the scene is built with
-      // z downrange and x across. Swap here rather than in the model, so the
-      // model stays in the axes a ball flight is naturally written in.
+      const tint = fresh ? [0.855, 0.965, 0.396] : [0.451, 0.573, 0.435];
       for(let i=1;i<pts.length;i++){
         pos.push(pts[i-1][2],pts[i-1][1],pts[i-1][0], pts[i][2],pts[i][1],pts[i][0]);
         col.push(tint[0],tint[1],tint[2], tint[0],tint[1],tint[2]);
       }
-      // Where it finished.
-      const end = pts[pts.length-1];
-      pos.push(end[2], 0.05, end[0]); col.push(tint[0],tint[1],tint[2]);
-      upload(new Float32Array(pos), new Float32Array(col));
-      gl.uniform1f(alpha, fresh ? 1.0 : Math.max(0.18, 0.75 - age*0.09));
+      uploadDynamic(new Float32Array(pos), new Float32Array(col));
+      attach(p.attrib.aPos, dynamic.pos, 3);
+      attach(p.attrib.aColor, dynamic.color, 3);
+      gl.uniform1f(p.uniform.uAlpha,
+        fresh ? 0.98 : Math.max(0.16, 0.62 - (traced.length-1-index)*0.075));
       gl.drawArrays(gl.LINES, 0, (pts.length-1)*2);
-      gl.drawArrays(gl.POINTS, (pts.length-1)*2, 1);
     });
+
+    // Where each shot finished: a small mark on the turf.
+    if(traced.length){
+      const pos=[], col=[];
+      shots.forEach(function(shot){
+        const end = shot.points && shot.points.length
+          ? shot.points[shot.points.length-1]
+          : [shot.carryYards*YARD, 0, shot.offlineYards*YARD];
+        const x = shot.points && shot.points.length ? end[2] : end[2];
+        const z = shot.points && shot.points.length ? end[0] : end[0];
+        const r = 0.55;
+        for(let i=0;i<10;i++){
+          const a0=2*Math.PI*i/10, a1=2*Math.PI*(i+1)/10;
+          pos.push(x+Math.cos(a0)*r, 0.06, z+Math.sin(a0)*r,
+                   x+Math.cos(a1)*r, 0.06, z+Math.sin(a1)*r);
+          col.push(0.78,0.86,0.55, 0.78,0.86,0.55);
+        }
+      });
+      uploadDynamic(new Float32Array(pos), new Float32Array(col));
+      attach(p.attrib.aPos, dynamic.pos, 3);
+      attach(p.attrib.aColor, dynamic.color, 3);
+      gl.uniform1f(p.uniform.uAlpha, 0.7);
+      gl.drawArrays(gl.LINES, 0, pos.length/3);
+    }
+
+    // The ball itself, with a shadow beneath it, while a shot is in the air.
+    if(ballAt && animation){
+      drawBall(view, vp, ballAt);
+    }
   }
 
-  function upload(pos, col){
-    gl.bindBuffer(gl.ARRAY_BUFFER, buffers.pos);
+  function drawBall(view, vp, at){
+    const x = at[2], y = at[1], z = at[0];
+    const p = programs.solid;
+    gl.useProgram(p.prog);
+    gl.uniformMatrix4fv(p.uniform.uViewProj, false, vp);
+    gl.uniform3fv(p.uniform.uSun, SUN);
+    gl.uniform3fv(p.uniform.uEye, view.eye);
+
+    // Shadow first: it spreads and fades the higher the ball is, the way a
+    // real one does.
+    const spread = 1.0 + Math.min(y, 40) * 0.09;
+    gl.uniform1f(p.uniform.uAlpha, Math.max(0.05, 0.42 - y * 0.008));
+    gl.depthMask(false);
+    bindMesh(p, meshes.shadow, true);
+    drawTranslatedScaled(p, x, 0.05, z, spread * 0.62, 1.0, spread * 0.62,
+                         meshes.shadow.count);
+    gl.depthMask(true);
+
+    gl.uniform1f(p.uniform.uAlpha, 1.0);
+    bindMesh(p, meshes.ball, true);
+    drawTranslatedScaled(p, x, y, z, 1, 1, 1, meshes.ball.count);
+  }
+
+  function drawTranslatedScaled(program, tx, ty, tz, sx, sy, sz, count){
+    // The meshes are built at the origin, so the model transform is folded
+    // into the view-projection rather than kept as a separate uniform.
+    const model = [sx,0,0,0, 0,sy,0,0, 0,0,sz,0, tx,ty,tz,1];
+    const current = program.__vp || null;
+    gl.uniformMatrix4fv(program.uniform.uViewProj, false,
+                        new Float32Array(multiply(lastViewProj, model)));
+    gl.drawArrays(gl.TRIANGLES, 0, count);
+    gl.uniformMatrix4fv(program.uniform.uViewProj, false, new Float32Array(lastViewProj));
+  }
+
+  function uploadDynamic(pos, col){
+    if(!dynamic.pos){ dynamic.pos = gl.createBuffer(); dynamic.color = gl.createBuffer(); }
+    gl.bindBuffer(gl.ARRAY_BUFFER, dynamic.pos);
     gl.bufferData(gl.ARRAY_BUFFER, pos, gl.DYNAMIC_DRAW);
-    gl.bindBuffer(gl.ARRAY_BUFFER, buffers.color);
+    gl.bindBuffer(gl.ARRAY_BUFFER, dynamic.color);
     gl.bufferData(gl.ARRAY_BUFFER, col, gl.DYNAMIC_DRAW);
   }
 
   function frame(now){
     raf = null;
     if(animation){
-      const dt = lastFrame ? (now-lastFrame)/1000 : 0.016;
-      animation.upto += Math.max(1, Math.round(animation.total * dt / animation.seconds));
-      if(animation.upto >= animation.total) animation = null;
+      // Fractional progress, so the ball takes as long to fly as the shot
+      // actually took. Advancing by a whole point per frame made every shot
+      // last the same two seconds regardless of the club.
+      const dt = lastFrame ? Math.min((now-lastFrame)/1000, 0.1) : 0.016;
+      animation.progress += dt / animation.seconds;
+      animation.upto = Math.max(2, Math.round(animation.total * Math.min(1, animation.progress)));
+      if(animation.progress >= 1) animation = null;
     }
     lastFrame = now;
     draw();
@@ -1046,7 +1425,6 @@ const RANGE = (function(){
       gl = canvas.getContext("webgl2", {antialias:true, alpha:false, depth:true});
       if(!gl) throw new Error("WebGL 2 is not available");
       build();
-      staticScene = scene();
     }catch(err){
       gl = null;
       fallback(err && err.message);
@@ -1059,7 +1437,7 @@ const RANGE = (function(){
     canvas.addEventListener("webglcontextrestored", function(){
       // Windows does this on a driver update. Rebuild rather than go black.
       lost = false; gl = canvas.getContext("webgl2", {antialias:true, alpha:false});
-      try{ build(); staticScene = scene(); schedule(); }catch(e){ fallback(e.message); }
+      try{ build(); rebuildScenery(); schedule(); }catch(e){ fallback(e.message); }
     });
     bindPointer();
     return true;
@@ -1124,13 +1502,13 @@ const RANGE = (function(){
     shots = data.shots || []; byClub = data.byClub || [];
     targets = data.targets || []; markers = data.markers || [];
     count = data.count || 0;
-    if(staticScene === null && gl) staticScene = scene();
-    else if(gl) staticScene = scene();
+    rebuildScenery();
 
     const newest = shots.length ? shots[shots.length-1] : null;
     if(newest && newest.id !== previous && newest.points && newest.points.length > 1){
       animation = reduced ? null
-        : {upto: 2, total: newest.points.length, seconds: Math.max(0.8, newest.flightSeconds||3)};
+        : {upto: 2, progress: 0, total: newest.points.length,
+           seconds: Math.max(0.8, newest.flightSeconds || 3)};
       lastFrame = 0;
     }
     renderHud(newest);

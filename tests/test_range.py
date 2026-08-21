@@ -228,9 +228,11 @@ def test_the_renderer_maps_the_physics_axes_onto_the_scene():
         pathlib.Path(__file__).resolve().parent.parent
         / "src" / "pitrac_easy_connect" / "companion" / "page.py"
     ).read_text()
-    tracer = page.split("// Tracers, oldest faintest.")[1].split("function upload(")[0]
+    tracer = page.split("const traced = shots.filter")[1].split("function drawBall(")[0]
     assert "pts[i-1][2],pts[i-1][1],pts[i-1][0]" in tracer, "downrange must map to scene z"
-    assert "pos.push(end[2], 0.05, end[0])" in tracer, "and so must the landing mark"
+    # The ball and its shadow have to agree with the tracer.
+    ball = page.split("function drawBall(")[1].split("\n  }")[0]
+    assert "const x = at[2], y = at[1], z = at[0];" in ball
 
 
 def test_the_opening_camera_is_one_a_button_can_reproduce():
@@ -294,3 +296,18 @@ def test_the_clubs_come_out_in_a_sensible_order():
         carries[name] = sum(runs) / len(runs)
     ordered = [carries[c[0]] for c in ballmachine.CLUBS]
     assert ordered == sorted(ordered, reverse=True), carries
+
+
+def test_the_animation_lasts_as_long_as_the_shot_did():
+    """Advancing a whole trajectory point per frame made every shot take the
+    same two seconds, whatever the club. A wedge hangs; a driver does not."""
+
+    import pathlib
+
+    page = (
+        pathlib.Path(__file__).resolve().parent.parent
+        / "src" / "pitrac_easy_connect" / "companion" / "page.py"
+    ).read_text()
+    frame = page.split("function frame(now){")[1].split("function schedule(")[0]
+    assert "animation.progress += dt / animation.seconds" in frame
+    assert "newest.flightSeconds" in page
