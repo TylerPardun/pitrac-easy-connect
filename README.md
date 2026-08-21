@@ -4,8 +4,9 @@
 
 PiTrac Easy-Connect is a two-part system: a background service on the Raspberry Pi inside the enclosure, and a desktop app for macOS and Windows. The service puts the enclosure on your home Wi-Fi, announces itself on the network, and forwards every measured shot; the app finds the enclosure by itself, pairs with it in one click, relays the shots into GSPro or E6 Connect, and shows PiTrac's own dashboard in a tab. Setup is a five-step wizard, and moving the enclosure to a different residence means picking a new network off a list — nothing about PiTrac's own configuration changes.
 
-- **Status:** private while it settles; build from source below
+- **Download:** <https://tylerpardun.github.io/pitrac-easy-connect/>
 - **Version:** 0.2.0, running on real hardware
+- **Tests:** 814, passing on macOS, Windows, Linux, and the Raspberry Pi
 - **Dependencies:** none — Python standard library only
 - **Licence:** [MIT](LICENSE)
 
@@ -48,30 +49,61 @@ pitrac_lm  →  Pi relay  ══ paired link ══>  Desktop app  →  GSPro / 
 
 ---
 
-## Setup
+## Install on the Raspberry Pi
 
-Two pieces, installed in this order. PiTrac itself must already be installed and working — see [PiTracLM/PiTrac](https://github.com/PiTracLM/PiTrac).
-
-### 1. Install the service on the Raspberry Pi
-
-Copy this repository to the Pi and run:
+PiTrac itself must already be installed and working — see
+[PiTracLM/PiTrac](https://github.com/PiTracLM/PiTrac). Then copy this repository
+to the Pi and run:
 
 ```bash
 sudo ./packaging/pi/install.sh
 ```
 
-The installer checks the hardware, installs and starts the service, points PiTrac's shot output at the relay, and prints the **owner card**.
+The installer checks the hardware, installs and starts the service, points
+PiTrac's shot output at the relay, and prints the **owner card**.
 
-> **Photograph the owner card.** The setup Wi-Fi password on it is generated for that Pi alone and is the only way back in if the enclosure cannot reach a network.
+> **Photograph the owner card.** The setup Wi-Fi password on it is generated for
+> that Pi alone and is the only way back in if the enclosure cannot reach a
+> network.
 
-Re-run the same installer to upgrade. Identity, saved networks, paired computers, and camera calibration are preserved.
+Re-run the same installer to upgrade. Identity, saved networks, paired
+computers, and camera calibration are all preserved.
 
-### 2. Build the app for your computer
+Starting from a blank memory card? `docs/new-pi-setup.md` covers flashing
+through to a working launch monitor.
 
-While this repository is private there are no published downloads, so the app
-is built from source. That is one command:
+---
 
-Requires Python 3.9+. PyInstaller bundles the interpreter of the machine it runs on, so a Windows executable must be built on Windows and a macOS app on macOS. There is no cross-compiling.
+## Install the app on macOS or Windows
+
+Download the build for your computer from
+<https://tylerpardun.github.io/pitrac-easy-connect/>:
+
+| Platform | File |
+|---|---|
+| macOS 11+, Apple silicon or Intel | `PiTrac-Easy-Connect-macos.zip` |
+| Windows 10 and 11 | `PiTrac.Easy-Connect.exe` |
+| Linux, or any OS with Python 3.9+ | `PiTrac-Easy-Connect-0.2.0.pyz` |
+
+Neither native build is code signed yet, so both operating systems warn the
+first time:
+
+| Platform | What to do |
+|---|---|
+| macOS | Right-click the app and choose **Open** rather than double-clicking |
+| Windows | Choose **More info**, then **Run anyway** |
+
+Open it and follow the five steps: find the enclosure, choose your simulator,
+open it, send one test shot, play. The wizard does not return after that;
+**Advanced → Run setup again** brings it back if needed.
+
+---
+
+## Or build the app from source
+
+Requires Python 3.9 or newer. PyInstaller bundles the interpreter of the
+machine it runs on, so a Windows executable must be built on Windows and a
+macOS app on macOS. There is no cross-compiling.
 
 ```bash
 git clone https://github.com/TylerPardun/pitrac-easy-connect
@@ -84,19 +116,11 @@ The result is written to `dist/` — `PiTrac Easy-Connect.app` on macOS,
 automatically if missing; both are build-time only and are not runtime
 dependencies.
 
-Neither native build is code signed, so both operating systems warn on first
-launch: on macOS right-click the app and choose **Open** rather than
-double-clicking; on Windows choose **More info**, then **Run anyway**.
-
 | Flag | Description |
 |---|---|
 | *(none)* | Native app — `.app` on macOS, `.exe` on Windows |
 | `--pyz` | Portable single file, runs anywhere Python 3.9+ is installed |
 | `--all` | Both |
-
-### 3. First run
-
-Open the app and follow the five steps: find the enclosure, choose your simulator, open it, send one test shot, play. The wizard does not return after that; **Advanced → Run setup again** brings it back if needed.
 
 ---
 

@@ -6,6 +6,7 @@ logged in to this computer.
 """
 
 import json
+import re
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Callable, Dict
@@ -15,6 +16,10 @@ from ..common.errors import EasyConnectError
 from .page import PAGE
 from .service import CompanionService
 
+GUARD_HEADER = "X-PiTrac-App"
+#: Loopback only, by name or address. Anything else is somebody pointing
+#: their own hostname at this machine.
+_ALLOWED_HOST = re.compile(r"^(localhost|127(\.\d+){3}|\[::1\])(:\d+)?$")
 MAX_BODY_BYTES = 64 * 1024
 MAX_RESTORE_BYTES = 9 * 1024 * 1024
 
@@ -49,6 +54,8 @@ class CompanionHandler(BaseHTTPRequestHandler):
     sys_version = ""
 
     def do_GET(self) -> None:
+        if not self._host_allowed():
+            return
         path = urlparse(self.path).path
         if path in ("/", "/index.html"):
             self._html(PAGE)
@@ -65,6 +72,8 @@ class CompanionHandler(BaseHTTPRequestHandler):
         self._json(HTTPStatus.NOT_FOUND, {"error": {"failed": "That page does not exist"}})
 
     def do_POST(self) -> None:
+        if not self._host_allowed() or not self._request_allowed():
+            return
         service = self.server.service
         path = urlparse(self.path).path
         routes: Dict[str, Callable[[Dict[str, Any]], Any]] = {
@@ -155,6 +164,50 @@ class CompanionHandler(BaseHTTPRequestHandler):
 
     # --- Wire -------------------------------------------------------------
 
+    def _host_allowed(self) -> bool:
+        """Only answer to loopback names.
+
+        A page on the wider internet can make the browser resolve a name it
+        controls to 127.0.0.1 and then talk to whatever is listening. Checking
+        the Host header is what stops that being this.
+        """
+
+        host = (self.headers.get("Host") or "").strip().lower()
+        if not host or _ALLOWED_HOST.match(host):
+            return True
+        self._json(
+            HTTPStatus.MISDIRECTED_REQUEST,
+            {"error": {"failed": "Easy-Connect does not answer to that address"}},
+        )
+        return False
+
+    def _request_allowed(self) -> bool:
+        """Only act on requests that came from our own page.
+
+        The app listens on loopback, which keeps the network out but not the
+        browser: any website open at the same time can post to 127.0.0.1. A
+        custom header cannot be set on a cross-origin request without a
+        preflight the browser will refuse, so requiring one is what makes a
+        state-changing route unreachable from somebody else's page.
+        """
+
+        if self.headers.get(GUARD_HEADER) is None:
+            self._json(
+                HTTPStatus.FORBIDDEN,
+                {"error": {"failed": "This request did not come from Easy-Connect"}},
+            )
+            return False
+        origin = self.headers.get("Origin")
+        if origin:
+            host = (self.headers.get("Host") or "").strip().lower()
+            if urlparse(origin).netloc.lower() != host:
+                self._json(
+                    HTTPStatus.FORBIDDEN,
+                    {"error": {"failed": "This request came from another website"}},
+                )
+                return False
+        return True
+
     def _guarded(self, work: Callable[[], Any]) -> None:
         try:
             result = work()
@@ -176,12 +229,31 @@ class CompanionHandler(BaseHTTPRequestHandler):
         else:
             self._json(HTTPStatus.OK, result if isinstance(result, dict) else {"result": result})
 
+
+    #: How much of an oversized body to read and throw away so the caller can
+    #: receive the refusal. Past this, closing on them is the right answer.
+    DRAIN_LIMIT = 4 * 1024 * 1024
+
+    def _drain(self, length: int, limit: int) -> None:
+        remaining = min(length, self.DRAIN_LIMIT)
+        while remaining > 0:
+            chunk = self.rfile.read(min(65536, remaining))
+            if not chunk:
+                return
+            remaining -= len(chunk)
+
     def _read_json(self, limit: int = MAX_BODY_BYTES) -> Dict[str, Any]:
         try:
             length = int(self.headers.get("Content-Length", "0"))
         except ValueError as exc:
             raise ValueError("The request length was not valid") from exc
         if length > limit:
+            # Refusing without reading leaves the caller still writing when the
+            # socket closes, so it sees a dropped connection instead of the
+            # reason. Drain a bounded amount first -- bounded, because draining
+            # whatever arrives is how a refusal becomes a way to tie the server
+            # up. Beyond that the connection does close, which is correct.
+            self._drain(length, limit)
             raise ValueError("The request was too large")
         if length <= 0:
             return {}

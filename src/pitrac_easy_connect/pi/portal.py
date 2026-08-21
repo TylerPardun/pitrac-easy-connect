@@ -328,12 +328,31 @@ class PortalHandler(BaseHTTPRequestHandler):
 
     # --- Wire -------------------------------------------------------------
 
+
+    #: How much of an oversized body to read and throw away so the caller can
+    #: receive the refusal. Past this, closing on them is the right answer.
+    DRAIN_LIMIT = 4 * 1024 * 1024
+
+    def _drain(self, length: int, limit: int) -> None:
+        remaining = min(length, self.DRAIN_LIMIT)
+        while remaining > 0:
+            chunk = self.rfile.read(min(65536, remaining))
+            if not chunk:
+                return
+            remaining -= len(chunk)
+
     def _read_json(self, limit: int = MAX_BODY_BYTES) -> Dict[str, Any]:
         try:
             length = int(self.headers.get("Content-Length", "0"))
         except ValueError as exc:
             raise ValueError("The request length was not valid") from exc
         if length > limit:
+            # Refusing without reading leaves the caller still writing when the
+            # socket closes, so it sees a dropped connection instead of the
+            # reason. Drain a bounded amount first -- bounded, because draining
+            # whatever arrives is how a refusal becomes a way to tie the server
+            # up. Beyond that the connection does close, which is correct.
+            self._drain(length, limit)
             raise ValueError("The request was too large")
         if length <= 0:
             return {}
