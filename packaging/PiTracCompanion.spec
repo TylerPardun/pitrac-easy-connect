@@ -41,6 +41,8 @@ analysis = Analysis(
         "pitrac_easy_connect.companion.link_client",
         "pitrac_easy_connect.companion.simulator_session",
         "pitrac_easy_connect.companion.shotlog",
+        "pitrac_easy_connect.companion.flight",
+        "pitrac_easy_connect.companion.rangeplay",
         "pitrac_easy_connect.companion.window",
         "pitrac_easy_connect.common.discovery",
         "pitrac_easy_connect.common.pairing_exchange",

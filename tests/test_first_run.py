@@ -104,7 +104,8 @@ def test_a_pi_that_was_never_on_wifi_is_explained():
 
 def test_nothing_else_is_clickable_during_setup():
     render = PAGE.split("function render(data){")[1].split("function doAction(")[0]
-    assert 'classList.toggle("hidden", guiding || !linkedNow)' in render
+    # The tabs are gone for the whole of setup, and Advanced with them.
+    assert '$("tabs").classList.toggle("hidden", guiding)' in render
     assert 'classList.toggle("hidden", guiding || !data.pairedEnclosures.length)' in render
 
 

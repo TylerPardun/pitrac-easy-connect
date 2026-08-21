@@ -56,6 +56,9 @@ class CompanionHandler(BaseHTTPRequestHandler):
         if path == "/api/status":
             self._guarded(self.server.service.status)
             return
+        if path == "/api/range":
+            self._guarded(self.server.service.range_status)
+            return
         if path == "/api/backup":
             self._download_backup()
             return
@@ -67,6 +70,9 @@ class CompanionHandler(BaseHTTPRequestHandler):
         routes: Dict[str, Callable[[Dict[str, Any]], Any]] = {
             "/api/search": lambda body: {"enclosures": service.search()},
             "/api/pair": lambda body: service.pair(str(body.get("deviceId", ""))),
+            "/api/range-clear": lambda body: service.clear_range(),
+            "/api/range-conditions": lambda body: service.set_range_conditions(body),
+            "/api/range-demo": lambda body: service.range_demo_shot(),
             "/api/finish-setup": lambda body: service.finish_setup(
                 bool(body.get("done", True))
             ),

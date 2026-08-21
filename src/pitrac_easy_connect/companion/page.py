@@ -122,6 +122,47 @@ PAGE = r"""<!doctype html>
   .pick{margin-top:22px;display:flex;flex-direction:column;gap:8px}
   body.pairing .status,body.pairing #do,body.pairing #pick,
   body.pairing #update,body.pairing .adv{display:none}
+  /* --- practice range --- */
+  #pane-range{padding:0;display:flex;flex-direction:column;height:100%}
+  .rangewrap{position:relative;flex:1;min-height:0;background:#0a0f0d}
+  #rangeCanvas{display:block;width:100%;height:100%;outline:none}
+  #rangeCanvas:focus-visible{box-shadow:inset 0 0 0 2px var(--green)}
+  .rangefallback{position:absolute;inset:0;display:flex;align-items:center;
+    justify-content:center;text-align:center;padding:28px;color:var(--muted);
+    font-size:.9rem;line-height:1.6}
+  .rangehud{position:absolute;top:14px;left:14px;pointer-events:none;
+    background:rgba(8,12,10,.68);border:1px solid rgba(255,255,255,.08);
+    border-radius:14px;padding:12px 14px;min-width:132px}
+  .hudrow{display:flex;align-items:baseline;gap:7px;margin:2px 0}
+  .hudlabel{font-size:.62rem;font-weight:800;letter-spacing:.12em;
+    text-transform:uppercase;color:var(--faint);min-width:48px}
+  .hudbig{font-size:1.5rem;font-weight:800;color:var(--text);
+    font-variant-numeric:tabular-nums;line-height:1.1}
+  .hudval{font-size:.9rem;color:var(--muted);font-variant-numeric:tabular-nums}
+  .hudunit{font-size:.7rem;color:var(--faint)}
+  .hudclub{margin-top:6px;font-size:.7rem;font-weight:700;letter-spacing:.08em;
+    text-transform:uppercase;color:var(--green)}
+  .rangebar{position:absolute;left:0;right:0;bottom:0;display:flex;
+    align-items:center;justify-content:space-between;gap:10px;padding:10px 12px;
+    background:linear-gradient(to top,rgba(8,12,10,.85),transparent)}
+  .views,.rangeright{display:flex;gap:6px;align-items:center}
+  .viewbtn{background:rgba(20,26,23,.9);color:var(--muted);border:1px solid var(--line);
+    border-radius:9px;padding:7px 11px;font-size:.76rem;font-weight:600;cursor:pointer;
+    font-family:inherit}
+  .viewbtn:hover{color:var(--text)}
+  .viewbtn.on{background:var(--green);color:#0b0f0d;border-color:var(--green)}
+  .viewbtn:focus-visible{outline:2px solid var(--green);outline-offset:2px}
+  .rangecount{font-size:.72rem;color:var(--faint);font-variant-numeric:tabular-nums}
+  .rangeclubs{flex:none;max-height:34%;overflow-y:auto;padding:12px 16px 16px;
+    border-top:1px solid var(--line)}
+  .rangeclub{display:flex;align-items:baseline;gap:10px;padding:7px 0;
+    border-bottom:1px solid var(--line);font-size:.84rem}
+  .rangeclub:last-child{border-bottom:none}
+  .rcname{flex:1;font-weight:700;color:var(--text)}
+  .rcstat{color:var(--muted);font-variant-numeric:tabular-nums;font-size:.78rem}
+  .rcstat b{color:var(--text);font-weight:700}
+  @media (prefers-reduced-motion:reduce){.viewbtn{transition:none}}
+
   .wiz{margin-bottom:26px}
   .wizrail{display:flex;gap:6px;margin-bottom:10px}
   .wizrail i{height:3px;flex:1;border-radius:2px;background:var(--line)}
@@ -183,6 +224,7 @@ PAGE = r"""<!doctype html>
 <body>
 <nav class="tabs hidden" id="tabs">
   <button data-pane="play" class="on">Play</button>
+  <button data-pane="range">Range</button>
   <button data-pane="shots">Shots</button>
   <button data-pane="pitrac">PiTrac</button>
   <button data-pane="setup">Setup</button>
@@ -258,6 +300,37 @@ PAGE = r"""<!doctype html>
   </details>
 </main>
 </div></div>
+
+<div class="pane" id="pane-range">
+  <div class="rangewrap">
+    <canvas id="rangeCanvas" tabindex="0"
+      aria-label="Practice range. Shots are drawn as they are measured."></canvas>
+    <div class="rangefallback hidden" id="rangeFallback"></div>
+
+    <div class="rangehud" id="rangeHud">
+      <div class="hudrow"><span class="hudlabel">Carry</span><span class="hudbig" id="hudCarry">--</span><span class="hudunit">yd</span></div>
+      <div class="hudrow"><span class="hudlabel">Total</span><span class="hudval" id="hudTotal">--</span></div>
+      <div class="hudrow"><span class="hudlabel">Apex</span><span class="hudval" id="hudApex">--</span></div>
+      <div class="hudrow"><span class="hudlabel">Offline</span><span class="hudval" id="hudOffline">--</span></div>
+      <div class="hudclub" id="hudClub"></div>
+    </div>
+
+    <div class="rangebar">
+      <div class="views" role="group" aria-label="Camera">
+        <button class="viewbtn on" data-view="behind">Behind</button>
+        <button class="viewbtn" data-view="down">Down the line</button>
+        <button class="viewbtn" data-view="top">Top down</button>
+      </div>
+      <div class="rangeright">
+        <span class="rangecount" id="rangeCount"></span>
+        <button class="viewbtn" id="rangeDemo">Demo shot</button>
+        <button class="viewbtn" id="rangeClear">Clear</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="rangeclubs" id="rangeClubs"></div>
+</div>
 
 <div class="pane" id="pane-shots"><div class="shots">
   <div class="clubrow">
@@ -497,10 +570,14 @@ function render(data){
   $("adv").classList.toggle("hidden", guiding || !data.pairedEnclosures.length);
   // The other tabs only mean anything once there is an enclosure to show.
   const linkedNow=!!(data.link && data.link.connected);
-  $("tabs").classList.toggle("hidden", guiding || !linkedNow);
-  // The tabs go away when the link does, so anyone left on one of the other
-  // panes would be looking at an empty window with nothing to press.
-  if(!linkedNow && pane!=="play") showPane("play");
+  // Once setup is done the tabs stay, whether or not PiTrac is connected now.
+  // Hiding them on a dropped link strands whoever was reading their numbers.
+  $("tabs").classList.toggle("hidden", guiding);
+  // The tabs go away when the link does, so anyone left on a pane that frames
+  // the enclosure would be looking at an empty window with nothing to press.
+  // The range and the shot history are not that: they are this session's own
+  // data, still worth looking at with PiTrac unplugged, so they stay put.
+  if(!linkedNow && pane!=="play" && pane!=="range" && pane!=="shots") showPane("play");
   loadFrames();
   document.querySelectorAll("[data-sim]").forEach(b=>{
     b.classList.toggle("primary", b.dataset.sim===data.simulator);
@@ -690,10 +767,439 @@ function showPane(name){
   pane=name;
   document.querySelectorAll(".pane").forEach(p=>p.classList.toggle("on", p.id==="pane-"+name));
   document.querySelectorAll("#tabs button").forEach(b=>b.classList.toggle("on", b.dataset.pane===name));
+  if(name==="range"){
+    // The canvas has no size until its pane is shown, so the context is
+    // created on first open rather than at load.
+    if(RANGE.start()){ RANGE.resize(); refreshRange(); }
+  }
   loadFrames();
 }
 document.querySelectorAll("#tabs button").forEach(button=>
   button.addEventListener("click",()=>showPane(button.dataset.pane)));
+
+// --- the practice range --------------------------------------------------
+//
+// Hand-written WebGL rather than a rendering library: the scene is a ground
+// plane, a sky, some markers and a few lines, which is not worth 600 KB of
+// dependency in a project that otherwise ships nothing but the standard
+// library. See docs/range-prd.md section 4.2.
+//
+// The page does no physics. Trajectories arrive from the companion already
+// computed, and this only draws them.
+
+const YARD = 0.9144;
+const RANGE = (function(){
+  let gl=null, canvas=null, program=null, buffers=null, raf=null, lost=false;
+  let shots=[], byClub=[], targets=[], markers=[], count=0;
+  // Kept in one place: the declaration and setView must not drift apart, or
+  // the range opens on a camera no button can reproduce.
+  const VIEWS = {
+    behind: {yaw:0.62, pitch:0.30, dist:205},
+    down:   {yaw:0.0,  pitch:0.055, dist:120},
+  };
+  let view="behind", orbit=Object.assign({}, VIEWS.behind), drag=null;
+  let animation=null, lastFrame=0;
+
+  const reduced = window.matchMedia &&
+    window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  // --- shader sources ---------------------------------------------------
+  const VERT = `#version 300 es
+    in vec3 aPos; in vec3 aColor;
+    uniform mat4 uViewProj;
+    uniform float uPointSize;
+    out vec3 vColor; out float vDepth;
+    void main(){
+      vec4 clip = uViewProj * vec4(aPos, 1.0);
+      gl_Position = clip;
+      gl_PointSize = uPointSize;
+      vColor = aColor;
+      vDepth = clamp(clip.w / 400.0, 0.0, 1.0);
+    }`;
+  const FRAG = `#version 300 es
+    precision highp float;
+    in vec3 vColor; in float vDepth;
+    uniform float uAlpha;
+    out vec4 outColor;
+    void main(){
+      // Fade with distance so the far end of the range reads as far away.
+      vec3 haze = vec3(0.055, 0.075, 0.065);
+      outColor = vec4(mix(vColor, haze, vDepth * 0.55), uAlpha);
+    }`;
+
+  function compile(src, kind){
+    const s = gl.createShader(kind);
+    gl.shaderSource(s, src.trim());
+    gl.compileShader(s);
+    if(!gl.getShaderParameter(s, gl.COMPILE_STATUS))
+      throw new Error(gl.getShaderInfoLog(s) || "shader failed to compile");
+    return s;
+  }
+
+  function build(){
+    program = gl.createProgram();
+    gl.attachShader(program, compile(VERT, gl.VERTEX_SHADER));
+    gl.attachShader(program, compile(FRAG, gl.FRAGMENT_SHADER));
+    gl.linkProgram(program);
+    if(!gl.getProgramParameter(program, gl.LINK_STATUS))
+      throw new Error(gl.getProgramInfoLog(program) || "program failed to link");
+    gl.useProgram(program);
+    buffers = {pos: gl.createBuffer(), color: gl.createBuffer(), vao: gl.createVertexArray()};
+    gl.bindVertexArray(buffers.vao);
+    const aPos = gl.getAttribLocation(program, "aPos");
+    const aColor = gl.getAttribLocation(program, "aColor");
+    gl.bindBuffer(gl.ARRAY_BUFFER, buffers.pos);
+    gl.enableVertexAttribArray(aPos);
+    gl.vertexAttribPointer(aPos, 3, gl.FLOAT, false, 0, 0);
+    gl.bindBuffer(gl.ARRAY_BUFFER, buffers.color);
+    gl.enableVertexAttribArray(aColor);
+    gl.vertexAttribPointer(aColor, 3, gl.FLOAT, false, 0, 0);
+    gl.enable(gl.DEPTH_TEST);
+    gl.enable(gl.BLEND);
+    gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+  }
+
+  // --- small matrix helpers --------------------------------------------
+  function perspective(fovy, aspect, near, far){
+    const f = 1/Math.tan(fovy/2), d = near-far;
+    return [f/aspect,0,0,0, 0,f,0,0, 0,0,(far+near)/d,-1, 0,0,2*far*near/d,0];
+  }
+  function lookAt(eye, at, up){
+    const z = norm(sub(eye,at)), x = norm(cross(up,z)), y = cross(z,x);
+    return [x[0],y[0],z[0],0, x[1],y[1],z[1],0, x[2],y[2],z[2],0,
+            -dot(x,eye),-dot(y,eye),-dot(z,eye),1];
+  }
+  function multiply(a,b){
+    const o = new Array(16);
+    for(let r=0;r<4;r++) for(let c=0;c<4;c++)
+      o[c*4+r] = a[r]*b[c*4] + a[4+r]*b[c*4+1] + a[8+r]*b[c*4+2] + a[12+r]*b[c*4+3];
+    return o;
+  }
+  const sub=(a,b)=>[a[0]-b[0],a[1]-b[1],a[2]-b[2]];
+  const dot=(a,b)=>a[0]*b[0]+a[1]*b[1]+a[2]*b[2];
+  const cross=(a,b)=>[a[1]*b[2]-a[2]*b[1], a[2]*b[0]-a[0]*b[2], a[0]*b[1]-a[1]*b[0]];
+  function norm(v){ const l=Math.hypot(v[0],v[1],v[2])||1; return [v[0]/l,v[1]/l,v[2]/l]; }
+
+  // --- geometry ---------------------------------------------------------
+  function scene(){
+    const pos=[], col=[];
+    const line=(a,b,c)=>{ pos.push(a[0],a[1],a[2], b[0],b[1],b[2]); col.push(c[0],c[1],c[2], c[0],c[1],c[2]); };
+
+    const far = 320*YARD, wide = 70*YARD;
+
+    // Ground beyond the mown range, so the turf does not end at a hard edge
+    // into nothing. The distance haze in the shader takes care of the rest.
+    const out = 900*YARD, back = 120*YARD;
+    pos.push(-out,-0.05,-back,  out,-0.05,-back,  out,-0.05,out,
+             -out,-0.05,-back,  out,-0.05,out,   -out,-0.05,out);
+    for(let i=0;i<6;i++) col.push(0.052,0.086,0.062);
+
+    // Mown stripes, alternating, which is what makes it read as turf.
+    for(let y=0; y<320; y+=10){
+      const shade = (y/10)%2 ? [0.135,0.235,0.155] : [0.108,0.196,0.130];
+      const z0=y*YARD, z1=Math.min(y+10,320)*YARD;
+      pos.push(-wide,0,z0,  wide,0,z0,  wide,0,z1,
+               -wide,0,z0,  wide,0,z1, -wide,0,z1);
+      for(let i=0;i<6;i++) col.push(shade[0],shade[1],shade[2]);
+    }
+    const groundVerts = pos.length/3;
+
+    // Distance markers, and a line across the range at each.
+    markers.forEach(function(yards){
+      const z = yards*YARD, grey=[0.30,0.36,0.32];
+      line([-wide,0.02,z],[wide,0.02,z],grey);
+      [-1,1].forEach(function(side){
+        const x = side*wide*0.86;
+        for(let h=0; h<3; h++)
+          line([x,h*0.6,z],[x,(h+1)*0.6-0.15,z],[0.55,0.62,0.55]);
+      });
+    });
+
+    // Target greens: a ring on the ground, plus a flag.
+    targets.forEach(function(yards){
+      const z=yards*YARD, r=9*YARD, ring=[0.35,0.72,0.45];
+      let prev=null;
+      for(let a=0;a<=48;a++){
+        const th=a/48*Math.PI*2, pt=[Math.cos(th)*r, 0.03, z+Math.sin(th)*r];
+        if(prev) line(prev, pt, ring);
+        prev = pt;
+      }
+      line([0,0,z],[0,2.2,z],[0.85,0.88,0.85]);
+      line([0,2.2,z],[0.9,1.95,z],[0.90,0.30,0.30]);
+      line([0.9,1.95,z],[0,1.75,z],[0.90,0.30,0.30]);
+    });
+
+    // Centre line down the range.
+    line([0,0.02,0],[0,0.02,far],[0.22,0.30,0.24]);
+    return {pos:new Float32Array(pos), col:new Float32Array(col), ground:groundVerts};
+  }
+
+  let staticScene=null;
+
+  function camera(aspect){
+    if(view==="top"){
+      // Looking straight down at the middle of the range. High enough, and
+      // through a narrow enough lens, that it reads as a plan rather than as a
+      // trapezoid: this view exists to show dispersion, and perspective would
+      // make the far shots look tighter than they were.
+      const mid = 150*YARD;
+      return multiply(perspective(Math.PI/7, aspect, 1.0, 1600),
+                      lookAt([0, 560, mid], [0, 0, mid], [0,0,1]));
+    }
+    // Behind and down-the-line are the same orbiting camera at different
+    // starting points, so dragging works identically in both.
+    const focus = [0, 12, 105*YARD];
+    const flat = orbit.dist*Math.cos(orbit.pitch);
+    const eye = [focus[0] + Math.sin(orbit.yaw)*flat,
+                 focus[1] + orbit.dist*Math.sin(orbit.pitch),
+                 focus[2] - Math.cos(orbit.yaw)*flat];
+    return multiply(perspective(Math.PI/4, aspect, 0.5, 1200),
+                    lookAt(eye, focus, [0,1,0]));
+  }
+
+  function draw(){
+    if(!gl || lost) return;
+    const w=canvas.width, h=canvas.height;
+    gl.viewport(0,0,w,h);
+    // A dusk sky rather than black, so the horizon is a horizon.
+    gl.clearColor(0.055,0.075,0.088,1);
+    gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+    if(!staticScene) return;
+
+    const vp = camera(w/Math.max(h,1));
+    gl.uniformMatrix4fv(gl.getUniformLocation(program,"uViewProj"), false, new Float32Array(vp));
+    gl.uniform1f(gl.getUniformLocation(program,"uPointSize"), Math.max(3, w/260));
+    const alpha = gl.getUniformLocation(program,"uAlpha");
+
+    // Ground and furniture.
+    upload(staticScene.pos, staticScene.col);
+    gl.uniform1f(alpha, 1.0);
+    gl.drawArrays(gl.TRIANGLES, 0, staticScene.ground);
+    gl.drawArrays(gl.LINES, staticScene.ground,
+                  staticScene.pos.length/3 - staticScene.ground);
+
+    // Tracers, oldest faintest.
+    const traced = shots.filter(s=>s.points && s.points.length>1);
+    traced.forEach(function(shot, index){
+      const age = traced.length-1-index;
+      const fresh = index===traced.length-1;
+      let pts = shot.points;
+      if(fresh && animation) pts = pts.slice(0, Math.max(2, animation.upto));
+      const pos=[], col=[];
+      const tint = fresh ? [0.80,0.95,0.35] : [0.42,0.55,0.40];
+      // The physics reports x downrange and z offline; the scene is built with
+      // z downrange and x across. Swap here rather than in the model, so the
+      // model stays in the axes a ball flight is naturally written in.
+      for(let i=1;i<pts.length;i++){
+        pos.push(pts[i-1][2],pts[i-1][1],pts[i-1][0], pts[i][2],pts[i][1],pts[i][0]);
+        col.push(tint[0],tint[1],tint[2], tint[0],tint[1],tint[2]);
+      }
+      // Where it finished.
+      const end = pts[pts.length-1];
+      pos.push(end[2], 0.05, end[0]); col.push(tint[0],tint[1],tint[2]);
+      upload(new Float32Array(pos), new Float32Array(col));
+      gl.uniform1f(alpha, fresh ? 1.0 : Math.max(0.18, 0.75 - age*0.09));
+      gl.drawArrays(gl.LINES, 0, (pts.length-1)*2);
+      gl.drawArrays(gl.POINTS, (pts.length-1)*2, 1);
+    });
+  }
+
+  function upload(pos, col){
+    gl.bindBuffer(gl.ARRAY_BUFFER, buffers.pos);
+    gl.bufferData(gl.ARRAY_BUFFER, pos, gl.DYNAMIC_DRAW);
+    gl.bindBuffer(gl.ARRAY_BUFFER, buffers.color);
+    gl.bufferData(gl.ARRAY_BUFFER, col, gl.DYNAMIC_DRAW);
+  }
+
+  function frame(now){
+    raf = null;
+    if(animation){
+      const dt = lastFrame ? (now-lastFrame)/1000 : 0.016;
+      animation.upto += Math.max(1, Math.round(animation.total * dt / animation.seconds));
+      if(animation.upto >= animation.total) animation = null;
+    }
+    lastFrame = now;
+    draw();
+    if(animation) schedule();
+  }
+
+  function schedule(){
+    if(raf === null && !document.hidden && pane === "range")
+      raf = requestAnimationFrame(frame);
+  }
+
+  function resize(){
+    if(!canvas) return;
+    // Cap the pixel ratio: a 3x Retina panel at full res costs fill rate for
+    // no visible gain on lines this thin.
+    const ratio = Math.min(window.devicePixelRatio || 1, 2);
+    const w = Math.max(1, Math.round(canvas.clientWidth * ratio));
+    const h = Math.max(1, Math.round(canvas.clientHeight * ratio));
+    if(canvas.width !== w || canvas.height !== h){ canvas.width=w; canvas.height=h; }
+    schedule();
+  }
+
+  function start(){
+    canvas = $("rangeCanvas");
+    if(!canvas || gl) return true;
+    try{
+      gl = canvas.getContext("webgl2", {antialias:true, alpha:false, depth:true});
+      if(!gl) throw new Error("WebGL 2 is not available");
+      build();
+      staticScene = scene();
+    }catch(err){
+      gl = null;
+      fallback(err && err.message);
+      return false;
+    }
+    canvas.addEventListener("webglcontextlost", function(e){
+      e.preventDefault(); lost = true;
+      if(raf){ cancelAnimationFrame(raf); raf=null; }
+    });
+    canvas.addEventListener("webglcontextrestored", function(){
+      // Windows does this on a driver update. Rebuild rather than go black.
+      lost = false; gl = canvas.getContext("webgl2", {antialias:true, alpha:false});
+      try{ build(); staticScene = scene(); schedule(); }catch(e){ fallback(e.message); }
+    });
+    bindPointer();
+    return true;
+  }
+
+  function fallback(reason){
+    const box = $("rangeFallback");
+    if(!box) return;
+    box.classList.remove("hidden");
+    box.innerHTML = "<div><strong>The 3D range cannot run on this computer.</strong><br>" +
+      "Your shots are still measured and their numbers are still shown, on the " +
+      "Shots tab and above.<br><small>" + esc(reason||"no WebGL") + "</small></div>";
+    if(canvas) canvas.style.display = "none";
+  }
+
+  function bindPointer(){
+    canvas.addEventListener("pointerdown", function(e){
+      drag = {x:e.clientX, y:e.clientY};
+      canvas.setPointerCapture(e.pointerId);
+    });
+    canvas.addEventListener("pointermove", function(e){
+      if(!drag) return;
+      orbit.yaw += (e.clientX-drag.x)*0.006;
+      orbit.pitch = Math.max(0.02, Math.min(1.4, orbit.pitch + (e.clientY-drag.y)*0.004));
+      drag = {x:e.clientX, y:e.clientY};
+      schedule();
+    });
+    const stop = function(){ drag=null; };
+    canvas.addEventListener("pointerup", stop);
+    canvas.addEventListener("pointercancel", stop);
+    canvas.addEventListener("wheel", function(e){
+      e.preventDefault();
+      orbit.dist = Math.max(30, Math.min(420, orbit.dist * (1 + e.deltaY*0.0012)));
+      schedule();
+    }, {passive:false});
+    canvas.addEventListener("keydown", function(e){
+      const step = 0.12;
+      if(e.key==="ArrowLeft") orbit.yaw -= step;
+      else if(e.key==="ArrowRight") orbit.yaw += step;
+      else if(e.key==="ArrowUp") orbit.pitch = Math.min(1.4, orbit.pitch+0.06);
+      else if(e.key==="ArrowDown") orbit.pitch = Math.max(0.02, orbit.pitch-0.06);
+      else if(e.key==="+"||e.key==="=") orbit.dist = Math.max(30, orbit.dist*0.9);
+      else if(e.key==="-") orbit.dist = Math.min(420, orbit.dist*1.1);
+      else return;
+      e.preventDefault(); schedule();
+    });
+  }
+
+  function setView(name){
+    view = name;
+    // Behind is deliberately off to one side. From directly behind, the apex
+    // and the landing project to nearly the same height on screen and every
+    // shot reads as a vertical line -- the descent is real but invisible.
+    // A three-quarter view gives the arc its horizontal extent back.
+    // Down the line is the golfer's own view, where near-vertical is honest.
+    if(VIEWS[name]) orbit = Object.assign({}, VIEWS[name]);
+    schedule();
+  }
+
+  function apply(data){
+    const previous = shots.length ? shots[shots.length-1].id : 0;
+    shots = data.shots || []; byClub = data.byClub || [];
+    targets = data.targets || []; markers = data.markers || [];
+    count = data.count || 0;
+    if(staticScene === null && gl) staticScene = scene();
+    else if(gl) staticScene = scene();
+
+    const newest = shots.length ? shots[shots.length-1] : null;
+    if(newest && newest.id !== previous && newest.points && newest.points.length > 1){
+      animation = reduced ? null
+        : {upto: 2, total: newest.points.length, seconds: Math.max(0.8, newest.flightSeconds||3)};
+      lastFrame = 0;
+    }
+    renderHud(newest);
+    renderClubs();
+    schedule();
+  }
+
+  function renderHud(shot){
+    const one = function(id, value){ const el=$(id); if(el) el.textContent=value; };
+    if(!shot){
+      one("hudCarry","--"); one("hudTotal","--"); one("hudApex","--");
+      one("hudOffline","--");
+      const club=$("hudClub"); if(club) club.textContent="";
+    }else{
+      one("hudCarry", Math.round(shot.carryYards));
+      one("hudTotal", Math.round(shot.totalYards)+" yd");
+      one("hudApex", Math.round(shot.apexFeet)+" ft");
+      const off = Math.round(shot.offlineYards);
+      one("hudOffline", off===0 ? "straight" :
+        Math.abs(off)+" yd "+(off>0?"right":"left"));
+      const club=$("hudClub"); if(club) club.textContent = shot.club || "";
+    }
+    const c=$("rangeCount");
+    if(c) c.textContent = count ? count+(count===1?" shot":" shots") : "";
+  }
+
+  function renderClubs(){
+    const host=$("rangeClubs");
+    if(!host) return;
+    if(!byClub.length){
+      host.innerHTML='<div class="empty">Hit a ball and it will appear here.</div>';
+      return;
+    }
+    host.innerHTML = byClub.map(function(row){
+      return '<div class="rangeclub"><span class="rcname">'+esc(row.club)+'</span>'+
+        '<span class="rcstat"><b>'+Math.round(row.carryAvg)+'</b> yd avg</span>'+
+        '<span class="rcstat">best <b>'+Math.round(row.carryBest)+'</b></span>'+
+        '<span class="rcstat">&plusmn;'+Math.round(row.offlineSigma)+' yd</span>'+
+        '<span class="rcstat">'+row.shots+'</span></div>';
+    }).join("");
+  }
+
+  return {start:start, apply:apply, resize:resize, setView:setView, schedule:schedule};
+})();
+
+async function refreshRange(){
+  if(pane !== "range") return;
+  try{ RANGE.apply(await api("/api/range")); }catch(e){}
+}
+
+document.querySelectorAll(".viewbtn[data-view]").forEach(function(button){
+  button.addEventListener("click", function(){
+    document.querySelectorAll(".viewbtn[data-view]").forEach(b=>b.classList.remove("on"));
+    button.classList.add("on");
+    RANGE.setView(button.dataset.view);
+  });
+});
+$("rangeClear").addEventListener("click", e=>run(e.target, async()=>{
+  RANGE.apply(await api("/api/range-clear",{}));
+}));
+$("rangeDemo").addEventListener("click", e=>run(e.target, async()=>{
+  await api("/api/range-demo",{});
+  await refreshRange();
+}));
+window.addEventListener("resize", function(){
+  clearTimeout(window.__rangeResize);
+  window.__rangeResize = setTimeout(()=>RANGE.resize(), 120);
+});
+document.addEventListener("visibilitychange", ()=>{ if(!document.hidden) RANGE.schedule(); });
 
 // --- shots ---------------------------------------------------------------
 
@@ -851,6 +1357,9 @@ async function refresh(){
 }
 refresh();
 setInterval(()=>{ if(!busy && !asking()) refresh(); }, 3000);
+// The range polls faster than the rest of the app, because a shot landing
+// three seconds after it was hit does not feel like it belongs to the swing.
+setInterval(()=>{ if(!busy && pane==="range" && !document.hidden) refreshRange(); }, 900);
 </script>
 </body>
 </html>

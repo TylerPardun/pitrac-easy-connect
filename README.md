@@ -24,6 +24,7 @@ PiTrac Easy-Connect is a two-part system: a background service on the Raspberry 
 | **Guided first run** | Five steps, one action per screen, with the simulator choice and a "cannot find it" path built in; it does not appear again once setup is finished |
 | **Self-test** | Fifteen checks across cameras, calibration, detection models, temperature, power supply, storage, clock, and services; recomputed every time and never latched, so readiness is never claimed without proof |
 | **Shot history** | Every shot retained with its club, with average, best, worst, and spread per club, alongside PiTrac's captured still images |
+| **Practice range** | A 3D driving range in the app. Every shot is flown from the measured launch numbers and drawn as a tracer, with carry, total, apex and offline, and per-club dispersion. No GSPro, no E6, no account, no internet |
 | **Embedded dashboard** | PiTrac's own web dashboard in a tab, rather than a reimplementation of it |
 | **Backup and restore** | Checksummed archive of calibration and settings, with identity as an explicit opt-in for memory-card replacement |
 | **Ownership transfer** | Removes saved networks, paired computers, preferences, and the proprietary trained models along with the source clone and its git history |

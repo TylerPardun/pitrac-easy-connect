@@ -34,6 +34,7 @@ from ..common.states import State
 from ..common.updates import Updater
 from ..models import TEST_SHOT, Simulator
 from .link_client import CompanionLinkClient
+from .rangeplay import RangeSession
 from .shotlog import ShotLog
 from .simulator_session import SimulatorSession
 
@@ -98,6 +99,8 @@ class CompanionService:
         self._shots_delivered = 0
         self._shots_lost = 0
         self._pi_status: Dict[str, Any] = {}
+        #: The practice range. In memory only: a session is a bucket of balls.
+        self.range = RangeSession()
         self.shots = ShotLog(
             (config_path or default_config_path()).with_name("shots.json")
         )
@@ -206,6 +209,52 @@ class CompanionService:
 
         self.connect(device_id)
         return {"deviceId": device_id, "displayName": enclosure.display_name}
+
+    # --- The practice range ------------------------------------------------
+
+    def range_status(self) -> Dict[str, Any]:
+        return self.range.status()
+
+    def clear_range(self) -> Dict[str, Any]:
+        return self.range.clear()
+
+    def set_range_conditions(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
+        return {
+            "conditions": self.range.set_conditions(
+                pressure_pa=arguments.get("pressurePa"),
+                temperature_c=arguments.get("temperatureC"),
+                relative_humidity=arguments.get("relativeHumidity"),
+            )
+        }
+
+    def range_demo_shot(self) -> Dict[str, Any]:
+        """Put one plausible shot on the range, so it can be seen working.
+
+        Nothing is sent to a simulator and nothing is written to the shot log:
+        this is a drawing, not a measurement, and must never be mistaken for
+        one in the history.
+        """
+
+        import random
+
+        club, speed, launch, spin = random.choice([
+            ("Driver", 167.0, 10.9, 2686),
+            ("5 iron", 132.0, 12.1, 5280),
+            ("7 iron", 120.0, 16.3, 7097),
+            ("Pitching wedge", 102.0, 24.2, 9304),
+        ])
+        wobble = random.uniform(-1.0, 1.0)
+        shot = self.range.record(
+            {
+                "speed": speed * random.uniform(0.96, 1.03),
+                "launch": launch + wobble,
+                "direction": random.uniform(-2.5, 2.5),
+                "backSpin": spin * random.uniform(0.9, 1.1),
+                "sideSpin": random.uniform(-900, 900),
+            },
+            club,
+        )
+        return {"shot": shot, "demo": True}
 
     def finish_setup(self, done: bool = True) -> Dict[str, Any]:
         """Mark the guided setup as over, or send the owner back through it."""
@@ -374,10 +423,22 @@ class CompanionService:
         return {"accepted": True, "message": "delivered to {}".format(self.simulator.label)}
 
     def _record_shot(self, payload: Dict[str, Any], simulator: str, delivered: bool) -> None:
-        """Keep the shot, with the club. Never let logging break shot delivery."""
+        """Keep the shot, with the club. Never let logging break shot delivery.
+
+        The range is fed from here too, so a shot appears on it whether or not
+        a simulator was listening. Both are wrapped: a shot that reached the
+        golfer's simulator must not be reported as failed because something
+        downstream of delivery raised.
+        """
 
         try:
-            self.shots.record(payload, simulator or self.simulator.value, delivered=delivered)
+            shot = self.shots.record(
+                payload, simulator or self.simulator.value, delivered=delivered
+            )
+        except Exception:
+            return
+        try:
+            self.range.record(shot.ball, shot.club)
         except Exception:
             pass
 
