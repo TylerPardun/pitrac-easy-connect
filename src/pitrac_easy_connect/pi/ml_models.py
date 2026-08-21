@@ -61,6 +61,12 @@ def _files_under(directory: Path) -> List[Path]:
     return sorted(path for path in directory.rglob("*") if path.is_file())
 
 
+def installed_files(installed_dir: Path = INSTALLED_DIR) -> Dict[str, int]:
+    """How many files are present for each model, without touching anything else."""
+
+    return {name: len(_files_under(installed_dir / name)) for name in MODEL_NAMES}
+
+
 def status(
     installed_dir: Path = INSTALLED_DIR,
     repo: Optional[Path] = None,
@@ -74,9 +80,7 @@ def status(
     """
 
     repo = repo if repo is not None else find_repo(home=home)
-    installed = {
-        name: len(_files_under(installed_dir / name)) for name in MODEL_NAMES
-    }
+    installed = installed_files(installed_dir)
     repo_models = repo / REPO_MODELS_SUBPATH if repo else None
     return {
         "installed": all(count > 0 for count in installed.values()),

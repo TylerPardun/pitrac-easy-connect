@@ -80,6 +80,7 @@ class PiService:
         portal_port: int = 80,
         version: str = __version__,
         manage_hostname: bool = True,
+        models_dir=None,
     ):
         self.backend = backend
         self.paths = paths or ServicePaths()
@@ -140,6 +141,7 @@ class PiService:
             simulator_status=lambda: self._simulator_status,
             config_problems=self._config_problems,
             relay_listening=lambda: self.relay.listening,
+            models_dir=models_dir,
         )
 
     # --- Boot -------------------------------------------------------------

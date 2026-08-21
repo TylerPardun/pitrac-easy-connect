@@ -31,7 +31,17 @@ def build(tmp_path, **overrides):
         ' "kCamera2CalibrationMatrix": [[1]]}}}'
     )
 
+    # A healthy enclosure has the detection models installed. They are licensed
+    # separately from PiTrac and are not installed with it, so a unit can be
+    # perfectly built and still be missing them.
+    models = tmp_path / "models"
+    for name in ("yolo26-ball-detector", "spin-predictor"):
+        (models / name).mkdir(parents=True)
+        (models / name / "best.ncnn.bin").write_bytes(b"weights")
+        (models / name / "best.ncnn.param").write_text("graph")
+
     options = {
+        "models_dir": models,
         "network_status": lambda: {
             "connection": {"ssid": "Ferndale", "isHotspot": False},
             "directMode": False,
@@ -66,7 +76,7 @@ def test_a_healthy_enclosure_is_ready(tmp_path):
 def test_every_check_reports_something(tmp_path):
     _backend, _pitrac, selftest = build(tmp_path)
     report = selftest.run()
-    assert len(report.checks) == 14
+    assert len(report.checks) == 15
     assert all(check.status in (PASS, FAIL, WARN, UNAVAILABLE) for check in report.checks)
 
 
@@ -220,7 +230,7 @@ def test_a_check_that_raises_does_not_stop_the_others(tmp_path):
 
     _backend, _pitrac, selftest = build(tmp_path, config_problems=explode)
     report = selftest.run()
-    assert len(report.checks) == 14
+    assert len(report.checks) == 15
     assert find(report, "configuration").status == UNAVAILABLE
 
 
@@ -329,3 +339,41 @@ def test_with_no_computer_the_hotspot_still_means_setup_required(tmp_path):
     report = selftest.run()
     network = {"connection": {"ssid": "PiTrac-X", "isHotspot": True}, "directMode": False}
     assert state_for(report, network, companion=False) is State.SETUP_REQUIRED
+
+
+# --- The detection models -------------------------------------------------
+
+
+def test_missing_detection_models_stop_it_claiming_to_be_ready(tmp_path):
+    """A unit sold without the models is otherwise perfectly healthy.
+
+    The models are licensed separately and are not installed with PiTrac, so
+    without this check the enclosure reports every green tick it has and then
+    does nothing at all on the first swing.
+    """
+
+    _backend, _pitrac, selftest = build(tmp_path, models_dir=tmp_path / "empty")
+    report = selftest.run()
+
+    assert report.ready is False
+    check = find(report, "pitracModels")
+    assert check.error.code == "PT-PI-011"
+    assert "yolo26-ball-detector" in check.detail
+    # The message has to say where they come from; they are not ours to supply.
+    assert "PiTracLM" in check.error.next_step
+
+
+def test_one_model_present_is_still_not_ready(tmp_path):
+    """Half the models is not most of the way there."""
+
+    models = tmp_path / "half"
+    (models / "spin-predictor").mkdir(parents=True)
+    (models / "spin-predictor" / "best.ncnn.bin").write_bytes(b"weights")
+
+    _backend, _pitrac, selftest = build(tmp_path, models_dir=models)
+    report = selftest.run()
+
+    assert report.ready is False
+    check = find(report, "pitracModels")
+    assert "yolo26-ball-detector" in check.detail
+    assert "spin-predictor" not in check.detail

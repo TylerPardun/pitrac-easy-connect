@@ -226,6 +226,13 @@ PI_CONFIG_CORRUPT = _define(
     "PiTrac restored the last good copy of that file.",
     "Check your simulator choice on the setup page. Everything else was recovered.",
 )
+PI_NO_MODELS = _define(
+    "PT-PI-011",
+    "PiTrac's ball-detection models are not installed.",
+    "Everything else is working; PiTrac just cannot recognise a ball yet.",
+    "The models come from PiTracLM and are licensed to you directly by them. "
+    "Open the PiTrac setup page and follow the step for installing them.",
+)
 PI_UNSUPPORTED_HARDWARE = _define(
     "PT-PI-010",
     "This is not a supported Raspberry Pi model or operating system for this release.",

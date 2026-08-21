@@ -31,6 +31,7 @@ from ..common.errors import (
     PI_UNSUPPORTED_HARDWARE,
     PI_WEB_STOPPED,
     PI_MEASURE_STOPPED,
+    PI_NO_MODELS,
     ErrorInfo,
 )
 from ..common.states import State
@@ -133,9 +134,11 @@ class SelfTest:
         simulator_status: Callable[[], Optional[Dict[str, Any]]],
         config_problems: Callable[[], List[str]],
         relay_listening: Optional[Callable[[], bool]] = None,
+        models_dir=None,
     ):
         self.backend = backend
         self.pitrac = pitrac
+        self.models_dir = models_dir
         self.relay_ports = relay_ports
         self.network_status = network_status
         self.companion_connected = companion_connected
@@ -156,6 +159,7 @@ class SelfTest:
             self._calibration,
             self._pitrac_web,
             self._pitrac_measurement,
+            self._pitrac_models,
             self._pitrac_target,
             self._network,
             self._companion,
@@ -310,6 +314,36 @@ class SelfTest:
             FAIL,
             "The measurement program is not running",
             PI_MEASURE_STOPPED,
+            critical=True,
+        )
+
+    def _pitrac_models(self) -> CheckResult:
+        """Whether the trained models PiTrac needs to see a ball are present.
+
+        A unit can be perfectly assembled, calibrated, and networked and still
+        not measure anything, because these are licensed separately and are not
+        installed with PiTrac. Without this check that machine looks entirely
+        healthy right up until the first swing does nothing.
+        """
+
+        from . import ml_models
+
+        found = (
+            ml_models.installed_files(self.models_dir)
+            if self.models_dir is not None
+            else ml_models.installed_files()
+        )
+        missing = [name for name, count in sorted(found.items()) if not count]
+        if not missing:
+            return CheckResult(
+                "pitracModels", "Ball detection models", PASS, "Installed"
+            )
+        return CheckResult(
+            "pitracModels",
+            "Ball detection models",
+            FAIL,
+            "Not installed: {}".format(", ".join(missing)),
+            PI_NO_MODELS,
             critical=True,
         )
 

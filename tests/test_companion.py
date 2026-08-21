@@ -28,6 +28,12 @@ class Rig:
             '{"gs_config": {"cameras": {"kCamera1CalibrationMatrix": [[1]],'
             ' "kCamera2CalibrationMatrix": [[1]]}}}'
         )
+        models = tmp_path / "pi-models"
+        for name in ("yolo26-ball-detector", "spin-predictor"):
+            (models / name).mkdir(parents=True)
+            (models / name / "best.ncnn.bin").write_bytes(b"weights")
+            (models / name / "best.ncnn.param").write_text("graph")
+
         self.pi = PiService(
             home_network_pi(country="US"),
             paths=ServicePaths(tmp_path / "pi"),
@@ -38,6 +44,7 @@ class Rig:
             link_port=0,
             discovery_port=0,
             manage_hostname=False,
+            models_dir=models,
         )
         self.pi.start()
         self.portal = PortalServer(("127.0.0.1", 0), self.pi)
