@@ -106,9 +106,9 @@ jobs:
           body: |
             Download the build for your computer.
 
-            **Windows** — `PiTrac Easy-Connect.exe`. Windows will warn that it
-            does not recognise the program; choose **More info**, then **Run
-            anyway**.
+            **Windows** — `PiTrac Easy-Connect.exe`. Windows will warn that
+            it does not recognise the program; choose **More info**, then
+            **Run anyway**.
 
             **macOS** — `PiTrac-Easy-Connect-macos.zip`. Unzip it, then
             right-click the app and choose **Open** the first time.
