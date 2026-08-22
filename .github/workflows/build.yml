@@ -29,7 +29,7 @@ jobs:
       - run: python -m pip install --upgrade pip
       # Easy Connect is deliberately dependency-free: the Pi install needs no
       # pip packages at all. pytest is the only build-time addition.
-      - run: python -m pip install . pytest
+      - run: python -m pip install . pytest pytest-xdist
       - run: python -m pytest -q
 
   build:

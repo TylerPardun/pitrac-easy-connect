@@ -131,6 +131,13 @@ class WifiProvisioner:
         self.sleep = sleep
         #: How long boot waits for the radio. Injectable for the same
         #: reason: a test suite must not spend real minutes on it.
+        # Both waits are real time on a real radio and pure delay against a
+        # simulated one, so a test can shorten them without changing what is
+        # being tested.
+        self.leaving_direct_grace = (
+            self.LEAVING_DIRECT_MODE_GRACE_SECONDS if boot_grace is None
+            else float(boot_grace)
+        )
         self.boot_grace = (
             self.ASSOCIATION_GRACE_SECONDS if boot_grace is None else float(boot_grace)
         )
@@ -682,7 +689,7 @@ class WifiProvisioner:
             self.backend.stop_hotspot()
             # Someone is waiting on this one, so wait for the radio but not
             # for as long as a boot does.
-            return self.ensure_online(grace=self.LEAVING_DIRECT_MODE_GRACE_SECONDS)
+            return self.ensure_online(grace=self.leaving_direct_grace)
 
     @property
     def on_setup_hotspot(self) -> bool:

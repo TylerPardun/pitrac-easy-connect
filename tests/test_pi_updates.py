@@ -10,6 +10,7 @@ the only way to test what happens when the download is wrong.
 """
 
 import json
+import os
 import threading
 import zipapp
 import http.server
@@ -297,6 +298,16 @@ def test_the_real_verifier_accepts_the_package_that_is_running(tmp_path):
 
 
 # --- The versioned-release layout the installer creates --------------------
+#
+# This layout exists only on the Raspberry Pi. Windows has no
+# /usr/lib/pitrac-easy-connect, creating a symlink there needs elevation, and
+# replacing one is not the same atomic operation, so these say nothing useful
+# on Windows and fail for reasons that have nothing to do with the code.
+
+on_posix = pytest.mark.skipif(
+    os.name != "posix",
+    reason="the enclosure's release layout is POSIX-only; it never runs on Windows",
+)
 
 
 @pytest.fixture
@@ -324,6 +335,7 @@ def release_updater(released, upstream, **kwargs):
         api_base=base, link_path=link, releases_dir=releases, **kwargs)
 
 
+@on_posix
 def test_an_update_becomes_a_new_release_and_moves_the_link(released, upstream):
     """The running release is never modified, so there is no moment where the
     application directory is missing."""
@@ -340,6 +352,7 @@ def test_an_update_becomes_a_new_release_and_moves_the_link(released, upstream):
     assert len(list(releases.iterdir())) == 2
 
 
+@on_posix
 def test_a_release_that_will_not_start_leaves_the_link_alone(released, upstream):
     _root, link, _releases, current = released
     up = release_updater(released, upstream, restart=lambda: None)
@@ -350,6 +363,7 @@ def test_a_release_that_will_not_start_leaves_the_link_alone(released, upstream)
     assert '"0.2.0"' in (link.resolve() / "pitrac_easy_connect" / "__init__.py").read_text()
 
 
+@on_posix
 def test_a_release_that_starts_but_is_unhealthy_points_the_link_back(released, upstream):
     _root, link, _releases, current = released
     up = release_updater(released, upstream, restart=lambda: None)
@@ -362,6 +376,7 @@ def test_a_release_that_starts_but_is_unhealthy_points_the_link_back(released, u
     assert '"0.2.0"' in (link.resolve() / "pitrac_easy_connect" / "__init__.py").read_text()
 
 
+@on_posix
 def test_the_running_release_is_never_written_to(released, upstream):
     """Modifying the directory being executed from is what the symlink layout
     exists to avoid."""
