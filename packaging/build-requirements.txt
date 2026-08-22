@@ -12,7 +12,13 @@ pillow==12.3.0
 # PyInstaller's own dependencies.
 altgraph==0.17.5
 pyinstaller-hooks-contrib==2026.6
-setuptools==80.9.0
+# 83.0.0 is the first release fixing GHSA-h35f-9h28-mq5c, where a Unicode
+# normalisation collision on macOS filesystems let a file excluded by
+# MANIFEST.in into an sdist anyway. This project builds no sdist, so it was
+# never exposed, but setuptools is bundled into the Windows app and shipping a
+# version with a known hole is not worth the argument. Only the build machines
+# install this file and both run Python 3.13, which is what 83 requires.
+setuptools==83.0.0
 macholib==1.16.4 ; sys_platform == "darwin"
 pefile==2024.8.26 ; sys_platform == "win32"
 pywin32-ctypes==0.2.3 ; sys_platform == "win32"
