@@ -352,12 +352,18 @@ class WifiProvisioner:
             if not str(ssid).strip():
                 raise EasyConnectError(NET_NOT_FOUND, "no network name was given")
             self._validate_details(str(ssid), password)
-            # A previous unconfirmed attempt still has a deadline and a
-            # checkpoint. Starting another on top of them means the older one
-            # expires later and rolls back a change that has been superseded.
-            self._cancel_pending_change()
-
+            # Every reason to refuse is checked before anything is abandoned.
+            # Cancelling first meant a request that was then rejected -- an
+            # unsupported business network, say -- left the previous
+            # unconfirmed network active with its deadline and its rollback
+            # record erased, so nothing would ever undo it.
             self._reject_unsupported_security(ssid, hidden)
+
+            # Only now, with the new request known to be workable: undo the
+            # provisional network rather than merely forgetting it was
+            # pending, so the enclosure is on something known-good before the
+            # next attempt starts.
+            self._abandon_provisional_network()
 
             previous = self.backend.active_connection()
             previous_profile = (
@@ -617,6 +623,23 @@ class WifiProvisioner:
             error=cause.as_dict() if cause else None,
             ssid=connection.ssid,
         )
+
+    def _abandon_provisional_network(self) -> None:
+        """Undo an unconfirmed change before starting another.
+
+        Different from cancelling: the caller is about to move the enclosure
+        somewhere else, so the provisional network is rolled back rather than
+        silently kept.
+        """
+
+        pending = self._journal.get("pending") or {}
+        if not pending:
+            self._cancel_pending_change()
+            return
+        previous_profile = pending.get("previousProfile")
+        self._undo_pending(pending.get("ssid", ""), keep=previous_profile)
+        self._restore_previous(previous_profile)
+        self._pending_deadline = None
 
     def _cancel_pending_change(self) -> None:
         """Abandon an unconfirmed network change, without undoing it.

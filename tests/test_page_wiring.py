@@ -5,7 +5,7 @@ Three defects found in real use motivated this file, and each is pinned below:
 * the app asked for a six-digit code without saying where to find it;
 * changing Wi-Fi only existed inside ``Advanced``, so an enclosure already on a
   network looked unchangeable;
-* the pairing code was shown during first setup and never again, which left no
+* setup was shown during first run and never again, which left no
   way at all to pair a second computer.
 
 The first two tests are the general form of the same mistake: a button whose id

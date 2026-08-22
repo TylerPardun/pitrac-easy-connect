@@ -21,6 +21,9 @@ from .configstore import ConfigStore
 # I, l, 1, O and 0 are omitted because people confuse them.
 _UNAMBIGUOUS = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"
 _ID_ALPHABET = "23456789ABCDEFGHJKMNPQRSTUVWXYZ"
+#: The longest a name may be, wherever it is set: renaming and restoring
+#: used different limits, so a restored name could not then be edited.
+MAX_DISPLAY_NAME = 40
 
 DEVICE_ID_LENGTH = 8
 SETUP_PASSWORD_LENGTH = 12
@@ -206,12 +209,16 @@ class IdentityStore:
             raise ValueError("The backup does not contain a usable device ID")
         if len(device_id) != DEVICE_ID_LENGTH:
             raise ValueError("The backup's device ID is not the right length")
+        if any(ord(character) < 32 or ord(character) == 127 for character in setup_password):
+            # A newline in a WPA passphrase is not a password, it is a bug
+            # that surfaces later as a radio that will not start.
+            raise ValueError("The backup's setup password contains characters Wi-Fi cannot use")
         if not 8 <= len(setup_password) <= 63:
             # 63 is the longest a WPA2 passphrase can be. A longer one would be
             # saved and then rejected by the radio, which is worse than saying
             # so now.
             raise ValueError("The backup does not contain a usable setup password")
-        if len(display_name) > 60:
+        if len(display_name) > MAX_DISPLAY_NAME:
             raise ValueError("The backup's name for this enclosure is too long")
         return device_id, setup_password, display_name
 

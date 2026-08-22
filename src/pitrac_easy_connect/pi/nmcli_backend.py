@@ -290,9 +290,21 @@ class NmcliBackend(PiBackend):
         return found
 
     def profile_name_for(self, ssid: str) -> str:
-        # Keep the name recognisable but safe as a filename and a CLI argument.
-        slug = re.sub(r"[^A-Za-z0-9._-]", "_", ssid)[:48] or "network"
-        return "{}{}".format(PROFILE_PREFIX, slug)
+        """A profile name that is readable, safe, and unique to this SSID.
+
+        The readable part strips anything awkward in a filename or on a command
+        line, which means "Home WiFi" and "Home_WiFi" reduce to the same thing,
+        as do two networks whose names differ only outside ASCII. Those would
+        have shared one profile and overwritten each other's password. The
+        suffix is a short digest of the original name, so distinct networks
+        always get distinct profiles.
+        """
+
+        import hashlib
+
+        slug = re.sub(r"[^A-Za-z0-9._-]", "_", ssid)[:40] or "network"
+        digest = hashlib.sha256(ssid.encode("utf-8")).hexdigest()[:8]
+        return "{}{}-{}".format(PROFILE_PREFIX, slug, digest)
 
     def connect(
         self, ssid: str, password: Optional[str], hidden: bool = False, timeout: float = 45.0

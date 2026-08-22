@@ -92,3 +92,55 @@ def test_an_e6_swing_with_no_ball_data_is_not_invented(rig):
     assert recent[0].get("speed") in (None, 0), "but no numbers are invented for it"
     # Nothing flyable, so nothing is drawn on the range.
     assert rig.companion.range.status()["count"] == 0
+
+
+def test_abandoned_e6_measurements_are_not_attached_to_a_later_swing(rig):
+    """SetBallData without a SendShot is a swing that never completed. Holding
+    it forever meant those numbers were handed to whatever came next."""
+
+    rig.pair()
+    assert rig.wait_linked() is True
+
+    # Measurements arrive, then the swing is abandoned.
+    rig.companion._forward_shot(1, "e6", E6_SWING[0])
+    # The enclosure goes away and comes back.
+    rig.companion.disconnect()
+    rig.companion.connect(rig.pi.identity.device_id)
+    assert rig.wait_linked(timeout=10) is True
+
+    # A later, unrelated swing with no numbers of its own.
+    rig.companion._forward_shot(2, "e6", {"Type": "SendShot"})
+
+    recent = rig.companion.shots.recent(5)
+    assert recent, "the swing is still recorded"
+    assert recent[0].get("speed") in (None, 0), \
+        "it must not carry measurements from the abandoned swing"
+
+
+def test_changing_simulator_discards_half_gathered_measurements(rig):
+    rig.pair()
+    assert rig.wait_linked() is True
+
+    rig.companion._forward_shot(1, "e6", E6_SWING[0])
+    rig.companion.select_simulator("gspro")
+    rig.companion.select_simulator("e6")
+    rig.companion._forward_shot(2, "e6", {"Type": "SendShot"})
+
+    recent = rig.companion.shots.recent(5)
+    assert recent[0].get("speed") in (None, 0)
+
+
+def test_measurements_that_wait_too_long_are_discarded(rig, monkeypatch):
+    rig.pair()
+    assert rig.wait_linked() is True
+
+    rig.companion._forward_shot(1, "e6", E6_SWING[0])
+
+    import time as _time
+
+    later = _time.monotonic() + rig.companion.PENDING_BALL_SECONDS + 5
+    monkeypatch.setattr(_time, "monotonic", lambda: later)
+    rig.companion._forward_shot(2, "e6", {"Type": "SendShot"})
+
+    recent = rig.companion.shots.recent(5)
+    assert recent[0].get("speed") in (None, 0)

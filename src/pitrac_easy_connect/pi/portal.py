@@ -2,7 +2,7 @@
 
 This is the one part of Easy Connect that listens on the network before any
 pairing exists, so it is also the part with the least to offer an attacker. It
-can set the country, list and join networks, show a pairing code, and perform
+can set the country, list and join networks, show a pairing window, and perform
 the maintenance actions a stranded owner needs. It cannot read a Wi-Fi password
 back out, cannot run a command, and cannot forward a shot.
 

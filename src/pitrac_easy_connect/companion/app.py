@@ -71,7 +71,7 @@ def main(argv=None) -> int:
                 return 0  # the user closed the window
 
             # No native backend on this machine: fall back to an
-            # application-mode browser and wait as before.
+            # browser and wait as before.
             print("No native window on this machine; opening it in your browser.")
             open_in_browser(url)
             _wait_for_stop(server)

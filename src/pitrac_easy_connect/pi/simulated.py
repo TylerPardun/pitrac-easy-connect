@@ -158,7 +158,11 @@ class SimulatedPi(PiBackend):
             ) + sorted(self._preexisting_ssids)
 
     def profile_name_for(self, ssid: str) -> str:
-        return "{}{}".format(PROFILE_PREFIX, ssid)
+        # Matches the real backend, including its collision-proof suffix, so a
+        # test cannot pass on naming the real Pi would get wrong.
+        from .nmcli_backend import NmcliBackend
+
+        return NmcliBackend.profile_name_for(self, ssid)
 
     def connect(
         self, ssid: str, password: Optional[str], hidden: bool = False, timeout: float = 45.0

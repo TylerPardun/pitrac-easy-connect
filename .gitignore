@@ -10,6 +10,7 @@ __pycache__/
 *.egg-info/
 docs/
 # Generated icons — made by packaging/icon/make-icons.py at build time
+packaging/icon/icon.png
 packaging/icon/PiTrac.icns
 packaging/icon/PiTrac.ico
 packaging/icon/PiTrac.iconset/

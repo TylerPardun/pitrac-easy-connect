@@ -359,6 +359,15 @@ class ArchiveUpdater:
             except Exception as exc:
                 return {"applied": False, "detail": "The update could not be unpacked: {}".format(exc)}
 
+            inside = self._version_inside(staged)
+            if inside != tag.lstrip("v"):
+                shutil.rmtree(staged.parent.parent, ignore_errors=True)
+                return {
+                    "applied": False,
+                    "detail": "That release is labelled {} but contains {}, so it "
+                              "was not installed.".format(tag, inside or "no version"),
+                }
+
             if self._verify is not None and not self._verify(staged):
                 shutil.rmtree(staged.parent.parent, ignore_errors=True)
                 return {
@@ -455,6 +464,25 @@ class ArchiveUpdater:
         if not (package / "pi" / "service.py").exists():
             raise ValueError("the archive is missing the enclosure service")
         return package
+
+    @staticmethod
+    def _version_inside(package: Path) -> str:
+        """The version the archive actually contains.
+
+        The release tag is a label somebody typed. Trusting it meant an
+        archive tagged 9.9.9 that held 1.1.0 was reported as 9.9.9 installed
+        while 1.1.0 was what actually landed, and the enclosure then believed
+        it was up to date.
+        """
+
+        import re as _re
+
+        try:
+            source = (package / "__init__.py").read_text()
+        except OSError:
+            return ""
+        found = _re.search(r'__version__ = "([^"]+)"', source)
+        return found.group(1) if found else ""
 
     def _swap(self, staged: Path) -> Path:
         """Put the new copy in place, keeping the old one until it has proved

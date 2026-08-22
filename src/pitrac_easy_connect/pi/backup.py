@@ -1,7 +1,7 @@
 """Exporting and restoring what would be painful to recreate.
 
 Calibration is the thing worth protecting. Wi-Fi can be re-entered in a minute
-and a pairing code takes seconds, but calibration means setting up a rig and
+and pairing takes one click, but calibration means setting up a rig and
 walking through a procedure, and it is specific to one physical pair of cameras
 in one enclosure.
 
@@ -303,8 +303,66 @@ class BackupManager:
         self._check_sections(payload, available, identity, pairings)
 
         # Always take a snapshot first, so a restore can itself be undone.
-        result = RestoreResult(pre_restore_backup=self._snapshot())
+        snapshot = self._snapshot()
+        result = RestoreResult(pre_restore_backup=snapshot)
 
+        # What each thing being changed looked like beforehand, so a failure
+        # can be undone directly. Replaying a restore from the snapshot would
+        # go back through the code that just failed.
+        undo = self._remember(wants_calibration, preferences, identity, pairings)
+        try:
+            return self._apply(payload, available, result, wants_calibration,
+                               calibration, preferences, identity, pairings)
+        except Exception:
+            self._put_back(undo)
+            raise
+
+    def _remember(self, calibration: bool, preferences: bool,
+                  identity: bool, pairings: bool) -> Dict[str, Any]:
+        state: Dict[str, Any] = {}
+        if calibration:
+            try:
+                state["calibration"] = self.pitrac.calibration_path.read_bytes()
+            except OSError:
+                state["calibration"] = None
+        if preferences:
+            state["settings"] = dict(self.settings.all())
+            state["displayName"] = self.identity_store.identity.display_name
+        if identity:
+            state["identity"] = self.identity_store.identity.as_dict(include_secrets=True)
+        if pairings:
+            state["pairings"] = self.pairings.export()
+        return state
+
+    def _put_back(self, state: Dict[str, Any]) -> None:
+        """Undo whatever a failed restore had already written."""
+
+        if "calibration" in state:
+            try:
+                if state["calibration"] is None:
+                    self.pitrac.calibration_path.unlink(missing_ok=True)
+                else:
+                    atomic_write_bytes(self.pitrac.calibration_path, state["calibration"])
+            except OSError:
+                pass
+        if "settings" in state:
+            try:
+                self.settings.replace(state["settings"])
+            except Exception:
+                pass
+        if "identity" in state:
+            try:
+                self.identity_store.restore(state["identity"])
+            except Exception:
+                pass
+        if "pairings" in state:
+            try:
+                self.pairings.restore(state["pairings"])
+            except Exception:
+                pass
+
+    def _apply(self, payload, available, result, wants_calibration,
+               calibration, preferences, identity, pairings) -> RestoreResult:
         if wants_calibration:
             self._write_json(self.pitrac.calibration_path, payload[SECTION_CALIBRATION])
             result.restored.append(SECTION_CALIBRATION)

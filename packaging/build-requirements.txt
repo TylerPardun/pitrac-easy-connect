@@ -1,8 +1,27 @@
-# Build tools only. Neither the Raspberry Pi service nor running from
-# source needs any of this -- see NOTICE.md.
+# Build tools only. Neither the Raspberry Pi service nor running from source
+# needs any of this -- see NOTICE.md.
 #
-# Pinned so that two builds of the same commit contain the same code.
-# Unpinned, the packaged app quietly changes between builds, and the
-# licences listed in NOTICE.md stop matching what actually shipped.
+# Everything is pinned, including what these pull in, because the packaged app
+# embeds it. Left floating, two builds of the same commit ship different
+# third-party code than the licence list beside them claims.
+
 pyinstaller==6.22.2
 pywebview==6.2.1
+pillow==12.3.0
+
+# PyInstaller's own dependencies.
+altgraph==0.17.5
+setuptools==80.9.0
+macholib==1.16.4 ; sys_platform == "darwin"
+pefile==2024.8.26 ; sys_platform == "win32"
+pywin32-ctypes==0.2.3 ; sys_platform == "win32"
+
+# What pywebview needs to draw a window, per platform.
+proxy_tools==0.1.0
+typing_extensions==4.15.0
+pyobjc-core==12.2.2 ; sys_platform == "darwin"
+pyobjc-framework-Cocoa==12.2.2 ; sys_platform == "darwin"
+pyobjc-framework-Quartz==12.2.2 ; sys_platform == "darwin"
+pyobjc-framework-WebKit==12.2.2 ; sys_platform == "darwin"
+pythonnet==3.0.5 ; sys_platform == "win32"
+clr_loader==0.2.7.post0 ; sys_platform == "win32"

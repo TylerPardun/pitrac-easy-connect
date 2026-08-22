@@ -1,10 +1,11 @@
-import pathlib
 """Backup and restore.
 
-Calibration is the thing worth protecting: Wi-Fi takes a minute to re-enter and a
-pairing code takes seconds, but calibration means setting up a rig again. These
+Calibration is the thing worth protecting: Wi-Fi takes a minute to re-enter and
+pairing takes one click, but calibration means setting up a rig again. These
 tests are mostly about the ways a restore could quietly make things worse.
 """
+
+import pathlib
 
 import json
 
@@ -363,3 +364,29 @@ def test_the_undo_file_can_restore_the_paired_computers(tmp_path):
     snapshot = json.loads(pathlib.Path(result.pre_restore_backup).read_text())
     assert "pairings" in snapshot["payload"], "the undo file must carry them"
     assert original in json.dumps(snapshot["payload"]["pairings"])
+
+
+def test_a_failure_partway_through_a_restore_puts_everything_back(tmp_path, monkeypatch):
+    """Calibration was written before preferences, identity and pairings. A
+    failure after that first write left the new calibration installed."""
+
+    _identity, _settings, pitrac, _pairings, manager = build(tmp_path)
+    document = json.loads(manager.create_bytes().decode())
+
+    # Change the calibration in the backup so a successful restore is visible.
+    document["payload"]["calibration"] = {"gs_config": {"cameras": {"marker": "from-backup"}}}
+    from pitrac_easy_connect.pi.backup import checksum_of
+
+    document["checksum"] = checksum_of(document["payload"])
+
+    before = pitrac.calibration_path.read_text()
+
+    def explode(*_args, **_kwargs):
+        raise RuntimeError("the card filled up")
+
+    monkeypatch.setattr(manager, "_restore_preferences", explode)
+    with pytest.raises(Exception):
+        manager.restore(document, calibration=True, preferences=True)
+
+    assert pitrac.calibration_path.read_text() == before, \
+        "calibration was left changed by a restore that failed"

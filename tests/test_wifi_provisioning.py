@@ -688,3 +688,32 @@ def test_a_second_join_replaces_the_first_pending_change(tmp_path):
     pending = provisioner._journal.get("pending")
     assert not pending or pending.get("ssid") == "Ferndale", \
         "the older attempt must not still be pending"
+
+
+def test_a_refused_request_does_not_strand_the_previous_attempt(tmp_path):
+    """Cancelling the pending change before checking the new request meant a
+    refusal left the provisional network active with nothing left to undo it."""
+
+    backend, provisioner, clock = build(tmp_path=tmp_path)
+    provisioner.join("Ferndale", "GoodPassword1")
+    provisioner.confirm()
+
+    provisioner.join("Neighbour-2G", "unknown")      # provisional, unconfirmed
+    assert provisioner.awaiting_confirmation is True
+
+    with pytest.raises(EasyConnectError):
+        provisioner.join("Campus")                    # enterprise, unsupported
+
+    # The refusal must not consume the rollback the provisional network is
+    # still owed. Before, it erased the deadline and the journal record, so
+    # nothing would ever have undone it.
+    assert provisioner.awaiting_confirmation is True
+    assert provisioner._journal.get("pending"), "the record that owes a rollback is gone"
+
+    # And that rollback still happens when the deadline passes.
+    clock.advance(provisioner.confirmation_seconds + 1)
+    provisioner.poll()
+    current = backend.active_connection()
+    assert current is not None and current.ssid == "Ferndale", \
+        "the enclosure should be back on the network that worked, got {}".format(
+            current.ssid if current else None)

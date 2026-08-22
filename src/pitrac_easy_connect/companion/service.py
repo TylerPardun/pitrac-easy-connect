@@ -104,8 +104,11 @@ class CompanionService:
         self.range = RangeSession()
         self._raw_shots: List[Dict[str, Any]] = []
         #: E6 sends the measurements before the instruction to hit, so they
-        #: wait here until the swing is taken.
+        #: wait here until the swing is taken. Abandoned measurements must
+        #: never be attached to a later swing, so they are cleared whenever
+        #: the link or the simulator changes, and expire on their own.
         self._pending_ball: Dict[str, Any] = {}
+        self._pending_ball_at: float = 0.0
         self.shots = ShotLog(
             (config_path or default_config_path()).with_name("shots.json")
         )
@@ -120,6 +123,16 @@ class CompanionService:
     def simulator(self) -> Simulator:
         return Simulator(self.store.get("simulator", Simulator.GSPRO.value))
 
+    def _on_link_state(self) -> None:
+        client = self._link
+        if client is None or not client.connected:
+            # The enclosure has gone. Anything half-sent belongs to a swing
+            # that will never be completed.
+            with self._lock:
+                self._forget_pending_ball()
+            return
+        self._report_simulator_state()
+
     def select_simulator(self, name: str) -> Dict[str, Any]:
         try:
             simulator = Simulator(str(name))
@@ -129,6 +142,9 @@ class CompanionService:
             self.store.set("simulator", simulator.value)
             self._test_shot_accepted = False
             self._last_simulator_error = None
+            # Measurements gathered for the previous simulator's protocol have
+            # nothing to do with the new one.
+            self._forget_pending_ball()
             if self._session is not None:
                 self._session.close()
                 self._session = None
@@ -387,11 +403,6 @@ class CompanionService:
         with self._lock:
             self._pi_status = dict(payload)
 
-    def _on_link_state(self) -> None:
-        client = self._link
-        if client is not None and client.connected:
-            self._report_simulator_state()
-
     # --- The simulator on this computer -----------------------------------
 
     def connect_simulator(self) -> bool:
@@ -545,14 +556,28 @@ class CompanionService:
         if measured:
             with self._lock:
                 self._pending_ball = measured
+                self._pending_ball_at = time.monotonic()
 
         if not is_shot_message(which, payload):
             return None
 
         with self._lock:
-            ball = measured or self._pending_ball
-            self._pending_ball = {}
+            held = self._pending_ball
+            if held and time.monotonic() - self._pending_ball_at > self.PENDING_BALL_SECONDS:
+                # Measurements this old belong to a swing that never completed.
+                held = {}
+            ball = measured or held
+            self._forget_pending_ball()
         return ball or {}
+
+    #: How long measurements may wait for the instruction to hit before they
+    #: are treated as belonging to an abandoned swing. A real sequence arrives
+    #: within milliseconds.
+    PENDING_BALL_SECONDS = 30.0
+
+    def _forget_pending_ball(self) -> None:
+        self._pending_ball = {}
+        self._pending_ball_at = 0.0
 
     #: How long to wait after writing a shot for the connection to prove it is
     #: still there. Short: a golf shot is in the air for seconds, and half of

@@ -185,7 +185,7 @@ def test_the_app_may_frame_the_setup_page_but_a_website_may_not(portal):
     """The app embeds this page in its Setup tab, so loopback must be allowed.
 
     It was blocked outright for a while, which made the tab silently blank —
-    no error, just nothing — and left the pairing code with nowhere to appear.
+    no error, just nothing — and left the setup steps with nowhere to appear.
     """
 
     _server, base = portal
