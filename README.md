@@ -72,11 +72,24 @@ a blank memory card, install PiTrac first by following
 It covers the entire process, from flashing the card to running the launch
 monitor.
 
-Once PiTrac is working, copy this repository to the Pi and run:
+Once PiTrac is working, copy this repository to the Pi. From your own computer:
 
 ```bash
+git clone https://github.com/TylerPardun/pitrac-easy-connect
+cd pitrac-easy-connect
+scp -r . pitracuser@pitrac.local:~/easy-connect
+```
+
+Then on the Pi:
+
+```bash
+cd ~/easy-connect
 sudo ./packaging/pi/install.sh
 ```
+
+If `pitrac.local` does not answer, use the Pi's IP address instead — your
+router lists it. If you have used this Pi before and `ssh` refuses to connect
+after the card was rewritten, run `ssh-keygen -R pitrac.local` and try again.
 
 The installer checks the enclosure, installs and starts Easy-Connect, prepares
 PiTrac to send shots to the app, and prints the **owner card**.
