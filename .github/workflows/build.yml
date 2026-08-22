@@ -61,9 +61,15 @@ jobs:
           - os: windows-latest
             artifact: PiTrac-windows
             path: dist/PiTrac-Easy-Connect-windows.zip
+          # Two Mac builds, because a Mac cannot run the other one's. Rosetta
+          # translates Intel code to run on Apple silicon, never the reverse,
+          # so an Intel Mac given the arm64 build has no way to start it at all.
           - os: macos-latest
-            artifact: PiTrac-macos
-            path: dist/PiTrac-Easy-Connect-macos.zip
+            artifact: PiTrac-macos-apple-silicon
+            path: dist/PiTrac-Easy-Connect-macos-apple-silicon.zip
+          - os: macos-15-intel
+            artifact: PiTrac-macos-intel
+            path: dist/PiTrac-Easy-Connect-macos-intel.zip
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -104,7 +110,21 @@ jobs:
           cp -R "dist/PiTrac Easy-Connect.app" dist/payload/
           cp LICENSE NOTICE.md dist/payload/
           cp THIRD-PARTY-LICENCES.txt dist/payload/
-          ditto -c -k --keepParent dist/payload dist/PiTrac-Easy-Connect-macos.zip
+          ditto -c -k --keepParent dist/payload "${{ matrix.path }}"
+
+          # The architecture is the whole reason there are two of these, so it
+          # is worth failing the build rather than shipping the wrong one under
+          # the right name.
+          BUILT=$(lipo -archs "dist/PiTrac Easy-Connect.app/Contents/MacOS/PiTrac Easy-Connect")
+          echo "built for: $BUILT"
+          case "${{ matrix.path }}" in
+            *apple-silicon*) WANT=arm64 ;;
+            *intel*)         WANT=x86_64 ;;
+          esac
+          if [ "$BUILT" != "$WANT" ]; then
+            echo "::error::${{ matrix.artifact }} should be $WANT but is $BUILT"
+            exit 1
+          fi
 
       # A bare .exe cannot carry a licence file, so it travels in a zip with one.
       - name: Package the Windows app
