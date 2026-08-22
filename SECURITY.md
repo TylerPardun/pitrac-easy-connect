@@ -25,9 +25,14 @@ reset.
 ## What is protected
 
 - The app binds to loopback only and is not reachable from the network.
-- Each paired computer gets its own secret, derived at both ends through a
-  Diffie–Hellman exchange rather than transmitted, so a listener learns nothing
-  reusable.
+- Each paired computer gets its own secret. The enclosure generates it and
+  sends it masked with a key both ends derive from an ephemeral Diffie–Hellman
+  exchange, so a listener recording the traffic learns nothing usable. The
+  secret is transmitted, but never in the clear — and it is never sent again
+  afterwards, because each side then proves it holds the secret by answering a
+  fresh challenge.
+- An attacker positioned to interfere *during* pairing is inside the trust
+  boundary described above, and this does not defend against one.
 - Pairing is closed by default: an enclosure accepts the first computer, then
   refuses others until its owner opens a short window.
 - The setup hotspot is never open and its password is unique per enclosure.

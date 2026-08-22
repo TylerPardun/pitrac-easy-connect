@@ -41,6 +41,7 @@ from ..common.errors import (
     NET_ENTERPRISE,
     NET_HOTSPOT_FAILED,
     NET_INTERRUPTED,
+    NET_NOT_CONFIRMED,
     NET_INVALID_DETAILS,
     NET_ISOLATED,
     NET_NO_ADDRESS,
@@ -443,12 +444,30 @@ class WifiProvisioner:
                     ssid=current.ssid if current else "",
                 )
 
+            # Confirmation means "a computer reached me over the new network".
+            # Any paired computer can call this, and it might have reached the
+            # enclosure over ethernet, or over the old network that has not
+            # dropped yet. Making the change permanent on that basis is how a
+            # machine ends up committed to a network nothing can actually
+            # reach it on. So check what it is actually associated with.
+            current = self.backend.active_connection()
+            pending = self._journal.get("pending") or {}
+            expected = str(pending.get("ssid") or "")
+            if expected:
+                if current is None or current.is_hotspot or current.ssid != expected:
+                    on = "nothing" if current is None else (
+                        "its own setup network" if current.is_hotspot else current.ssid)
+                    raise EasyConnectError(
+                        NET_NOT_CONFIRMED,
+                        "the change was not confirmed over {}; PiTrac is on {}".format(
+                            expected, on),
+                    )
+
             self._pending_deadline = None
             if self._checkpoint:
                 self.backend.destroy_checkpoint(self._checkpoint)
                 self._checkpoint = None
 
-            current = self.backend.active_connection()
             self._journal.update(
                 {"pending": None, "lastGood": current.profile if current else None}
             )
@@ -502,11 +521,20 @@ class WifiProvisioner:
             return self._fall_back_to_hotspot(error)
 
     def _undo_pending(self, ssid: str = "", keep: Optional[str] = None) -> None:
-        self._journal.update({"pending": None})
+        """Undo an unconfirmed change, then forget that it was pending.
+
+        The order matters and used to be the other way round. Clearing the
+        journal first means a power cut *during* the rollback leaves a machine
+        that has neither the new network nor a record that it was mid-change,
+        so the next boot has nothing to undo and the enclosure is stranded.
+        The marker is the only evidence recovery is owed; it goes last.
+        """
+
         if self._checkpoint:
             self.backend.rollback_checkpoint(self._checkpoint)
             self._checkpoint = None
         self._forget_abandoned(ssid, keep)
+        self._journal.update({"pending": None})
 
     def _restore_previous(self, profile: Optional[str]) -> Optional[ActiveConnection]:
         """Put the named profile back, or report that there is nothing to go back to.

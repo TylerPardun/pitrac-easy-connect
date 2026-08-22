@@ -22,8 +22,9 @@ problem and could not run inside a desktop app in any case.
 The drag and lift coefficients were fitted to published PGA Tour launch
 conditions and carries across the bag, and landed inside the range wind-tunnel
 work reports for dimpled spheres, so they describe physics rather than being
-tuned to hit six numbers. See ``docs/range-prd.md`` for the accuracy the fit
-achieves.
+tuned to hit six numbers. Across the six clubs it was fitted against, carry
+is within about 8 yards and apex within about 6 feet; the worst case is the
+driver, which comes up short.
 """
 
 import math

@@ -31,6 +31,11 @@ User=root
 NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectSystem=true
+# ProtectSystem makes /usr read-only, which is what we want everywhere except
+# the one directory this service replaces when it updates itself. Without this
+# the update fails at the moment it tries to swap the new copy in, and only on
+# a real Pi -- a test that writes to a temporary directory never sees it.
+ReadWritePaths=/usr/lib/pitrac-easy-connect
 ProtectKernelTunables=yes
 ProtectKernelModules=yes
 ProtectControlGroups=yes

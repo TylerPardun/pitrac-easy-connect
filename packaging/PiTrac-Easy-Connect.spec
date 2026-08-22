@@ -26,6 +26,17 @@ def _version():
     return _re.search(r'__version__ = "([^"]+)"', source).group(1)
 
 VERSION = _version()
+
+
+def _require_licences():
+    path = os.path.join(ROOT, "THIRD-PARTY-LICENCES.txt")
+    if not os.path.exists(path):
+        raise SystemExit(
+            "THIRD-PARTY-LICENCES.txt is missing. The native builds bundle "
+            "third-party code and must carry its licence texts.\n"
+            "Run: python3 packaging/collect-licences.py"
+        )
+    return path
 ICON = os.path.join(SPECPATH, "icon", "PiTrac.ico" if WINDOWS else "PiTrac.icns")
 
 # pywebview draws the window with the platform's own browser engine — WKWebView
@@ -47,8 +58,10 @@ analysis = Analysis(
     datas=[
         (os.path.join(ROOT, "LICENSE"), "."),
         (os.path.join(ROOT, "NOTICE.md"), "."),
-    ] + ([(os.path.join(ROOT, "THIRD-PARTY-LICENCES.txt"), ".")]
-         if os.path.exists(os.path.join(ROOT, "THIRD-PARTY-LICENCES.txt")) else []),
+        # Not optional. A bundled component without its licence text is a
+        # compliance problem, so the build stops rather than shipping without.
+        (_require_licences(), "."),
+    ],
     # PyInstaller cannot see these through the runtime lookups in the service,
     # so they are named explicitly.
     hiddenimports=[

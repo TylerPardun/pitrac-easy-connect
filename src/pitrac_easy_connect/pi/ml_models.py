@@ -18,9 +18,13 @@ in the working tree of the source clone, and inside that clone's git history.
 Deleting the first two leaves the third recoverable with one command, which is
 why this removes the clone outright rather than tidying files inside it.
 
-This module never downloads anything. Fetching the models at first boot would
-cure the redistribution problem, but not the separate clause forbidding
-commercial use without written permission, so it is not a way around that.
+This module downloads the models, and only ever from PiTracLM, and only after
+the owner of the machine has been shown the current agreement and accepted it.
+That is the point: the licence is granted to whoever accepts it, so the person
+who ends up holding it is the owner rather than whoever assembled the machine.
+
+What that does *not* do is make selling one lawful. It cures redistribution,
+not the separate clause forbidding commercial use without written permission.
 """
 
 import hashlib

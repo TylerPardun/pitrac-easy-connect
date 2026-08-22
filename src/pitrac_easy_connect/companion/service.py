@@ -457,7 +457,7 @@ class CompanionService:
             # is announced as delivered when nobody received it, and the
             # golfer is told their shot counted when it did not. Give the
             # reader a moment to notice, and believe it if it does.
-            self._settle_delivery(session, seen_before)
+            acknowledged = self._settle_delivery(session, seen_before)
             if not session.connected:
                 raise OSError("the simulator closed the connection")
         except OSError as exc:
@@ -472,7 +472,16 @@ class CompanionService:
             self._shots_delivered += 1
             self._last_shot_at = time.time()
         self._record_shot(payload, simulator, delivered=True)
-        return {"accepted": True, "message": "delivered to {}".format(self.simulator.label)}
+        # "Acknowledged" means the simulator answered after this shot was sent.
+        # It is not correlated to *this* shot -- neither protocol carries an id
+        # to match on -- so it is reported as what it is rather than dressed up
+        # as proof the shot was scored.
+        return {
+            "accepted": True,
+            "acknowledged": acknowledged,
+            "message": "{} to {}".format(
+                "delivered" if acknowledged else "sent", self.simulator.label),
+        }
 
     def _record_shot(self, payload: Dict[str, Any], simulator: str, delivered: bool) -> None:
         """Keep the shot, with the club. Never let logging break shot delivery.
@@ -509,7 +518,7 @@ class CompanionService:
     DELIVERY_CONFIRM_SECONDS = 0.5
     DELIVERY_POLL_SECONDS = 0.05
 
-    def _settle_delivery(self, session, seen_before: int) -> None:
+    def _settle_delivery(self, session, seen_before: int) -> bool:
         """Wait just long enough to know whether the shot really landed.
 
         Exits the moment the simulator says anything back, which is the normal
@@ -520,10 +529,13 @@ class CompanionService:
         deadline = time.monotonic() + self.DELIVERY_CONFIRM_SECONDS
         while time.monotonic() < deadline:
             if not session.connected:
-                return
+                return False
             if session.messages_seen != seen_before:
-                return
+                return True
             time.sleep(self.DELIVERY_POLL_SECONDS)
+        # Still connected, but it said nothing. The shot went out; whether it
+        # was taken is not something this can honestly claim.
+        return False
 
     def check_simulator(self) -> Dict[str, Any]:
         self.connect_simulator()

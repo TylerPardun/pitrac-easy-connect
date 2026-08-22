@@ -442,7 +442,7 @@ const CANNOT_FIND=`<ol>
   <li>Give it two minutes after switching on. It is slower than a phone.</li>
   <li>If it has never been on your Wi-Fi, it makes its own network to be set up
       through. On a phone or laptop, join the Wi-Fi network called
-      <code>PiTrac-</code> followed by four characters, using the password on
+      <code>PiTrac-</code> followed by eight characters, using the password on
       the card that came with it, then open <code>http://10.42.0.1</code> and
       follow the three steps there.</li>
   <li>Come back here and press Search again.</li>
@@ -839,7 +839,9 @@ document.querySelectorAll("#tabs button").forEach(button=>
 // Hand-written WebGL rather than a rendering library: the scene is a ground
 // plane, a sky, some markers and a few lines, which is not worth 600 KB of
 // dependency in a project that otherwise ships nothing but the standard
-// library. See docs/range-prd.md section 4.2.
+// library. The scene is a ground plane, a sky, some markers and a few lines,
+// which is not worth a rendering library in a project that otherwise ships
+// nothing but the standard library, and would not work offline if it did.
 //
 // The page does no physics. Trajectories arrive from the companion already
 // computed, and this only draws them.

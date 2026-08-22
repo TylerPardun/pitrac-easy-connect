@@ -29,15 +29,22 @@ die()  { printf '\nERROR: %s\n' "$*" >&2; exit 1; }
 [ "$(id -u)" -eq 0 ] || die "Run this with sudo."
 
 SET_HOSTNAME=no
+UNINSTALL=no
 for argument in "$@"; do
     case "$argument" in
         --set-hostname) SET_HOSTNAME=yes ;;
-        --uninstall) ;;
+        --uninstall) UNINSTALL=yes ;;
         *) die "Unknown option: $argument" ;;
     esac
 done
 
-if [ "${1:-}" = "--uninstall" ]; then
+# Only the first argument used to be checked, so "--set-hostname --uninstall"
+# quietly installed instead of uninstalling.
+if [ "$UNINSTALL" = yes ] && [ "$SET_HOSTNAME" = yes ]; then
+    die "--set-hostname and --uninstall cannot be used together."
+fi
+
+if [ "$UNINSTALL" = yes ]; then
     step "Removing PiTrac Easy Connect"
     systemctl disable --now "$SERVICE" 2>/dev/null || true
     rm -f "$UNIT" /etc/avahi/services/pitrac-easy-connect.service
@@ -47,6 +54,11 @@ if [ "${1:-}" = "--uninstall" ]; then
     say "PiTrac's simulator address still points at the relay; set it in PiTrac's"
     say "dashboard if you want to send shots somewhere else."
     exit 0
+    # Ours to remove: a drop-in that changed logging for the whole system.
+    rm -f /etc/systemd/journald.conf.d/pitrac-easy-connect.conf
+    rmdir /etc/systemd/journald.conf.d 2>/dev/null || true
+    systemctl restart systemd-journald >/dev/null 2>&1 || true
+    say "Removed the journal size limits this installer added"
 fi
 
 step "Checking this Raspberry Pi"
@@ -98,6 +110,12 @@ step "Installing the application"
 rm -rf "$APP_DIR"
 install -d -m 0755 "$APP_DIR"
 cp -r "$HERE/../../src/pitrac_easy_connect" "$APP_DIR/"
+
+# The licence and notices belong on the machine, not only in the repository
+# somebody built this from.
+install -d -m 0755 /usr/share/doc/pitrac-easy-connect
+install -m 0644 "$HERE/../../LICENSE" /usr/share/doc/pitrac-easy-connect/ 2>/dev/null || true
+install -m 0644 "$HERE/../../NOTICE.md" /usr/share/doc/pitrac-easy-connect/ 2>/dev/null || true
 find "$APP_DIR" -name '__pycache__' -type d -prune -exec rm -rf {} + 2>/dev/null || true
 # Source copied from a Mac carries AppleDouble sidecars. Python ignores them,
 # but they clutter the install and confuse anyone reading it.
@@ -179,4 +197,4 @@ say "Print or photograph the card above and keep it with the enclosure."
 say "Setup page on your network:  http://$(hostname).local"
 say "Setup page on PiTrac's own signal: http://10.42.0.1"
 say ""
-say "Next: install Easy Connect on your Windows PC and pair it."
+say "Next: install PiTrac Easy-Connect on your computer and pair it."

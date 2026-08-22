@@ -26,7 +26,7 @@ A five-step guide walks you through the first setup. If you move the enclosure t
 | **Find and connect** | The app finds the enclosure automatically. One click links the app and enclosure, and other computers cannot connect unless the owner allows them |
 | **Simulator connection** | Sends each measured shot to GSPro or E6 Connect |
 | **Setup and system checks** | A five-step guide handles the first setup. The app also checks that the cameras, calibration, software, storage, and other essentials are ready, then explains anything that needs attention |
-| **Shot history and practice range** | Saves every shot with its club and captured images. The built-in range shows ball flight, distance, height, accuracy, and shot patterns without GSPro, E6 Connect, an account, or an internet connection |
+| **Shot history and practice range** | Saves every shot with its club, and separately shows the recent shot images PiTrac has saved. The built-in range shows ball flight, distance, height, accuracy, and shot patterns without GSPro, E6 Connect, an account, or an internet connection |
 | **Dashboard and settings** | Includes PiTrac's dashboard and tools to back up, restore, update, or reset the enclosure for a new owner |
 
 ### What it looks like

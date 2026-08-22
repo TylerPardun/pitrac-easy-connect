@@ -60,7 +60,9 @@ def main() -> int:
     if not TOC.exists():
         print("No build manifest at {}.".format(TOC.relative_to(ROOT)))
         print("Run ./packaging/build-app.sh first.")
-        return 0 if "--check" in sys.argv else 1
+        # --check used to pass here, so a build with nothing to verify
+        # reported success. A check that cannot check has failed.
+        return 1
 
     found = bundled()
     notice = NOTICE.read_text().lower()

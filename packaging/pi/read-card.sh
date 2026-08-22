@@ -64,7 +64,7 @@ if [ "$KIND" = boot ]; then
 
   1. Plug the Pi into your router with an ethernet cable and try again. Wi-Fi
      may be the only thing that is broken.
-  2. Look for a Wi-Fi network called PiTrac- followed by four characters. If it
+  2. Look for a Wi-Fi network called PiTrac- followed by eight characters. If it
      is there, the Pi booted fine and fell back to its own setup signal --
      join it with the password from the owner card and open http://10.42.0.1
   3. Put the card in any Linux machine, or a Raspberry Pi that does boot, and
@@ -135,7 +135,10 @@ fi
 
 head2 "Was it shut down cleanly?"
 if [ -f "$CARD/var/lib/systemd/random-seed" ]; then
-    say "random-seed present (written on clean shutdown, so this is a good sign)"
+    # This file is written at boot as well as at shutdown, so its presence
+    # proves the Pi booted at some point and nothing more. It used to be
+    # described here as evidence of a clean shutdown, which it is not.
+    say "random-seed present (the Pi booted at least once; says nothing about how it stopped)"
 fi
 
 printf '\nDone.\n\n'

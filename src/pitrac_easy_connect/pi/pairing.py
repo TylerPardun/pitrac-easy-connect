@@ -140,7 +140,11 @@ class PairingManager:
             )
 
     def create_pairing(self, computer_name: str = "") -> NewPairing:
-        """Record a pairing. Whether to allow it is the caller's decision."""
+        """Record a pairing. Whether to allow it is the caller's decision.
+
+        Callers deciding on the basis of ``accepting`` must hold the lock
+        across both, or two of them can decide yes on the same window.
+        """
 
         with self._lock:
             now = self.clock()
@@ -230,8 +234,14 @@ class PairingManager:
                 )
 
             self._exchanges.pop(session_id, None)
+            # Created inside the same lock that decided it was allowed. With
+            # the creation outside, two requests arriving together could both
+            # pass `accepting` before either had consumed the window, and both
+            # would be admitted -- which is exactly what the window exists to
+            # prevent.
+            pairing = self.create_pairing(computer_name)
 
-        pairing = self.create_pairing(computer_name)
+
         return {
             "pairingId": pairing.pairing_id,
             "deviceId": self.device_id,

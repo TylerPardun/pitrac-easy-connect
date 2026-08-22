@@ -115,6 +115,12 @@ NET_CONFIRM_TIMEOUT = _define(
     "PiTrac restored the connection it had before and kept every setting.",
     "Make sure this computer is on the same network, then try again.",
 )
+NET_NOT_CONFIRMED = _define(
+    "PT-NET-013",
+    "PiTrac is not on the network it was asked to join, so the change was not kept.",
+    "PiTrac is still on the network it was using before, and every setting was kept.",
+    "Make sure this computer is on the new network, then try the change again.",
+)
 NET_INTERRUPTED = _define(
     "PT-NET-010",
     "A network change was interrupted, probably by a power cut.",

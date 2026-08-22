@@ -325,3 +325,51 @@ def test_the_revoked_list_cannot_grow_without_bound(tmp_path):
     for _ in range(80):
         manager.revoke(pair_one(manager).pairing_id)
     assert len(manager._store.get("revoked")) <= 50
+
+
+def test_two_computers_arriving_together_cannot_both_be_admitted(tmp_path):
+    """The window admits one. Two requests racing must not both pass.
+
+    The check and the creation were in the same method but not the same locked
+    section, so both could decide yes before either consumed the window. The
+    real window is microseconds wide, so it is widened here deliberately:
+    without that this test passes against the bug and proves nothing.
+    """
+
+    import threading
+    import time
+
+    manager, _clock = build(tmp_path)
+    ask_to_pair(manager, "Owner PC")          # closes the door
+    manager.open_window()                     # and opens it for exactly one
+
+    # Widen the gap between deciding and recording. If the two are not in the
+    # same locked section, this is where the second request slips through.
+    original = manager.create_pairing
+
+    def slow_create(name=""):
+        time.sleep(0.25)
+        return original(name)
+
+    manager.create_pairing = slow_create
+
+    results, errors = [], []
+    start = threading.Barrier(2)
+
+    def race(name):
+        start.wait()
+        try:
+            results.append(ask_to_pair(manager, name))
+        except EasyConnectError as exc:
+            errors.append(exc.info.code)
+
+    threads = [threading.Thread(target=race, args=("A",)),
+               threading.Thread(target=race, args=("B",))]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=10)
+
+    assert len(results) == 1, "exactly one should get in, got {}".format(len(results))
+    assert errors == ["PT-PAIR-001"], errors
+    assert manager.count == 2, "the owner's, plus exactly one more"

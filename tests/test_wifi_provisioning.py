@@ -583,3 +583,61 @@ def test_waiting_for_the_radio_cannot_run_forever(tmp_path):
     backend.active_connection = counted
     assert provisioner._wait_for_association(45.0) is None
     assert polls["n"] < 60, "the wait must give up rather than spin"
+
+
+def test_a_power_cut_during_the_rollback_is_still_recoverable(tmp_path):
+    """The journal is the only evidence that recovery is owed.
+
+    Clearing it before the rollback finished left a machine with neither the
+    new network nor any record that it was mid-change, so the next boot had
+    nothing to undo.
+    """
+
+    backend, provisioner, _clock = build(tmp_path=tmp_path)
+    provisioner.join("Ferndale", "GoodPassword1")
+    provisioner.confirm()
+    provisioner.join("Neighbour-2G", "unknown")     # unconfirmed
+
+    # Fail partway through the undo, as a power cut would.
+    original = backend.rollback_checkpoint
+
+    def die(*_a, **_k):
+        raise BackendError("power lost during rollback")
+
+    backend.rollback_checkpoint = die
+    try:
+        provisioner._undo_pending("Neighbour-2G", keep=None)
+    except BackendError:
+        pass
+    backend.rollback_checkpoint = original
+
+    pending = provisioner._journal.get("pending")
+    assert pending, "the marker must survive so the next boot can finish the undo"
+
+
+def test_confirmation_is_refused_from_the_wrong_network(tmp_path):
+    """Any paired computer can call confirm, and it might have reached the Pi
+    over ethernet or over the old network that has not dropped yet. Committing
+    on that basis is how an enclosure ends up fixed to a network nothing can
+    reach it on."""
+
+    backend, provisioner, _clock = build(tmp_path=tmp_path)
+    provisioner.join("Ferndale", "GoodPassword1")
+    provisioner.confirm()
+
+    provisioner.join("Neighbour-2G", "unknown")
+    # Something put it back on the old network before the confirmation arrived.
+    backend.connect("Ferndale", "GoodPassword1")
+
+    with pytest.raises(EasyConnectError) as caught:
+        provisioner.confirm()
+    assert caught.value.info.code == "PT-NET-013"
+    assert provisioner._journal.get("pending"), "still pending, so the undo can still run"
+
+
+def test_confirmation_from_the_right_network_is_accepted(tmp_path):
+    backend, provisioner, _clock = build(tmp_path=tmp_path)
+    provisioner.join("Ferndale", "GoodPassword1")
+    result = provisioner.confirm()
+    assert result.ok is True
+    assert not provisioner._journal.get("pending")

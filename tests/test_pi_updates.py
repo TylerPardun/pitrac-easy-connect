@@ -197,12 +197,43 @@ def test_a_failed_update_does_not_restart_the_service(installed, upstream):
     assert restarts == [], "restarting into a failed update is how a Pi bricks"
 
 
-def test_the_service_still_runs_if_the_restart_itself_fails(installed, upstream):
+def test_a_restart_that_fails_puts_the_old_version_back(installed, upstream):
+    """New files that cannot be started are worse than no update at all: the
+    enclosure has no keyboard and nobody can reach it to undo them."""
+
     def explode():
         raise RuntimeError("systemctl said no")
 
     result = updater(installed, upstream, restarted=explode).apply()
-    assert result["applied"] is True, "the files are in place; the restart is separate"
+    assert result["applied"] is False
+    assert "undone" in result["detail"]
+    assert '"0.2.0"' in (installed / "pitrac_easy_connect" / "__init__.py").read_text()
+
+
+def test_a_version_that_starts_but_is_unhealthy_is_rolled_back(installed, upstream):
+    """It restarted and then did not answer. That is a broken enclosure, and
+    the only safe move is backwards."""
+
+    restarts = []
+    up = updater(installed, upstream, restarted=lambda: restarts.append(1))
+    up._healthy = lambda: False
+
+    result = up.apply()
+    assert result["applied"] is False
+    assert result.get("rolledBack") is True
+    assert '"0.2.0"' in (installed / "pitrac_easy_connect" / "__init__.py").read_text()
+    assert len(restarts) == 2, "restarted into the new version, then back into the old"
+
+
+def test_a_healthy_update_keeps_the_new_version_and_tidies_up(installed, upstream):
+    up = updater(installed, upstream, restarted=lambda: None)
+    up._healthy = lambda: True
+
+    result = up.apply()
+    assert result["applied"] is True
+    assert '"9.9.9"' in (installed / "pitrac_easy_connect" / "__init__.py").read_text()
+    assert [p.name for p in installed.iterdir()] == ["pitrac_easy_connect"], \
+        "the previous copy should be gone once the new one has proved itself"
 
 
 def test_an_archive_cannot_write_outside_its_own_directory(installed, upstream, tmp_path):

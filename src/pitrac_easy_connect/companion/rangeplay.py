@@ -6,7 +6,9 @@ already keeps them -- would be the wrong trade.
 
 The trajectory is computed here rather than in the browser so it can be tested,
 so there is one implementation rather than one per platform, and so the page
-stays pure presentation. See ``docs/range-prd.md`` §4.1.
+stays pure presentation. A trajectory is roughly 120 points after
+downsampling, which is a few kilobytes over loopback, so the round trip costs
+nothing worth measuring.
 """
 
 import math

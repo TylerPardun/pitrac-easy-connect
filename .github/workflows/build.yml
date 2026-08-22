@@ -76,7 +76,7 @@ jobs:
           mkdir -p dist/payload
           cp -R "dist/PiTrac Easy-Connect.app" dist/payload/
           cp LICENSE NOTICE.md dist/payload/
-          [ -f THIRD-PARTY-LICENCES.txt ] && cp THIRD-PARTY-LICENCES.txt dist/payload/ || true
+          cp THIRD-PARTY-LICENCES.txt dist/payload/
           ditto -c -k --keepParent dist/payload dist/PiTrac-Easy-Connect-macos.zip
 
       # A bare .exe cannot carry a licence file, so it travels in a zip with one.
@@ -87,10 +87,34 @@ jobs:
           New-Item -ItemType Directory -Force -Path dist/payload | Out-Null
           Copy-Item "dist/PiTrac Easy-Connect.exe" dist/payload/
           Copy-Item LICENSE, NOTICE.md dist/payload/
-          if (Test-Path THIRD-PARTY-LICENCES.txt) {
-            Copy-Item THIRD-PARTY-LICENCES.txt dist/payload/
-          }
+          Copy-Item THIRD-PARTY-LICENCES.txt dist/payload/
           Compress-Archive -Path dist/payload/* -DestinationPath dist/PiTrac-Easy-Connect-windows.zip -Force
+
+      - name: Collect third-party licence texts
+        run: python packaging/collect-licences.py
+
+      # Built and never run is not the same as working. The macOS app is
+      # exercised by hand here; this is the only thing that touches Windows.
+      - name: Check the Windows app actually starts
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $app = Start-Process -FilePath "dist/PiTrac Easy-Connect.exe" `
+            -ArgumentList "--no-browser","--port","8899" -PassThru
+          $ok = $false
+          foreach ($i in 1..30) {
+            Start-Sleep -Seconds 2
+            try {
+              $r = Invoke-WebRequest -Uri "http://127.0.0.1:8899/api/status" `
+                    -Headers @{"X-PiTrac-App"="1"} -UseBasicParsing -TimeoutSec 5
+              if ($r.StatusCode -eq 200) {
+                Write-Host "started:" ($r.Content | ConvertFrom-Json).version
+                $ok = $true; break
+              }
+            } catch { }
+          }
+          Stop-Process -Id $app.Id -Force -ErrorAction SilentlyContinue
+          if (-not $ok) { Write-Error "the Windows app did not start"; exit 1 }
 
       - name: Check NOTICE.md credits everything the build bundles
         run: python packaging/bundled-licences.py --check
@@ -145,6 +169,16 @@ jobs:
       # The only job that writes anything back to the repository.
       contents: write
     steps:
+      - uses: actions/checkout@v4
+      - name: The tag must match the version in the package
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          PKG=$(python3 -c "import re,pathlib;print(re.search(r'__version__ = \"([^\"]+)\"', pathlib.Path('src/pitrac_easy_connect/__init__.py').read_text()).group(1))")
+          echo "tag $TAG, package $PKG"
+          if [ "$TAG" != "$PKG" ]; then
+            echo "::error::Tag v$TAG does not match the package version $PKG."
+            exit 1
+          fi
       - uses: actions/download-artifact@v4
         with:
           path: artifacts

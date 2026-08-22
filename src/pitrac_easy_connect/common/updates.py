@@ -287,6 +287,7 @@ class ArchiveUpdater:
         app_dir: Path,
         repository: str = REPOSITORY,
         restart: Optional[Callable[[], None]] = None,
+        healthy: Optional[Callable[[], bool]] = None,
         fetch: Optional[Callable[[str], bytes]] = None,
         api_base: str = None,
     ):
@@ -294,6 +295,8 @@ class ArchiveUpdater:
         self.app_dir = Path(app_dir)
         self.repository = repository
         self._restart = restart
+        #: Asked after the restart. Returning False rolls the update back.
+        self._healthy = healthy
         self._fetch = fetch or _download
         self._api = (api_base or API_BASE).rstrip("/")
         self._lock = threading.RLock()
@@ -350,16 +353,36 @@ class ArchiveUpdater:
                 return {"applied": False, "detail": "The update could not be unpacked: {}".format(exc)}
 
             try:
-                self._swap(staged)
+                previous = self._swap(staged)
             except Exception as exc:
                 shutil.rmtree(staged.parent, ignore_errors=True)
-                return {"applied": False, "detail": "The update could not be installed: {}".format(exc)}
+                return {"applied": False,
+                        "detail": "The update could not be installed: {}".format(exc)}
 
+            # The new copy is in place but has not run yet. Restart, then ask
+            # it whether it came back. If it did not, put the old one back:
+            # an enclosure that will not start is not a failed update, it is a
+            # machine with no keyboard that nobody can reach.
             if self._restart:
                 try:
                     self._restart()
-                except Exception:
-                    pass
+                except Exception as exc:
+                    self._roll_back(previous)
+                    return {"applied": False,
+                            "detail": "The update was undone: it could not be started ({})".format(exc)}
+
+            if self._healthy is not None and not self._healthy():
+                self._roll_back(previous)
+                if self._restart:
+                    try:
+                        self._restart()
+                    except Exception:
+                        pass
+                return {"applied": False, "rolledBack": True,
+                        "detail": "Version {} would not start, so the previous "
+                                  "version was put back.".format(tag)}
+
+            shutil.rmtree(previous, ignore_errors=True)
             return {"applied": True, "version": tag,
                     "detail": "Updated to {}. PiTrac is restarting.".format(tag)}
 
@@ -400,9 +423,14 @@ class ArchiveUpdater:
             bad = zipped.testzip()
             if bad:
                 raise ValueError("the archive is damaged at {}".format(bad))
+            root = unpacked.resolve()
             for member in zipped.namelist():
                 target = (unpacked / member).resolve()
-                if not str(target).startswith(str(unpacked.resolve())):
+                # relative_to, not a string prefix: "/tmp/new-evil" starts with
+                # "/tmp/new" and would have passed a prefix comparison.
+                try:
+                    target.relative_to(root)
+                except ValueError:
                     raise ValueError("the archive tried to write outside itself")
             zipped.extractall(unpacked)
 
@@ -413,8 +441,9 @@ class ArchiveUpdater:
             raise ValueError("the archive is missing the enclosure service")
         return package
 
-    def _swap(self, staged: Path) -> None:
-        """Put the new copy in place, keeping the old one until it is."""
+    def _swap(self, staged: Path) -> Path:
+        """Put the new copy in place, keeping the old one until it has proved
+        itself. Returns where the old one is, so it can be rolled back to."""
 
         target = self.app_dir / "pitrac_easy_connect"
         previous = self.app_dir / "pitrac_easy_connect.previous"
@@ -429,8 +458,17 @@ class ArchiveUpdater:
             if previous.exists() and not target.exists():
                 os.replace(previous, target)
             raise
-        shutil.rmtree(previous, ignore_errors=True)
         shutil.rmtree(staged.parent.parent, ignore_errors=True)
+        return previous
+
+    def _roll_back(self, previous: Path) -> None:
+        """Undo a swap whose result would not start."""
+
+        target = self.app_dir / "pitrac_easy_connect"
+        if not previous.exists():
+            return
+        shutil.rmtree(target, ignore_errors=True)
+        os.replace(previous, target)
 
 
 def _download(url: str, timeout: float = 120.0) -> bytes:

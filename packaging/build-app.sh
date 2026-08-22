@@ -38,6 +38,9 @@ if [ "$WANT_PYZ" = yes ]; then
     STAGE="$(mktemp -d)"
     trap 'rm -rf "$STAGE"' EXIT
     cp -r src/pitrac_easy_connect "$STAGE/"
+    # The licence travels with the code, not just beside the download.
+    python3 packaging/collect-licences.py >/dev/null
+    cp LICENSE NOTICE.md THIRD-PARTY-LICENCES.txt "$STAGE/"
     find "$STAGE" -name '__pycache__' -type d -prune -exec rm -rf {} + 2>/dev/null || true
     cat > "$STAGE/__main__.py" <<'PY'
 from pitrac_easy_connect.companion.app import main
@@ -59,6 +62,9 @@ if [ "$WANT_APP" = yes ]; then
         python3 -m pip install --quiet --disable-pip-version-check \
             -r packaging/build-requirements.txt
     fi
+
+    say "Collecting third-party licence texts"
+    python3 packaging/collect-licences.py
 
     if [ ! -f packaging/icon/PiTrac.icns ] || [ ! -f packaging/icon/PiTrac.ico ]; then
         say "Generating icons"
