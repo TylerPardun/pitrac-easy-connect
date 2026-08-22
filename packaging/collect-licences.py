@@ -12,6 +12,7 @@ missing licence is a compliance problem, not a warning.
 
 import argparse
 import sys
+from email.utils import getaddresses
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -127,13 +128,37 @@ SOFTWARE.""",
 }
 
 
+def declared_holder(dist):
+    """The copyright holder the distribution names for itself.
+
+    Older metadata puts a bare name in ``Author``. Newer metadata folds the
+    name into ``Author-email`` as ``"Name" <address>``, so the name has to be
+    parsed back out of the address. Only the name is used; the address is not
+    part of a licence notice.
+    """
+
+    for field in ("Author", "Maintainer"):
+        value = (dist.metadata.get(field) or "").strip()
+        if value:
+            return value
+    for field in ("Author-email", "Maintainer-email"):
+        value = (dist.metadata.get(field) or "").strip()
+        if not value:
+            continue
+        for one in getaddresses([value]):
+            name = one[0].strip().strip('"').strip()
+            if name:
+                return name
+    return None
+
+
 def reconstructed_text(dist):
     """The declared licence's standard text, when the wheel ships none."""
 
     declared = (dist.metadata.get("License") or "").strip()
     if declared not in STANDARD_TEXTS:
         return None
-    holder = (dist.metadata.get("Author") or dist.metadata.get("Maintainer") or "").strip()
+    holder = declared_holder(dist)
     if not holder:
         return None
     body = STANDARD_TEXTS[declared].format(holder=holder)
