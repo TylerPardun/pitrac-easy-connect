@@ -618,16 +618,43 @@ function doAction(id, button){
     if(!confirm("Send a test shot to "+status.simulatorLabel+"?\n\nThis is a real shot. If a round is open it may be scored.")) return;
     await api("/api/test-shot",{});
   });
-  if(id==="dash"||id==="setup"){
-    const url = id==="dash" ? status.dashboardUrl
-      : (status.link&&status.link.address ? "http://"+status.link.address.split(":")[0] : "");
-    if(url) window.open(url,"_blank","noopener");
-  }
+  // These used to open a browser. The app has tabs showing exactly these two
+  // pages, so shelling out to Chrome left the user in a second window looking
+  // at something the app was already able to show them.
+  if(id==="dash") return showPane("pitrac");
+  if(id==="setup") return showPane("setup");
 }
 
 function renderUpdate(update){
   const host=$("update");
-  if(!update || !update.available){ host.innerHTML=""; return; }
+  if(!update){ host.innerHTML=""; return; }
+
+  // The two halves are meant to move together. Updating the app and leaving
+  // the enclosure behind is the ordinary way that happens, and until now
+  // nothing said so -- the mismatch was computed and never shown.
+  if(update.versionsMatch === false && update.enclosureVersion){
+    host.innerHTML =
+      '<div class="update"><span>PiTrac is running ' + esc(update.enclosureVersion) +
+      ' and this app is ' + esc(update.installed) + '. They should match.</span>' +
+      '<button class="quiet" id="syncPi">Update PiTrac</button></div>';
+    $("syncPi").addEventListener("click", e=>run(e.target, async()=>{
+      host.innerHTML='<div class="update"><span>Checking what PiTrac can install…</span></div>';
+      const found = await api("/api/enclosure",{command:"checkForUpdates"});
+      if(!found.available || !found.canApply){
+        host.innerHTML='<div class="update"><span>'+
+          esc(found.detail || "PiTrac has no update to install.")+
+          ' You may need to install it on the enclosure by hand.</span></div>';
+        return;
+      }
+      host.innerHTML='<div class="update"><span>Updating PiTrac. It will restart, '+
+        'and the connection will drop for a moment.</span></div>';
+      const done = await api("/api/enclosure",{command:"applyUpdate"});
+      host.innerHTML='<div class="update"><span>'+esc(done.detail||"")+'</span></div>';
+    }));
+    return;
+  }
+
+  if(!update.available){ host.innerHTML=""; return; }
   // Offer to install only when this copy can actually install it; otherwise
   // send them to the download rather than promising something that will fail.
   const action = update.canApply

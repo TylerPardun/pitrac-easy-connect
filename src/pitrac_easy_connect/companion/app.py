@@ -61,7 +61,7 @@ def main(argv=None) -> int:
     wants_window = args.window and not args.no_browser and not args.hidden
     try:
         if wants_window:
-            from .window import native_available, open_window, run_native
+            from .window import native_available, open_in_browser, run_native
 
             # A native window has to own the main thread on both macOS and
             # Windows, so the web server moves to a background thread.
@@ -72,8 +72,8 @@ def main(argv=None) -> int:
 
             # No native backend on this machine: fall back to an
             # application-mode browser and wait as before.
-            print("Native window unavailable; opening a browser window instead.")
-            open_window(url)
+            print("No native window on this machine; opening it in your browser.")
+            open_in_browser(url)
             _wait_for_stop(server)
             return 0
 

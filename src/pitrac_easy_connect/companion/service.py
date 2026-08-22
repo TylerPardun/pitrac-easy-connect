@@ -103,6 +103,9 @@ class CompanionService:
         #: The practice range. In memory only: a session is a bucket of balls.
         self.range = RangeSession()
         self._raw_shots: List[Dict[str, Any]] = []
+        #: E6 sends the measurements before the instruction to hit, so they
+        #: wait here until the swing is taken.
+        self._pending_ball: Dict[str, Any] = {}
         self.shots = ShotLog(
             (config_path or default_config_path()).with_name("shots.json")
         )
@@ -501,9 +504,19 @@ class CompanionService:
             self._keep_raw(payload)
         except Exception:
             pass
+        # Not every message is a golf shot. GSPro sends heartbeats, and E6
+        # needs several messages per swing -- ball data, club data, then
+        # SendShot. Recording all of them turned one E6 swing into four
+        # history entries and every GSPro heartbeat into a blank one. The
+        # relay already knows the difference; this now asks it.
+        ball = self._ball_for_history(simulator, payload)
+        if ball is None:
+            return
+
         try:
             shot = self.shots.record(
-                payload, simulator or self.simulator.value, delivered=delivered
+                payload, simulator or self.simulator.value,
+                delivered=delivered, ball=ball,
             )
         except Exception:
             return
@@ -511,6 +524,35 @@ class CompanionService:
             self.range.record(shot.ball, shot.club)
         except Exception:
             pass
+
+    def _ball_for_history(self, simulator: str, payload: Dict[str, Any]):
+        """The ball data for a completed swing, or None if this is not one.
+
+        E6 sends the numbers in one message and the instruction to hit in
+        another, so the numbers are held until the swing is actually taken.
+        """
+
+        from ..models import Simulator as _Simulator
+        from ..pi.relay import is_shot_message
+        from .shotlog import ball_from_shot
+
+        try:
+            which = _Simulator(simulator) if simulator else self.simulator
+        except ValueError:
+            which = self.simulator
+
+        measured = ball_from_shot(payload)
+        if measured:
+            with self._lock:
+                self._pending_ball = measured
+
+        if not is_shot_message(which, payload):
+            return None
+
+        with self._lock:
+            ball = measured or self._pending_ball
+            self._pending_ball = {}
+        return ball or {}
 
     #: How long to wait after writing a shot for the connection to prove it is
     #: still there. Short: a golf shot is in the air for seconds, and half of

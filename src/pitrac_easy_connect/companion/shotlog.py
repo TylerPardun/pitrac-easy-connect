@@ -171,13 +171,21 @@ class ShotLog:
             self._store.set("club", readable)
         return readable
 
-    def record(self, payload: Dict[str, Any], simulator: str, delivered: bool = True) -> Shot:
+    def record(self, payload: Dict[str, Any], simulator: str, delivered: bool = True,
+               ball: Optional[Dict[str, Any]] = None) -> Shot:
+        """Keep one shot.
+
+        ``ball`` lets the caller supply measurements gathered across several
+        messages, which E6 needs: the numbers and the instruction to hit
+        arrive separately.
+        """
+
         shot = Shot(
             at=time.time(),
             club=self.club,
             simulator=simulator,
             delivered=delivered,
-            ball=ball_from_shot(payload),
+            ball=ball if ball is not None else ball_from_shot(payload),
         )
         with self._lock:
             shots = list(self._store.get("shots") or [])
