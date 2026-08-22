@@ -24,6 +24,7 @@ NETWORK_GROUPS = {
     "test_downloads": "network-b",
     "test_pi_updates": "network-b",
     "test_model_install": "network-b",
+    "test_app_startup": "network-b",
 }
 
 

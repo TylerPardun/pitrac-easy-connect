@@ -1,6 +1,7 @@
 """Entry point for the Easy Connect Companion on the simulator PC."""
 
 import argparse
+import sys
 import threading
 import webbrowser
 from pathlib import Path
@@ -50,7 +51,14 @@ def main(argv=None) -> int:
 
     # Loopback only. The Companion holds pairing secrets and must not be
     # reachable from the residence network.
-    server = CompanionHTTPServer(("127.0.0.1", args.port), service)
+    try:
+        server = CompanionHTTPServer(("127.0.0.1", args.port), service)
+    except OSError as exc:
+        return _handle_busy_port(args, service, exc)
+    return _run(args, service, server)
+
+
+def _run(args, service, server) -> int:
     url = "http://127.0.0.1:{}".format(server.server_port)
     print("PiTrac Easy-Connect {} is running at {}".format(__version__, url))
 
@@ -93,6 +101,118 @@ def main(argv=None) -> int:
         server.server_close()
         service.close()
     return 0
+
+
+def _handle_busy_port(args, service, failure: OSError) -> int:
+    """Decide what to do when the usual port will not open.
+
+    The packaged Windows app has no console, so an exception here is invisible:
+    double-clicking the icon appears to do nothing at all. Every path out of
+    this either shows the running copy, starts anyway somewhere else, or says
+    what went wrong somewhere the user can actually see it.
+    """
+
+    import errno
+
+    if failure.errno not in (errno.EADDRINUSE, errno.EACCES):
+        service.close()
+        _say_it_failed(
+            "PiTrac Easy-Connect could not start.\n\n{}".format(failure)
+        )
+        return 1
+
+    running = _already_running(args.port)
+    if running:
+        # A second double-click on the icon. Show the copy that is already
+        # there rather than starting a rival that cannot hold the port.
+        service.close()
+        url = "http://127.0.0.1:{}".format(args.port)
+        print("PiTrac Easy-Connect is already running; opening {}".format(url))
+        _show(args, url)
+        return 0
+
+    # Something that is not Easy-Connect holds the port. Take any free one:
+    # nothing else on this machine needs to find us at a fixed number.
+    try:
+        server = CompanionHTTPServer(("127.0.0.1", 0), service)
+    except OSError as exc:
+        service.close()
+        _say_it_failed("PiTrac Easy-Connect could not start.\n\n{}".format(exc))
+        return 1
+    print(
+        "Port {} is in use by something else; using {} instead.".format(
+            args.port, server.server_port
+        )
+    )
+    return _run(args, service, server)
+
+
+def _already_running(port: int) -> bool:
+    """Whether the thing holding the port is another copy of this program."""
+
+    import json as _json
+    import urllib.error
+    import urllib.request
+
+    try:
+        request = urllib.request.Request(
+            "http://127.0.0.1:{}/api/status".format(port),
+            headers={"X-PiTrac-App": "1"},
+        )
+        with urllib.request.urlopen(request, timeout=2) as response:
+            body = _json.loads(response.read().decode("utf-8"))
+    except (urllib.error.URLError, OSError, ValueError):
+        return False
+    # computerName is ours; a different program answering 200 on this port
+    # will not have it.
+    return "computerName" in body and "state" in body
+
+
+def _show(args, url: str) -> None:
+    """Put the interface in front of the user, however this build does that."""
+
+    if args.no_browser or args.hidden:
+        return
+    if args.window:
+        try:
+            from .window import native_available, open_in_browser, run_native
+
+            if native_available() and run_native(url):
+                return
+            open_in_browser(url)
+            return
+        except Exception:
+            pass
+    webbrowser.open(url)
+
+
+def _say_it_failed(message: str) -> None:
+    """Report a startup failure where a user without a console will see it."""
+
+    print(message)
+    try:
+        if sys.platform == "win32":
+            import ctypes
+
+            # 0x10 is MB_ICONERROR.
+            ctypes.windll.user32.MessageBoxW(None, message, "PiTrac Easy-Connect", 0x10)
+        elif sys.platform == "darwin":
+            import subprocess
+
+            subprocess.run(
+                ["osascript", "-e",
+                 'display alert "PiTrac Easy-Connect" message {}'.format(
+                     _applescript_string(message))],
+                check=False, timeout=30,
+            )
+    except Exception:
+        # A dialog that will not open must not become the failure the user
+        # sees instead of the one that actually happened.
+        pass
+
+
+def _applescript_string(text: str) -> str:
+    return '"{}"'.format(text.replace("\\", "\\\\").replace('"', '\\"').replace("\n", " "))
 
 
 def _wait_for_stop(server) -> None:
