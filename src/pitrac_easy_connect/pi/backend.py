@@ -169,6 +169,16 @@ class PiBackend:
 
         raise NotImplementedError
 
+    def all_wifi_profiles(self) -> List[str]:
+        """Every Wi-Fi profile on this machine, whoever created it.
+
+        Used to decide what to *join*. ``saved_profiles`` is the narrower list
+        of what Easy-Connect may *change*, and confusing the two is how a Pi
+        set up by netplan ends up with nothing to reconnect to.
+        """
+
+        raise NotImplementedError
+
     def known_ssids(self) -> List[str]:
         """Every network this Pi already has credentials for, whoever saved it.
 

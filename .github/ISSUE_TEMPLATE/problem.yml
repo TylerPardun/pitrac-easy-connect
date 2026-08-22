@@ -1,0 +1,47 @@
+name: Something is not working
+description: A bug, or behaviour that surprised you
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please do not report security problems here — see SECURITY.md.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what happened, and what you expected instead.
+    validations: {required: true}
+  - type: input
+    id: code
+    attributes:
+      label: Error code, if you saw one
+      description: They look like PT-NET-004, and appear in the app or on the setup page.
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: From Advanced → Details in the app.
+    validations: {required: true}
+  - type: dropdown
+    id: os
+    attributes:
+      label: Your computer
+      options: [macOS, Windows, Linux, "I only used a phone"]
+    validations: {required: true}
+  - type: dropdown
+    id: network
+    attributes:
+      label: How the enclosure was connected
+      options:
+        - On my home Wi-Fi
+        - On its own PiTrac- setup network
+        - Wired ethernet
+        - It would not connect at all
+    validations: {required: true}
+  - type: checkboxes
+    id: powercut
+    attributes:
+      label: Did this follow a power cut or a restart?
+      options:
+        - label: Yes, the enclosure was powered off and back on

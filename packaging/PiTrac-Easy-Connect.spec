@@ -15,6 +15,17 @@ MACOS = sys.platform == "darwin"
 # SPECPATH is injected by PyInstaller and is the directory holding this file.
 # Paths are derived from it so the build works from any working directory.
 ROOT = os.path.dirname(SPECPATH)
+
+# The package is the one place a version is written. build-app.sh passes it in;
+# this reads it directly when the spec is run on its own.
+def _version():
+    if os.environ.get("PITRAC_VERSION"):
+        return os.environ["PITRAC_VERSION"]
+    import re as _re
+    source = open(os.path.join(ROOT, "src", "pitrac_easy_connect", "__init__.py")).read()
+    return _re.search(r'__version__ = "([^"]+)"', source).group(1)
+
+VERSION = _version()
 ICON = os.path.join(SPECPATH, "icon", "PiTrac.ico" if WINDOWS else "PiTrac.icns")
 
 # pywebview draws the window with the platform's own browser engine — WKWebView
@@ -31,7 +42,13 @@ analysis = Analysis(
     [os.path.join(SPECPATH, "app_entry.py")],
     pathex=[os.path.join(ROOT, "src")],
     binaries=[],
-    datas=[],
+    # The native builds bundle third-party code, so they carry its licences.
+    # NOTICE.md says so; this is what makes that true.
+    datas=[
+        (os.path.join(ROOT, "LICENSE"), "."),
+        (os.path.join(ROOT, "NOTICE.md"), "."),
+    ] + ([(os.path.join(ROOT, "THIRD-PARTY-LICENCES.txt"), ".")]
+         if os.path.exists(os.path.join(ROOT, "THIRD-PARTY-LICENCES.txt")) else []),
     # PyInstaller cannot see these through the runtime lookups in the service,
     # so they are named explicitly.
     hiddenimports=[
@@ -72,7 +89,9 @@ analysis = Analysis(
         "cryptography", "OpenSSL",
         "bottle", "tornado", "jinja2", "markupsafe",
         "uvloop", "colorama",
-        "pdb", "doctest", "distutils", "lib2to3",
+        # distutils is NOT excluded: PyInstaller's own pre-safe-import hook
+        # raises if it has been, which broke every Windows build.
+        "pdb", "doctest", "lib2to3",
     ],
     noarchive=False,
 )
@@ -108,8 +127,8 @@ if MACOS:
         info_plist={
             "CFBundleName": "PiTrac Easy-Connect",
             "CFBundleDisplayName": "PiTrac Easy-Connect",
-            "CFBundleShortVersionString": os.environ.get("PITRAC_VERSION", "0.2.0"),
-            "CFBundleVersion": os.environ.get("PITRAC_VERSION", "0.2.0"),
+            "CFBundleShortVersionString": VERSION,
+            "CFBundleVersion": VERSION,
             "NSHighResolutionCapable": True,
             # It talks to the enclosure over plain HTTP on the local network,
             # which macOS blocks by default without this.

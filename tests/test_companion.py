@@ -43,7 +43,7 @@ class Rig:
             relay_ports={Simulator.GSPRO: 0, Simulator.E6: 0},
             link_port=0,
             discovery_port=0,
-            manage_hostname=False,
+            manage_hostname=False, boot_grace=0.0,
             models_dir=models,
         )
         self.pi.start()

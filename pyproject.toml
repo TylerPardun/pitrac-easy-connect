@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pitrac-easy-connect"
-version = "0.2.0"
+dynamic = ["version"]
 description = "Wi-Fi setup, pairing, shot relay and a practice range for the PiTrac golf launch monitor"
 readme = "README.md"
 requires-python = ">=3.9"
@@ -27,3 +27,8 @@ where = ["src"]
 [tool.pytest.ini_options]
 pythonpath = ["src"]
 testpaths = ["tests"]
+
+[tool.setuptools.dynamic]
+# One authoritative version, in the package itself. Repeating it here is how
+# the release, the app and the packaging drift apart.
+version = {attr = "pitrac_easy_connect.__version__"}

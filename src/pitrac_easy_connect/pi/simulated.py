@@ -143,6 +143,12 @@ class SimulatedPi(PiBackend):
         with self._lock:
             return sorted(self._profiles)
 
+    def all_wifi_profiles(self) -> List[str]:
+        with self._lock:
+            ours = [p for p in self._profiles if p != HOTSPOT_PROFILE]
+        # Stand in for netplan's, which a real Pi has and we did not create.
+        return sorted(ours) + ["netplan-wlan0-{}".format(s) for s in self._preexisting_ssids]
+
     def known_ssids(self) -> List[str]:
         with self._lock:
             return sorted(
@@ -185,6 +191,14 @@ class SimulatedPi(PiBackend):
         self._trip("activate")
         with self._lock:
             access_point = self._profiles.get(profile)
+        if access_point is None and profile.startswith("netplan-wlan0-"):
+            # A profile the Pi came with. Easy-Connect may join it but never
+            # change it, which is the whole point of keeping the two lists apart.
+            ssid = profile[len("netplan-wlan0-"):]
+            if ssid in self._preexisting_ssids:
+                found = self._find(ssid)
+                if found is not None:
+                    return self.connect(ssid, found.password)
         if access_point is None:
             raise BackendError("no such profile")
         return self.connect(access_point.ssid, access_point.password)

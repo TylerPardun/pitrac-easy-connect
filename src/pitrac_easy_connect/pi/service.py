@@ -82,6 +82,9 @@ class PiService:
         version: str = __version__,
         manage_hostname: bool = True,
         models_dir=None,
+        #: How long boot waits for the radio before deciding the saved
+        #: network is gone. Tests pass 0 so they do not wait for real.
+        boot_grace: Optional[float] = None,
     ):
         self.backend = backend
         self.paths = paths or ServicePaths()
@@ -101,7 +104,8 @@ class PiService:
         self.pitrac = pitrac or PitracInstallation()
         self.relay = ShotRelay(ports=dict(relay_ports or DEFAULT_RELAY_PORTS))
         self.provisioner = WifiProvisioner(
-            backend, self.paths.network, self.identity.setup_ssid, self.identity.setup_password
+            backend, self.paths.network, self.identity.setup_ssid,
+            self.identity.setup_password, boot_grace=boot_grace,
         )
         self.link_server = CompanionLinkServer(
             self.pairings,

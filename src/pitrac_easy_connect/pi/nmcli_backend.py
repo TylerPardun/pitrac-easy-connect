@@ -259,6 +259,15 @@ class NmcliBackend(PiBackend):
             if name.startswith(PROFILE_PREFIX) and name != HOTSPOT_PROFILE
         ]
 
+    def all_wifi_profiles(self) -> List[str]:
+        result = self._nmcli("-t", "-f", "NAME,TYPE", "con", "show", timeout=15)
+        found: List[str] = []
+        for line in result.stdout.splitlines():
+            fields = split_terse(line)
+            if len(fields) >= 2 and fields[1] == "802-11-wireless" and fields[0] != HOTSPOT_PROFILE:
+                found.append(fields[0])
+        return found
+
     def known_ssids(self) -> List[str]:
         result = self._nmcli("-t", "-f", "NAME,TYPE", "con", "show", timeout=15)
         found: List[str] = []

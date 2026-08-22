@@ -115,6 +115,31 @@ if [ "$SET_HOSTNAME" = "yes" ]; then
 else
     say "Leaving the hostname as '$(hostname)'. Use --set-hostname to change it."
 fi
+# --- Make the logs survive a reboot ---------------------------------------
+#
+# Raspberry Pi OS keeps the journal in a tmpfs, so every reboot erases it. That
+# is fine until an enclosure fails to come back and the only question worth
+# asking is what happened before it went down -- at which point there is
+# nothing to read. A capped persistent journal costs a little card space and
+# makes that question answerable.
+#
+# Done before the service starts, so the very first boot is recorded.
+step "Making the system journal survive a reboot"
+mkdir -p /var/log/journal
+systemd-tmpfiles --create --prefix /var/log/journal >/dev/null 2>&1 || true
+install -d -m 0755 /etc/systemd/journald.conf.d
+cat > /etc/systemd/journald.conf.d/pitrac-easy-connect.conf <<'JOURNAL'
+# Keep enough history to explain a failure to come back after a power cut, and
+# cap it so a microSD card is neither worn out nor filled by logging.
+[Journal]
+Storage=persistent
+SystemMaxUse=64M
+SystemMaxFileSize=8M
+MaxRetentionSec=1month
+JOURNAL
+systemctl restart systemd-journald >/dev/null 2>&1 || true
+say "Logs will survive a reboot, capped at 64 MB"
+
 sed -e "s|__PITRAC_CONFIG_DIR__|$PITRAC_CONFIG_DIR|g" \
     -e "s|__HOSTNAME_FLAG__|$HOSTNAME_FLAG|g" \
     "$HERE/pitrac-easy-connect.service" > "$UNIT"

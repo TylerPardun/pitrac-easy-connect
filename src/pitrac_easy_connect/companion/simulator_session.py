@@ -37,6 +37,10 @@ class SimulatorSession:
         self.host = host
         self.port = port if port is not None else simulator.default_port
         self.on_message = on_message
+        #: Counts inbound messages. A shot is confirmed delivered the moment
+        #: the simulator says anything back, which is far quicker than waiting
+        #: out a timeout to prove the connection is still there.
+        self.messages_seen = 0
         self._lock = threading.RLock()
         self._sock: Optional[socket.socket] = None
         self._reader: Optional[threading.Thread] = None
@@ -150,6 +154,7 @@ class SimulatorSession:
         for event, slot in waiters:
             slot.append(message)
             event.set()
+        self.messages_seen += 1
         if self.on_message is not None:
             try:
                 self.on_message(message)

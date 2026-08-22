@@ -102,8 +102,28 @@ def test_the_operator_guide_names_the_real_config_keys():
         assert port_key.rsplit(".", 1)[-1] in text
 
 
-def test_the_docs_quote_the_current_version():
-    assert __version__ in read(README)
+def test_nothing_public_quotes_a_version_that_is_not_the_current_one():
+    """The README deliberately names no version -- it is written for someone
+    choosing whether to use this, not tracking releases. What matters is that
+    anywhere a version *is* printed, it is this one.
+    """
+
+    import re as _re
+
+    root = Path(__file__).resolve().parent.parent
+    stale = []
+    for path in (README, root / "site" / "index.html", root / "NOTICE.md"):
+        if not path.exists():
+            continue
+        text = read(path)
+        # Only versions attached to *our* name. A licence list full of other
+        # projects' versions is not this test's business.
+        ours = _re.findall(r"(?:PiTrac[- ]Easy[- ]Connect[- ])(\d+\.\d+\.\d+)", text)
+        ours += _re.findall(r"\*\*Version:\*\*\s*(\d+\.\d+\.\d+)", text)
+        for quoted in set(ours):
+            if quoted != __version__:
+                stale.append("{}: {}".format(path.name, quoted))
+    assert not stale, "these name a version that is not {}: {}".format(__version__, stale)
 
 
 def test_the_illustrated_guide_is_self_contained():

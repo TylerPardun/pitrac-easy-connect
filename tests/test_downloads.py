@@ -27,8 +27,7 @@ def served(tmp_path):
         paths=ServicePaths(tmp_path / "state"),
         pitrac=PitracInstallation(tmp_path / "s.json", tmp_path / "c.json"),
         relay_ports={Simulator.GSPRO: 0, Simulator.E6: 0},
-        link_port=0, discovery_port=0, manage_hostname=False,
-    )
+        link_port=0, discovery_port=0, manage_hostname=False, boot_grace=0.0)
     service.start()
     directory = service.paths.downloads
     directory.mkdir(parents=True, exist_ok=True)

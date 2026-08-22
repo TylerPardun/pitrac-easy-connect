@@ -2,8 +2,16 @@
 Description=PiTrac Easy Connect
 Documentation=https://github.com/PiTracLM/PiTrac
 # NetworkManager is what this service drives, so it must be up first.
-After=network.target NetworkManager.service avahi-daemon.service
-Wants=NetworkManager.service
+# network.target only means the stack is up, not that a radio has associated.
+# network-online.target is the one that waits, which matters because deciding
+# too early that the saved network is gone is how an enclosure ends up on its
+# own hotspot after a power cut, unreachable on the house network.
+After=network.target network-online.target NetworkManager.service avahi-daemon.service
+Wants=NetworkManager.service network-online.target
+
+# The backoff the [Service] section refers to. These are only honoured here.
+StartLimitIntervalSec=300
+StartLimitBurst=10
 
 [Service]
 Type=simple
@@ -32,11 +40,11 @@ LockPersonality=yes
 SystemCallArchitectures=native
 
 # Restart on failure, but back off rather than spinning, so a persistent crash
-# does not keep the radio flapping.
+# does not keep the radio flapping. The rate limit itself lives in [Unit];
+# systemd ignores StartLimit* here, so having them in this section meant the
+# service would have restarted forever every five seconds.
 Restart=always
 RestartSec=5
-StartLimitIntervalSec=300
-StartLimitBurst=10
 
 # Bounded logging. This runs on a microSD card that must survive years of it.
 StandardOutput=journal

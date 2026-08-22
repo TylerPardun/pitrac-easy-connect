@@ -29,6 +29,17 @@ SAFE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,80}$")
 
 MAX_FILE_BYTES = 200 * 1024 * 1024
 
+def _looks_like_the_mac_app(name: str) -> bool:
+    """A .zip from a release is the macOS app; a .zip of source is not.
+
+    Labelling every zip "Source" sent Mac owners straight past the only build
+    that suits them.
+    """
+
+    lowered = name.lower()
+    return lowered.endswith(".zip") and "mac" in lowered
+
+
 DESCRIPTIONS = {
     ".exe": ("Windows", "The usual choice. Download it and run it."),
     ".msi": ("Windows installer", "Download it and run it."),
@@ -36,7 +47,9 @@ DESCRIPTIONS = {
         "Any computer with Python",
         "One file, no installation. Needs Python 3.9 or newer already installed.",
     ),
-    ".zip": ("Source", "For Mac, Linux, or building it yourself."),
+    # A .zip from a release is the macOS application, not source. Labelling
+    # every zip "Source" sent Mac owners past the only build that suits them.
+    ".zip": ("Source", "For Linux, or building it yourself."),
 }
 
 
@@ -48,10 +61,14 @@ class Download:
 
     @property
     def label(self) -> str:
+        if _looks_like_the_mac_app(self.name):
+            return "macOS"
         return DESCRIPTIONS.get(self.suffix, ("File", ""))[0]
 
     @property
     def note(self) -> str:
+        if _looks_like_the_mac_app(self.name):
+            return "Unzip it and drag it to Applications."
         return DESCRIPTIONS.get(self.suffix, ("File", ""))[1]
 
     @property

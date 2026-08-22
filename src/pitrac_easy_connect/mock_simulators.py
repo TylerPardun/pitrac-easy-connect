@@ -19,7 +19,30 @@ class MockTCPServer(socketserver.ThreadingTCPServer):
         self.quiet = quiet
         self.received: List[Dict[str, Any]] = []
         self.received_lock = threading.Lock()
+        #: Live client sockets, so a test can make the simulator vanish the way
+        #: a crashed process does rather than merely stop listening.
+        self.clients: List[Any] = []
         super().__init__(address, MockHandler)
+
+    def process_request(self, request, client_address):
+        self.clients.append(request)
+        return super().process_request(request, client_address)
+
+    def drop_clients(self) -> None:
+        """Close every established connection, as a crash would."""
+
+        import socket as _socket
+
+        for client in list(self.clients):
+            try:
+                # A reset rather than a polite close, which is what a process
+                # disappearing actually looks like on the wire.
+                client.setsockopt(_socket.SOL_SOCKET, _socket.SO_LINGER,
+                                  __import__("struct").pack("ii", 1, 0))
+                client.close()
+            except OSError:
+                pass
+        self.clients = []
 
     def record(self, message: Dict[str, Any]) -> None:
         with self.received_lock:
@@ -100,7 +123,11 @@ class RunningMock:
         self.thread.start()
         return self
 
+    def drop_clients(self) -> None:
+        self.server.drop_clients()
+
     def stop(self) -> None:
+        self.server.drop_clients()
         self.server.shutdown()
         self.server.server_close()
         if self.thread:

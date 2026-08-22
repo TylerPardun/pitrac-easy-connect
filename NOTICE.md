@@ -1,59 +1,109 @@
-# Licences and notices
+# Licenses and notices
 
 ## PiTrac Easy-Connect
 
-Licensed under the [MIT License](LICENSE).
+PiTrac Easy-Connect is licensed under the [MIT License](LICENSE).
 
-**Why MIT.** Easy-Connect is a separate program from PiTrac. It runs in its own
-process and communicates over TCP sockets and a JSON settings file, so it is not
-a derivative work of PiTrac and can carry its own licence.
+Easy-Connect is designed and distributed as a separate program from PiTrac. It
+runs in its own process, includes no PiTrac source code, and communicates with
+PiTrac through TCP sockets and a JSON settings file. MIT is compatible with GNU
+GPL version 2 if code is later contributed upstream or the programs are combined
+into a larger GPL-covered work.
 
-MIT was chosen over Apache-2.0 for one specific reason: **PiTrac is GPL-2.0-only,
-and Apache-2.0 is not compatible with GPL-2.0.** If any part of Easy-Connect is
-ever contributed upstream into PiTrac, MIT allows it and Apache-2.0 would not.
-MIT keeps that door open at the cost of an explicit patent grant, which matters
-little for a project of this shape.
+MIT was chosen instead of Apache-2.0 because Apache-2.0 is not compatible with
+GPL-2.0-only. MIT preserves the option to contribute Easy-Connect code to
+PiTrac without adding that incompatibility.
 
-This is not legal advice. Anyone selling hardware with GPL software installed
-should get a short professional opinion.
+## What each build contains
 
-## Dependencies
+### Raspberry Pi service, portable app, and source
 
-Easy-Connect has **no third-party dependencies**. It uses only the Python
-standard library, which is why installing it on a Raspberry Pi needs no pip
-packages at all.
+The Raspberry Pi service and source distribution use only the Python standard
+library and install no third-party Python packages. The portable `.pyz` contains
+only Easy-Connect source and runs with the user's existing Python installation.
 
-The Companion window uses whichever Chromium-based browser is already on the
-computer to draw itself; it does not bundle or redistribute one.
+### Native macOS and Windows apps
 
-Development and packaging use `pytest` and `PyInstaller`, neither of which is
-distributed as part of Easy-Connect.
+The native apps bundle Easy-Connect, a CPython interpreter, the PyInstaller
+bootloader, pywebview, and the platform-specific libraries needed to create the
+window. Each component remains licensed by its respective author.
+
+| Component | License | Purpose |
+|---|---|---|
+| [CPython](https://www.python.org/) | PSF-2.0 | Bundled Python interpreter and standard library |
+| [PyInstaller](https://pyinstaller.org/) bootloader | GPL-2.0-or-later with the PyInstaller bootloader exception | Starts the packaged application; the exception permits distributing the application under MIT |
+| [pywebview](https://pywebview.flowrl.com/) | BSD-3-Clause | Creates the native application window |
+| [PyObjC](https://pyobjc.readthedocs.io/) (macOS) | MIT | Connects pywebview to macOS frameworks and WKWebView |
+| [pythonnet](https://pythonnet.github.io/) and [clr-loader](https://github.com/pythonnet/clr-loader) (Windows) | MIT | Connect pywebview to .NET and WebView2 |
+| [proxy-tools](https://pypi.org/project/proxy-tools/) | MIT | Required by pywebview |
+| [typing-extensions](https://pypi.org/project/typing-extensions/) | PSF-2.0 | Required by pywebview |
+| OpenSSL (`libssl` and `libcrypto`) | Apache-2.0 | HTTPS support used by the bundled Python runtime |
+| zlib | Zlib | Compression support used by the bundled Python runtime |
+| bzip2 | bzip2-1.0.6 | Compression support used by the bundled Python runtime |
+| xz (`liblzma`) | 0BSD | Compression support used by the bundled Python runtime |
+| Expat (`libexpat`) | MIT | XML support used by the bundled Python runtime |
+| libffi | MIT | Foreign-function support used by the bundled Python runtime |
+
+The browser engines are not bundled. The app uses WKWebView on macOS and
+WebView2 on Windows, both supplied by the operating system.
+
+`packaging/bundled-licences.py` checks PyInstaller's build manifest against this
+list. The complete license texts still need to be included with each native
+release artifact; this summary does not replace them.
+
+### Build and test tools
+
+`pytest` and Pillow are used for testing and icon generation and are not bundled
+with the application. PyInstaller itself is a build tool; only its bootloader is
+included in the native apps under the exception described above.
 
 ## PiTrac
 
-Easy-Connect requires [PiTrac](https://github.com/PiTracLM/PiTrac), which is
-licensed under the **GNU General Public License, version 2**, and carries its own
-third-party notices (ED_Lib, rpicam-apps, shedskin, and its detection model).
+Easy-Connect requires [PiTrac](https://github.com/PiTracLM/PiTrac). PiTrac's
+source code is licensed under GNU GPL version 2 and carries additional notices
+for its third-party components.
 
-Easy-Connect does not include, modify, or link against PiTrac. It is installed
-separately, from the PiTrac project.
+Easy-Connect does not include or link against PiTrac code. It is installed as a
+separate service and exchanges configuration and shot data with PiTrac. This
+separation is intended to keep the two programs independently licensed, but the
+legal classification of a combined product depends on how it is distributed
+and should be reviewed before commercial sale.
 
-**If you distribute PiTrac itself** — for example by selling an enclosure with a
-memory card that has PiTrac installed — the GPL applies to that distribution and
-you must:
+Anyone distributing PiTrac in executable form, including on a memory card in an
+assembled enclosure, must comply with PiTrac's GPL and third-party licenses. At
+a minimum, the distributor should:
 
-- keep PiTrac's copyright notices and its licence text,
-- record the exact PiTrac version or commit you shipped,
-- give recipients the corresponding source, or a written offer valid for three
-  years, and
-- carry PiTrac's own third-party notices.
+- preserve PiTrac's copyright notices and complete GPL text;
+- record the exact PiTrac version or commit shipped;
+- provide the complete corresponding source, including distributed changes and
+  the scripts used to build and install it, or provide a qualifying written
+  offer valid for at least three years; and
+- preserve PiTrac's third-party license notices.
 
-Shipping Easy-Connect and PiTrac together on one card or in one download is
-"mere aggregation", which GPL-2.0 permits. Combining them into a single program
-would not be, so Easy-Connect is deliberately kept as a separate service.
+### Proprietary trained models
 
-## Fonts
+PiTrac's trained model files are not covered by the GPL. They are governed by
+PiTracLM's separate
+[Proprietary Model License Agreement](https://github.com/PiTracLM/PiTrac/blob/main/LICENSE.MODEL.md),
+which currently prohibits redistribution, transfer, and commercial use without
+PiTracLM's prior written permission.
 
-The illustrated setup guide references Bricolage Grotesque, Source Serif 4, and
-JetBrains Mono from Google Fonts, all under the SIL Open Font License. They are
-linked, not redistributed, and the guide falls back to system fonts without them.
+Downloading the models directly for an owner after acceptance avoids bundling
+them with Easy-Connect, but it does not by itself grant permission to use them
+in a commercial product. Do not distribute working commercial units with the
+models installed, or rely on first-run downloading as a commercial workaround,
+without a written agreement from PiTracLM.
+
+## Web fonts
+
+The project website links to Instrument Serif, IBM Plex Sans, and IBM Plex Mono
+through Google Fonts. The font files are not stored in this repository or
+bundled with the application. They are available under the SIL Open Font
+License through their respective authors.
+
+## Commercial distribution
+
+This notice is an engineering record, not legal advice. Before selling hardware
+with PiTrac or Easy-Connect installed, have an attorney review the final device
+image, corresponding-source process, third-party notices, and the written
+commercial agreement with PiTracLM.

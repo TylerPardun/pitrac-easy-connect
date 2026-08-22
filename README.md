@@ -7,7 +7,7 @@ PiTrac Easy-Connect makes a PiTrac launch monitor easier to set up and use. It i
 A five-step guide walks you through the first setup. If you move the enclosure to another home, you only need to choose the new Wi-Fi network. You do not need to reconfigure PiTrac.
 
 - **Download:** <https://tylerpardun.github.io/pitrac-easy-connect/>
-- **Version:** 0.2.0
+- **Version:** 0.3.0
 - **License:** [MIT](LICENSE)
 
 ![The practice range](media/range.png)
@@ -67,7 +67,8 @@ The app finds the enclosure automatically, limits access to computers you have a
 
 PiTrac itself must already be installed and working — see
 [PiTracLM/PiTrac](https://github.com/PiTracLM/PiTrac). If you are starting with
-a blank memory card, follow the [new Pi setup guide](docs/new-pi-setup.md) first.
+a blank memory card, install PiTrac first by following
+[PiTracLM's own instructions](https://github.com/PiTracLM/PiTrac).
 It covers the entire process, from flashing the card to running the launch
 monitor.
 
@@ -96,9 +97,9 @@ Download the build for your computer from
 
 | Platform | File |
 |---|---|
-| macOS 11+, Apple silicon or Intel | `PiTrac-Easy-Connect-macos.zip` |
-| Windows 10 and 11 | `PiTrac.Easy-Connect.exe` |
-| Linux, or any OS with Python 3.9+ | `PiTrac-Easy-Connect-0.2.0.pyz` |
+| macOS 11+, Apple silicon | `PiTrac-Easy-Connect-macos.zip` |
+| Windows 11 | `PiTrac-Easy-Connect-windows.zip` |
+| Linux, or any OS with Python 3.9+ | `PiTrac-Easy-Connect-*.pyz` |
 
 Neither native build is code signed yet, so both operating systems warn the
 first time:
@@ -128,8 +129,8 @@ cd pitrac-easy-connect
 
 The build is written to `dist/` as `PiTrac Easy-Connect.app` on macOS or
 `PiTrac Easy-Connect.exe` on Windows. If PyInstaller or pywebview is missing,
-the build script installs it automatically. Both are used only at build time,
-not at runtime.
+the build script installs it. PyInstaller is only used while building;
+pywebview is bundled into the app and draws its window, so it ships with it.
 
 | Flag | Description |
 |---|---|

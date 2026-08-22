@@ -118,12 +118,21 @@ class WifiProvisioner:
         setup_ssid: str,
         setup_password: str,
         clock: Callable[[], float] = time.monotonic,
+        sleep: Callable[[float], None] = time.sleep,
+        boot_grace: Optional[float] = None,
         confirmation_seconds: float = CONFIRMATION_SECONDS,
     ):
         self.backend = backend
         self.setup_ssid = setup_ssid
         self.setup_password = setup_password
         self.clock = clock
+        #: Injectable so tests do not actually wait for a radio.
+        self.sleep = sleep
+        #: How long boot waits for the radio. Injectable for the same
+        #: reason: a test suite must not spend real minutes on it.
+        self.boot_grace = (
+            self.ASSOCIATION_GRACE_SECONDS if boot_grace is None else float(boot_grace)
+        )
         self.confirmation_seconds = confirmation_seconds
         self._lock = threading.RLock()
         self._journal = ConfigStore(
@@ -168,13 +177,58 @@ class WifiProvisioner:
                     )
                 return self._fall_back_to_hotspot(self._last_error)
 
-            return self.ensure_online()
+            # At boot the radio has usually not associated yet, so wait
+            # before deciding. This is the difference between a slow start
+            # and an enclosure that strands itself on its own hotspot.
+            return self.ensure_online(grace=self.boot_grace)
 
-    def ensure_online(self) -> ProvisioningResult:
-        """Get onto a saved network, or put the setup hotspot up instead."""
+    #: How long to let NetworkManager finish associating before deciding the
+    #: saved network has failed. Starting after ``network.target`` only means
+    #: the stack is up, not that a radio has associated, and associating takes
+    #: several seconds from cold. Judging too early is how an enclosure that
+    #: was perfectly fine ends up on its own hotspot after a power cut.
+    ASSOCIATION_GRACE_SECONDS = 45.0
+    ASSOCIATION_POLL_SECONDS = 1.5
+    #: Shorter, because a person is watching this one happen.
+    LEAVING_DIRECT_MODE_GRACE_SECONDS = 15.0
+
+    def _wait_for_association(self, seconds: float) -> Optional[ActiveConnection]:
+        """Poll until the radio associates, the time runs out, or we give up.
+
+        Bounded by a count as well as by the clock. A loop at boot whose only
+        exit is a deadline is a loop that never ends if the clock does not move
+        the way it is expected to -- a stepped clock, or an injected one that
+        the sleep does not advance -- and hanging here means the enclosure
+        never finishes starting.
+        """
+
+        deadline = self.clock() + seconds
+        polls = max(1, int(seconds / self.ASSOCIATION_POLL_SECONDS) + 2)
+        for _attempt in range(polls):
+            current = self.backend.active_connection()
+            if current and not current.is_hotspot:
+                return current
+            if self.clock() >= deadline:
+                return None
+            self.sleep(self.ASSOCIATION_POLL_SECONDS)
+        return None
+
+    def ensure_online(self, grace: float = 0.0) -> ProvisioningResult:
+        """Get onto a saved network, or put the setup hotspot up instead.
+
+        ``grace`` is how long to let the radio associate before concluding the
+        network is gone. It defaults to none: only boot has a reason to wait,
+        and everywhere else there is a person watching a spinner.
+        """
 
         with self._lock:
             current = self.backend.active_connection()
+            if grace > 0 and (current is None or current.is_hotspot):
+                # Give the radio time before concluding anything. This is the
+                # difference between a slow boot and a lost network.
+                waited = self._wait_for_association(grace)
+                if waited is not None:
+                    current = waited
             if current and not current.is_hotspot:
                 self.mode = NetworkMode.RESIDENCE
                 self._journal.update({"lastGood": current.profile})
@@ -199,13 +253,30 @@ class WifiProvisioner:
             return self._fall_back_to_hotspot(None)
 
     def _profiles_worth_trying(self) -> List[str]:
-        saved = self.backend.saved_profiles()
+        """Every Wi-Fi profile this Pi has, not only the ones we created.
+
+        ``saved_profiles`` deliberately stops at Easy-Connect's own, because
+        those are the only ones it may modify or delete. Deciding what to
+        *join* is a different question, and answering it with the narrow list
+        meant a Pi whose network was set up by netplan -- which is every Pi
+        that had Wi-Fi before Easy-Connect was installed -- had nothing to try
+        and went straight to its own hotspot on every boot.
+
+        Activating a profile does not change it, so reaching past our own here
+        is safe in a way that deleting one would not be.
+        """
+
+        try:
+            profiles = list(self.backend.all_wifi_profiles())
+        except Exception:
+            profiles = list(self.backend.saved_profiles())
+
         last_good = self._journal.get("lastGood")
-        if last_good in saved:
+        if last_good in profiles:
             # The one that worked most recently is the most likely to work now.
-            saved.remove(last_good)
-            saved.insert(0, last_good)
-        return saved
+            profiles.remove(last_good)
+            profiles.insert(0, last_good)
+        return profiles
 
     # --- Reading the airwaves --------------------------------------------
 
@@ -523,7 +594,9 @@ class WifiProvisioner:
             if enabled:
                 return self._fall_back_to_hotspot(None)
             self.backend.stop_hotspot()
-            return self.ensure_online()
+            # Someone is waiting on this one, so wait for the radio but not
+            # for as long as a boot does.
+            return self.ensure_online(grace=self.LEAVING_DIRECT_MODE_GRACE_SECONDS)
 
     @property
     def direct_mode(self) -> bool:

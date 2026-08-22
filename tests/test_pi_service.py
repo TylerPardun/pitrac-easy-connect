@@ -33,7 +33,7 @@ def service(tmp_path):
         relay_ports={Simulator.GSPRO: 0, Simulator.E6: 0},
         link_port=0,
         discovery_port=0,
-        manage_hostname=False,
+        manage_hostname=False, boot_grace=0.0,
     )
     built.start()
     yield built
@@ -105,12 +105,12 @@ def test_the_identity_survives_a_restart(tmp_path):
     paths = ServicePaths(tmp_path / "state")
     ports = {Simulator.GSPRO: 0, Simulator.E6: 0}
 
-    first = PiService(backend, paths, pitrac, ports, 0, 0, manage_hostname=False)
+    first = PiService(backend, paths, pitrac, ports, 0, 0, manage_hostname=False, boot_grace=0.0)
     first.start()
     identity = first.identity
     first.stop()
 
-    second = PiService(backend, paths, pitrac, ports, 0, 0, manage_hostname=False)
+    second = PiService(backend, paths, pitrac, ports, 0, 0, manage_hostname=False, boot_grace=0.0)
     second.start()
     try:
         assert second.identity == identity
@@ -362,7 +362,7 @@ def test_the_service_survives_repeated_restarts(tmp_path):
     identity = None
     baseline = None
     for cycle in range(10):
-        built = PiService(backend, paths, pitrac, ports, 0, 0, manage_hostname=False)
+        built = PiService(backend, paths, pitrac, ports, 0, 0, manage_hostname=False, boot_grace=0.0)
         built.start()
         try:
             if identity is None:
@@ -386,14 +386,13 @@ def test_a_second_service_on_the_same_ports_reports_it_is_not_listening(tmp_path
     pitrac = PitracInstallation(tmp_path / "s.json", tmp_path / "c.json")
     first = PiService(
         backend, ServicePaths(tmp_path / "a"), pitrac,
-        {Simulator.GSPRO: 0, Simulator.E6: 0}, 0, 0, manage_hostname=False,
+        {Simulator.GSPRO: 0, Simulator.E6: 0}, 0, 0, manage_hostname=False, boot_grace=0.0,
     )
     first.start()
     try:
         taken = dict(first.relay.ports)
         second = PiService(
-            backend, ServicePaths(tmp_path / "b"), pitrac, taken, 0, 0, manage_hostname=False
-        )
+            backend, ServicePaths(tmp_path / "b"), pitrac, taken, 0, 0, manage_hostname=False, boot_grace=0.0)
         second.start()
         try:
             assert second.relay.listening is False
@@ -424,7 +423,7 @@ def test_a_read_only_state_directory_fails_loudly_not_silently(tmp_path):
                 ServicePaths(state),
                 PitracInstallation(tmp_path / "s.json", tmp_path / "c.json"),
                 {Simulator.GSPRO: 0, Simulator.E6: 0},
-                0, 0, manage_hostname=False,
+                0, 0, manage_hostname=False, boot_grace=0.0,
             )
     finally:
         os.chmod(state, 0o700)

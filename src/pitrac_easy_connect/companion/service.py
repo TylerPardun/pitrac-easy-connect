@@ -434,6 +434,13 @@ class CompanionService:
             if not self.connect_simulator():
                 with self._lock:
                     self._shots_lost += 1
+                # The golfer hit a ball and PiTrac measured it. That the
+                # simulator is not running is a fact about the simulator, not
+                # about the shot, so it is kept and drawn like any other. The
+                # other failure path already did this; this one did not, and a
+                # shot hit while GSPro was closed disappeared entirely.
+                self._record_shot(payload, simulator, delivered=False)
+                self._report_simulator_state()
                 return {
                     "accepted": False,
                     "code": SIM_NOT_RUNNING.code,
@@ -441,8 +448,18 @@ class CompanionService:
                 }
             session = self._session
 
+        seen_before = getattr(session, "messages_seen", 0)
         try:
             session.send(payload)
+            # A write to a socket whose peer has gone away succeeds: it lands
+            # in the kernel buffer and the reset arrives afterwards. Reporting
+            # on the write alone means the first shot after a simulator crash
+            # is announced as delivered when nobody received it, and the
+            # golfer is told their shot counted when it did not. Give the
+            # reader a moment to notice, and believe it if it does.
+            self._settle_delivery(session, seen_before)
+            if not session.connected:
+                raise OSError("the simulator closed the connection")
         except OSError as exc:
             with self._lock:
                 self._shots_lost += 1
@@ -485,6 +502,28 @@ class CompanionService:
             self.range.record(shot.ball, shot.club)
         except Exception:
             pass
+
+    #: How long to wait after writing a shot for the connection to prove it is
+    #: still there. Short: a golf shot is in the air for seconds, and half of
+    #: one is invisible next to being told a lie about it.
+    DELIVERY_CONFIRM_SECONDS = 0.5
+    DELIVERY_POLL_SECONDS = 0.05
+
+    def _settle_delivery(self, session, seen_before: int) -> None:
+        """Wait just long enough to know whether the shot really landed.
+
+        Exits the moment the simulator says anything back, which is the normal
+        case and takes milliseconds. Only a simulator that acknowledges nothing
+        costs the full wait, and only a dead one reaches the end of it.
+        """
+
+        deadline = time.monotonic() + self.DELIVERY_CONFIRM_SECONDS
+        while time.monotonic() < deadline:
+            if not session.connected:
+                return
+            if session.messages_seen != seen_before:
+                return
+            time.sleep(self.DELIVERY_POLL_SECONDS)
 
     def check_simulator(self) -> Dict[str, Any]:
         self.connect_simulator()

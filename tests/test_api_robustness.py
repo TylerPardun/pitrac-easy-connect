@@ -99,7 +99,7 @@ def portal(tmp_path):
         paths=ServicePaths(tmp_path / "state"),
         pitrac=pitrac,
         relay_ports={Simulator.GSPRO: 0, Simulator.E6: 0},
-        link_port=0, discovery_port=0, manage_hostname=False,
+        link_port=0, discovery_port=0, manage_hostname=False, boot_grace=0.0,
     )
     service.start()
     server = PortalServer(("127.0.0.1", 0), service)

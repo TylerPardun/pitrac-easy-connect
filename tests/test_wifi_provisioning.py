@@ -8,6 +8,7 @@ still be there.
 import pytest
 
 from pitrac_easy_connect.common.errors import EasyConnectError
+from pitrac_easy_connect.pi.backend import BackendError
 from pitrac_easy_connect.pi.simulated import SimulatedPi, home_network_pi
 from pitrac_easy_connect.pi.wifi import NetworkMode, WifiProvisioner
 
@@ -35,6 +36,10 @@ def build(backend=None, clock=None, tmp_path=None):
         SETUP_SSID,
         SETUP_PASSWORD,
         clock=clock,
+        # The fake clock only moves when something advances it, so the sleep
+        # has to be the thing that does. Otherwise any wait keyed to the clock
+        # never reaches its deadline.
+        sleep=clock.advance,
         confirmation_seconds=150.0,
     )
     return backend, provisioner, clock
@@ -109,8 +114,12 @@ def test_a_confirmed_network_is_rejoined_automatically_after_a_reboot(tmp_path):
     # Reboot: the radio comes up with nothing active, and a fresh provisioner
     # reads the same journal from disk.
     backend._active = None
+    clock = FakeClock()
     rebooted = WifiProvisioner(
-        backend, tmp_path / "network.json", SETUP_SSID, SETUP_PASSWORD, clock=FakeClock()
+        backend, tmp_path / "network.json", SETUP_SSID, SETUP_PASSWORD,
+        # A fake clock with a real sleep waits for real: the clock never
+        # reaches the deadline, so the sleep runs its full count.
+        clock=clock, sleep=clock.advance,
     )
     result = rebooted.recover_after_boot()
     assert result.ok is True
@@ -261,8 +270,12 @@ def test_power_lost_mid_change_is_undone_on_the_next_boot(tmp_path):
     provisioner.join("Ferndale-Guest", "guest")
     assert backend.active_connection().ssid == "Ferndale-Guest"
 
+    clock = FakeClock()
     rebooted = WifiProvisioner(
-        backend, tmp_path / "network.json", SETUP_SSID, SETUP_PASSWORD, clock=FakeClock()
+        backend, tmp_path / "network.json", SETUP_SSID, SETUP_PASSWORD,
+        # A fake clock with a real sleep waits for real: the clock never
+        # reaches the deadline, so the sleep runs its full count.
+        clock=clock, sleep=clock.advance,
     )
     result = rebooted.recover_after_boot()
     assert result.error["code"] == "PT-NET-010"
@@ -274,8 +287,12 @@ def test_power_lost_during_first_setup_leaves_the_hotspot_up(tmp_path):
     provisioner.start_setup_hotspot()
     provisioner.join("Ferndale", "GoodPassword1")
 
+    clock = FakeClock()
     rebooted = WifiProvisioner(
-        backend, tmp_path / "network.json", SETUP_SSID, SETUP_PASSWORD, clock=FakeClock()
+        backend, tmp_path / "network.json", SETUP_SSID, SETUP_PASSWORD,
+        # A fake clock with a real sleep waits for real: the clock never
+        # reaches the deadline, so the sleep runs its full count.
+        clock=clock, sleep=clock.advance,
     )
     result = rebooted.recover_after_boot()
     assert backend.active_connection().is_hotspot is True
@@ -320,8 +337,12 @@ def test_leaving_direct_mode_returns_to_the_saved_network(tmp_path):
 def test_direct_mode_choice_survives_a_reboot(tmp_path):
     backend, provisioner, _ = build(tmp_path=tmp_path)
     provisioner.set_direct_mode(True)
+    clock = FakeClock()
     rebooted = WifiProvisioner(
-        backend, tmp_path / "network.json", SETUP_SSID, SETUP_PASSWORD, clock=FakeClock()
+        backend, tmp_path / "network.json", SETUP_SSID, SETUP_PASSWORD,
+        # A fake clock with a real sleep waits for real: the clock never
+        # reaches the deadline, so the sleep runs its full count.
+        clock=clock, sleep=clock.advance,
     )
     assert rebooted.direct_mode is True
 
@@ -368,8 +389,12 @@ def test_a_network_abandoned_by_a_power_cut_is_not_left_saved(tmp_path):
     provisioner.start_setup_hotspot()
     provisioner.join("Ferndale", "GoodPassword1")
 
+    clock = FakeClock()
     rebooted = WifiProvisioner(
-        backend, tmp_path / "network.json", SETUP_SSID, SETUP_PASSWORD, clock=FakeClock()
+        backend, tmp_path / "network.json", SETUP_SSID, SETUP_PASSWORD,
+        # A fake clock with a real sleep waits for real: the clock never
+        # reaches the deadline, so the sleep runs its full count.
+        clock=clock, sleep=clock.advance,
     )
     rebooted.recover_after_boot()
 
@@ -432,3 +457,129 @@ def test_a_backend_that_cannot_list_known_networks_still_returns_the_networks(tm
     listed = provisioner.scan()
     assert listed, "the scan should survive a failure to list saved profiles"
     assert not any(network.known for network in listed)
+
+
+# --- Coming back after a power cut ----------------------------------------
+#
+# Reported twice from real hardware: power the enclosure off, power it on, and
+# it cannot be reached at all -- not by name, not by IP, not over SSH. These
+# reproduce it.
+
+
+def netplan_pi(tmp_path):
+    """A Pi whose Wi-Fi was set up by netplan, which is every Pi that had
+    Wi-Fi before Easy-Connect was installed."""
+
+    backend = home_network_pi(country="US")
+    backend._preexisting_ssids = ["Ferndale"]
+    backend.connect("Ferndale", "GoodPassword1")
+    backend._profiles.clear()      # netplan owns the profile, not us
+    # A clock the sleep drives, so the grace period costs no real time.
+    clock = FakeClock()
+    provisioner = WifiProvisioner(
+        backend, tmp_path / "network.json", SETUP_SSID, SETUP_PASSWORD,
+        clock=clock, sleep=clock.advance,
+    )
+    return backend, provisioner
+
+
+def test_a_reboot_does_not_strand_a_pi_on_its_own_hotspot(tmp_path):
+    """The reported failure.
+
+    Boot recovery only considered profiles Easy-Connect created. On a Pi whose
+    network came from netplan there were none, so it had nothing to try and put
+    up the setup hotspot -- taking itself off the house network, where it
+    could no longer be reached by name, by address, or over SSH.
+    """
+
+    backend, provisioner = netplan_pi(tmp_path)
+    backend._active = None                      # NetworkManager has not associated yet
+
+    result = provisioner.recover_after_boot()
+
+    active = backend.active_connection()
+    assert active is not None, "it should be on a network"
+    assert not active.is_hotspot, "it must not fall back to its own hotspot: " + result.message
+    assert active.ssid == "Ferndale"
+
+
+def test_boot_recovery_considers_networks_the_pi_already_knew(tmp_path):
+    _backend, provisioner = netplan_pi(tmp_path)
+    assert provisioner._profiles_worth_trying(), \
+        "a Pi that knows a network must have something to try"
+
+
+def test_a_slow_radio_is_waited_for_rather_than_given_up_on(tmp_path):
+    """Starting after network.target means the stack is up, not that a radio
+    has associated. Associating takes seconds from cold."""
+
+    backend, provisioner = netplan_pi(tmp_path)
+    backend._active = None
+
+    attempts = {"n": 0}
+    real = backend.active_connection
+
+    def slow():
+        attempts["n"] += 1
+        if attempts["n"] < 4:
+            return None          # still associating
+        backend.connect("Ferndale", "GoodPassword1")
+        return real()
+
+    backend.active_connection = slow
+    result = provisioner.ensure_online(grace=30.0)
+
+    assert "Ferndale" in result.message
+    assert attempts["n"] >= 4, "it should have waited rather than judged immediately"
+
+
+def test_the_hotspot_is_still_the_answer_when_the_network_is_truly_gone(tmp_path):
+    """The fallback must still work. A Pi moved to a new house has to come up
+    on its own signal so it can be set up again."""
+
+    backend, provisioner = netplan_pi(tmp_path)
+    backend._active = None
+    backend._preexisting_ssids = []          # the old network is not here any more
+    backend.access_points = [
+        ap for ap in backend.access_points if ap.ssid != "Ferndale"
+    ]
+
+    result = provisioner.ensure_online(grace=0.0)
+    active = backend.active_connection()
+    assert active is not None and active.is_hotspot, result.message
+
+
+def test_easy_connect_still_only_deletes_its_own_profiles(tmp_path):
+    """Joining netplan's profile is safe; removing one is not."""
+
+    backend, _provisioner = netplan_pi(tmp_path)
+    with pytest.raises(BackendError):
+        backend.forget_profile("netplan-wlan0-Ferndale")
+
+
+def test_waiting_for_the_radio_cannot_run_forever(tmp_path):
+    """The loop is bounded by a count, not only by a deadline.
+
+    A clock that does not advance the way the wait expects -- a stepped clock,
+    an injected one a test forgot to drive -- would otherwise leave the
+    enclosure never finishing its start.
+    """
+
+    backend = home_network_pi(country="US")
+    stuck = FakeClock()                      # never advances
+    provisioner = WifiProvisioner(
+        backend, tmp_path / "network.json", SETUP_SSID, SETUP_PASSWORD,
+        clock=stuck, sleep=lambda _seconds: None,
+    )
+    backend._active = None
+
+    polls = {"n": 0}
+    real = backend.active_connection
+
+    def counted():
+        polls["n"] += 1
+        return real()
+
+    backend.active_connection = counted
+    assert provisioner._wait_for_association(45.0) is None
+    assert polls["n"] < 60, "the wait must give up rather than spin"

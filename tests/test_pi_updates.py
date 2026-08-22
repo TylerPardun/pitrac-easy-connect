@@ -36,9 +36,14 @@ def build_archive(tmp_path, version="9.9.9", broken=False, empty=False):
         (staging / "something_else").mkdir()
         (staging / "something_else" / "x.py").write_text("# filler\n" * 20000)
     else:
+        # Rewrite whatever version the source currently carries, rather than a
+        # hardcoded one that goes stale the moment the project is released.
+        import re as _re
+
         init = staging / "pitrac_easy_connect" / "__init__.py"
-        init.write_text(init.read_text().replace('__version__ = "0.2.0"',
-                                                 '__version__ = "{}"'.format(version)))
+        init.write_text(_re.sub(r'__version__ = "[^"]+"',
+                                '__version__ = "{}"'.format(version),
+                                init.read_text()))
     (staging / "__main__.py").write_text("pass\n")
     out = tmp_path / "release-{}.pyz".format(version)
     zipapp.create_archive(staging, out)

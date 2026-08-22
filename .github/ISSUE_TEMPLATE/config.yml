@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Security problem
+    url: https://github.com/TylerPardun/pitrac-easy-connect/security/advisories/new
+    about: Please report vulnerabilities privately rather than in an issue.
+  - name: PiTrac itself
+    url: https://github.com/PiTracLM/PiTrac
+    about: Shots, calibration and the launch monitor are PiTrac's, not this project's.
