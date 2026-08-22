@@ -324,9 +324,14 @@ def test_the_two_beginner_guides_cover_the_same_steps():
     }
 
     # Wording differs a little between the two; only whole missing steps matter.
-    only_md = {s for s in in_md if not any(s[:14] in h for h in in_html)}
-    only_html = {s for s in in_html if not any(h[:14] in s for s in in_md for h in [s])}
+    # The reverse check used to rebind its own loop variable, so it compared
+    # each title against itself, always found a match, and was never asserted
+    # anyway -- a step could be added to the printable guide alone and nothing
+    # would say so.
+    only_md = {m for m in in_md if not any(m[:14] in h for h in in_html)}
+    only_html = {h for h in in_html if not any(h[:14] in m for m in in_md)}
     assert not only_md, "in the markdown guide but not the printable one: {}".format(only_md)
+    assert not only_html, "in the printable guide but not the markdown one: {}".format(only_html)
 
 
 def test_no_error_code_is_hardcoded_outside_the_catalogue():

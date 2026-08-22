@@ -5,10 +5,9 @@ pairing takes one click, but calibration means setting up a rig again. These
 tests are mostly about the ways a restore could quietly make things worse.
 """
 
+import json
 import pathlib
 from unittest import mock
-
-import json
 
 import pytest
 
@@ -523,3 +522,78 @@ def test_restoring_an_identity_updates_the_pairing_manager_immediately(tmp_path)
 
     assert pairings.device_id == "ZZZZ9999"
     assert pairings.device_id != original
+
+
+# --- What a failed restore has to put back ---------------------------------
+
+
+def test_a_rolled_back_identity_takes_the_pairing_manager_with_it(tmp_path):
+    """Otherwise pairings are checked against an enclosure that was abandoned.
+
+    Restoring the identity forward updates the pairing manager. Rolling it
+    back did not, so a restore that failed part way left the two disagreeing
+    about which enclosure this is until the service happened to restart.
+    """
+
+    identity, _settings, _pitrac, pairings, manager = build(tmp_path)
+    original = identity.identity.device_id
+    assert pairings.device_id == original
+
+    state = manager._remember(calibration=False, preferences=False,
+                              identity=True, pairings=False)
+
+    # Something else takes the enclosure's identity over, as a restore does.
+    other = dict(identity.identity.as_dict(include_secrets=True))
+    other["deviceId"] = "ZZZZ2345"
+    identity.restore(other)
+    pairings.device_id = "ZZZZ2345"
+
+    manager._put_back(state)
+
+    assert identity.identity.device_id == original
+    assert pairings.device_id == original, "the pairing manager was left on the abandoned id"
+
+
+def test_a_rolled_back_calibration_is_left_owned_by_pitrac(tmp_path, monkeypatch):
+    """Easy-Connect runs as root; PiTrac's dashboard does not.
+
+    A rollback that writes calibration as root leaves a file the dashboard can
+    no longer save. Ownership is only settable as root, so what is asserted is
+    that the rollback asks for it -- with the path it actually wrote.
+    """
+
+    _identity, _settings, pitrac, _pairings, manager = build(tmp_path)
+    pitrac.calibration_path.write_text('{"before": true}')
+
+    asked = []
+    monkeypatch.setattr(pitrac, "restore_owner_of", lambda path: asked.append(path))
+
+    state = manager._remember(calibration=True, preferences=False,
+                              identity=False, pairings=False)
+    pitrac.calibration_path.write_text('{"during": true}')
+    manager._put_back(state)
+
+    assert json.loads(pitrac.calibration_path.read_text()) == {"before": True}
+    assert pitrac.calibration_path in asked, "calibration was put back without its owner"
+
+
+def test_the_owner_is_restored_on_the_file_that_was_named(tmp_path, monkeypatch):
+    """restore_owner_of ignored its argument and always chowned the settings."""
+
+    import os
+
+    from pitrac_easy_connect.pi.pitrac import PitracInstallation
+
+    pitrac = PitracInstallation(tmp_path / "user_settings.json", tmp_path / "calibration.json")
+    pitrac.settings_path.write_text("{}")
+    pitrac.calibration_path.write_text("{}")
+
+    chowned = []
+    monkeypatch.setattr(os, "geteuid", lambda: 0, raising=False)
+    monkeypatch.setattr(os, "chown", lambda path, uid, gid: chowned.append(str(path)))
+    monkeypatch.setattr(pitrac, "_intended_owner", lambda: (1000, 1000))
+
+    pitrac.restore_owner_of(pitrac.calibration_path)
+
+    assert str(pitrac.calibration_path) in chowned
+    assert str(pitrac.settings_path) not in chowned, "it chowned a file it was not given"

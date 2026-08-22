@@ -362,7 +362,10 @@ class BackupManager:
                 if state["calibration"] is None:
                     self.pitrac.calibration_path.unlink(missing_ok=True)
                 else:
-                    atomic_write_bytes(self.pitrac.calibration_path, state["calibration"])
+                    # _write_raw, not a bare atomic write: rolling back must
+                    # leave the file owned by PiTrac, exactly as restoring it
+                    # would. Written as root, PiTrac could no longer save it.
+                    self._write_raw(self.pitrac.calibration_path, state["calibration"])
             except OSError as exc:
                 failures.append("calibration: {}".format(exc))
         if "settings" in state:
@@ -381,6 +384,10 @@ class BackupManager:
         if "identity" in state:
             try:
                 self.identity_store.restore(state["identity"])
+                # Restoring the identity forward updates this; rolling it back
+                # did not, so a failed restore left the pairing manager
+                # checking pairings against the identity that was abandoned.
+                self.pairings.device_id = self.identity_store.identity.device_id
             except Exception as exc:
                 failures.append("identity: {}".format(exc))
         if "pairings" in state:
@@ -527,30 +534,11 @@ class BackupManager:
 
     def _write_json(self, path: Path, value: Dict[str, Any]) -> None:
         payload = (json.dumps(value, indent=2, sort_keys=True) + "\n").encode("utf-8")
-        owner = self.pitrac._intended_owner() if hasattr(self.pitrac, "_intended_owner") else None
         try:
             atomic_write_bytes(path, payload)
         except OSError as exc:
             raise EasyConnectError(CFG_WRITE_FAILED, str(exc)) from exc
-        if owner is not None and hasattr(self.pitrac, "_restore_owner"):
-            saved = self.pitrac.settings_path
-            try:
-                self.pitrac.settings_path = path
-                self.pitrac._restore_owner(owner)
-            finally:
-                self.pitrac.settings_path = saved
-
-
-def _deep_merge(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any]:
-    """Merge ``override`` onto ``base``, keeping nested branches from both."""
-
-    result = dict(base)
-    for key, value in override.items():
-        if isinstance(value, dict) and isinstance(result.get(key), dict):
-            result[key] = _deep_merge(result[key], value)
-        else:
-            result[key] = value
-    return result
+        self.pitrac.restore_owner_of(path)
 
 
 def _dig(document: Dict[str, Any], dotted: str) -> Any:

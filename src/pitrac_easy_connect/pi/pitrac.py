@@ -314,21 +314,32 @@ class PitracInstallation:
 
         Easy-Connect runs as root; PiTrac's dashboard does not. A file written
         here as root would be one the dashboard could no longer save.
+
+        This used to ignore the path it was given and chown the settings file
+        instead, so calibration -- the other file a restore writes -- was left
+        owned by root, and the dashboard could no longer save it. Callers that
+        wanted a different file had to swap ``settings_path`` around the call
+        to work around it.
         """
 
-        self._restore_owner(self._intended_owner())
+        self._restore_owner(self._intended_owner(), path)
 
-    def _restore_owner(self, owner: Optional[Tuple[int, int]]) -> None:
-        if owner is None or os.geteuid() != 0:
+    def _restore_owner(
+        self, owner: Optional[Tuple[int, int]], *paths: "Path"
+    ) -> None:
+        """Chown the given files, or the settings file when none are named."""
+
+        if owner is None or not hasattr(os, "geteuid") or os.geteuid() != 0:
             return
-        for path in (
-            self.settings_path,
-            self.settings_path.with_name(self.settings_path.name + ".bak"),
-        ):
-            try:
-                os.chown(path, owner[0], owner[1])
-            except OSError:
-                continue
+        targets = paths or (self.settings_path,)
+        for target in targets:
+            # The atomic write leaves a .bak beside whatever it replaced, and
+            # that copy is PiTrac's too.
+            for path in (target, target.with_name(target.name + ".bak")):
+                try:
+                    os.chown(path, owner[0], owner[1])
+                except OSError:
+                    continue
 
     # --- Reporting --------------------------------------------------------
 
