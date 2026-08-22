@@ -18,6 +18,7 @@ import os
 import re
 import shutil
 import subprocess
+import tempfile
 import time
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence
@@ -310,11 +311,6 @@ class NmcliBackend(PiBackend):
         digest = hashlib.sha256(ssid.encode("utf-8")).hexdigest()[:8]
         return "{}{}-{}".format(PROFILE_PREFIX, slug, digest)
 
-    #: nmcli takes the passphrase as an argument, which means it is briefly
-    #: visible in the process list to anyone who can read /proc on the Pi --
-    #: which is root, and the one user account. Passing it by file or over
-    #: D-Bus would remove even that, and is worth doing; until then this says
-    #: plainly what the exposure is rather than implying there is none.
     def connect(
         self, ssid: str, password: Optional[str], hidden: bool = False, timeout: float = 45.0
     ) -> ActiveConnection:
@@ -337,8 +333,15 @@ class NmcliBackend(PiBackend):
         if hidden:
             add += ["802-11-wireless.hidden", "yes"]
         if password:
-            add += ["wifi-sec.key-mgmt", "wpa-psk", "wifi-sec.psk", password]
+            # Note what is *not* here: the passphrase. Everything nmcli is
+            # given lands in the process list, readable by anyone who can see
+            # /proc. The key management is declared now and the secret is put
+            # straight into the profile's own file below, which NetworkManager
+            # creates as root-only.
+            add += ["wifi-sec.key-mgmt", "wpa-psk"]
         self._nmcli(*add, timeout=20)
+        if password:
+            self._store_passphrase(profile, password)
 
         try:
             self._nmcli("con", "up", profile, timeout=timeout)
@@ -351,6 +354,73 @@ class NmcliBackend(PiBackend):
             self._nmcli("con", "down", profile, timeout=15, check=False)
             raise BackendError("no address was assigned")
         return connection
+
+    def _store_passphrase(self, profile: str, password: str) -> None:
+        """Put the passphrase in the profile rather than on a command line.
+
+        NetworkManager keeps each profile in a file owned by root and readable
+        only by root, which is a better place for a Wi-Fi passphrase than an
+        argument list every local account can read out of /proc.
+
+        Only ever this program's own profiles: the file is the one nmcli just
+        created for the profile named here. Netplan's profiles are never
+        touched.
+        """
+
+        path = self._profile_file(profile)
+        if path is None:
+            # No file to write. Connecting matters more than the exposure, so
+            # fall back to the way that always works.
+            self._nmcli("con", "modify", profile, "wifi-sec.psk", password, timeout=15)
+            return
+        try:
+            self._write_passphrase(path, password)
+            self._nmcli("con", "load", str(path), timeout=15)
+        except (OSError, BackendError):
+            self._nmcli("con", "modify", profile, "wifi-sec.psk", password, timeout=15)
+
+    def _profile_file(self, profile: str) -> Optional[Path]:
+        """Where NetworkManager keeps the named profile, if it says."""
+
+        try:
+            result = self._nmcli("-t", "-f", "NAME,FILENAME", "con", "show", timeout=15)
+        except BackendError:
+            return None
+        for line in (result.stdout or "").splitlines():
+            fields = split_terse(line)
+            if len(fields) >= 2 and fields[0] == profile and fields[1]:
+                path = Path(fields[1])
+                return path if path.exists() else None
+        return None
+
+    @staticmethod
+    def _write_passphrase(path: Path, password: str) -> None:
+        """Set ``psk`` in a keyfile, replacing any that is already there."""
+
+        text = path.read_text()
+        lines = [line for line in text.splitlines() if not line.startswith("psk=")]
+        if "[wifi-security]" in lines:
+            at = lines.index("[wifi-security]") + 1
+        else:
+            lines.append("[wifi-security]")
+            at = len(lines)
+        lines.insert(at, "psk={}".format(password))
+        payload = ("\n".join(lines) + "\n").encode("utf-8")
+
+        # Written beside the original so the replace is atomic, and never
+        # readable by anyone else even for the instant it exists.
+        handle, temporary = tempfile.mkstemp(dir=str(path.parent))
+        try:
+            os.write(handle, payload)
+            os.close(handle)
+            handle = None
+            os.chmod(temporary, 0o600)
+            os.replace(temporary, path)
+        finally:
+            if handle is not None:
+                os.close(handle)
+            if os.path.exists(temporary):
+                os.unlink(temporary)
 
     def _wait_for_address(self, profile: str, timeout: float) -> Optional[ActiveConnection]:
         deadline = time.monotonic() + min(timeout, 30.0)
