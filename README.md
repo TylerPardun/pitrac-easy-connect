@@ -7,7 +7,7 @@ PiTrac Easy-Connect makes a PiTrac launch monitor easier to set up and use. It i
 A five-step guide walks you through the first setup. If you move the enclosure to another home, you only need to choose the new Wi-Fi network. You do not need to reconfigure PiTrac.
 
 - **Download:** <https://tylerpardun.github.io/pitrac-easy-connect/>
-- **Version:** 0.4.0
+- **Version:** 0.4.1
 - **License:** [MIT](LICENSE)
 
 ![The practice range](media/range.png)
