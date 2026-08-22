@@ -42,7 +42,15 @@ def atomic_write_bytes(path: Path, payload: bytes, mode: int = 0o644) -> None:
     temporary = path.with_name(path.name + ".new")
     descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, mode)
     try:
-        os.write(descriptor, payload)
+        # os.write is allowed to write fewer bytes than it was given. A short
+        # write here would leave a truncated settings file that still passed
+        # every later check, so it loops until the payload is actually down.
+        written = 0
+        while written < len(payload):
+            wrote = os.write(descriptor, payload[written:])
+            if wrote <= 0:
+                raise OSError("the file could not be written in full")
+            written += wrote
         os.fsync(descriptor)
     finally:
         os.close(descriptor)

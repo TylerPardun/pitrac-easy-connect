@@ -60,7 +60,26 @@ class DeviceIdentity:
 
     @property
     def recovery_address(self) -> str:
-        return "http://{}.local".format(self.hostname)
+        """Where to reach this enclosure by name, as it actually answers.
+
+        The generated ``pitrac-<id>.local`` name is only real if the installer
+        was allowed to rename the machine, and by default it is not. Printing
+        it regardless put an address on the owner card that does not resolve --
+        on the very card somebody reads when nothing else is working. So the
+        machine's own hostname wins when there is one.
+        """
+
+        return "http://{}.local".format(self.effective_hostname)
+
+    @property
+    def effective_hostname(self) -> str:
+        import socket
+
+        try:
+            actual = socket.gethostname().split(".")[0].strip()
+        except OSError:
+            actual = ""
+        return actual.lower() if actual else self.hostname
 
     def as_dict(self, include_secrets: bool = False) -> Dict[str, Any]:
         value = {

@@ -182,6 +182,23 @@ def discover(
         sock.close()
 
 
+def _port(value: Any, default: int = 0) -> Optional[int]:
+    """A port from an advertisement, or None if it is not one.
+
+    Anything can send a UDP packet to the discovery port. A reply carrying a
+    port of "banana", or 99999, used to raise out of the whole search, so one
+    bad packet on the network hid every real enclosure.
+    """
+
+    if value is None:
+        return default
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return None
+    return number if 0 <= number <= 65535 else None
+
+
 def _parse(data: bytes, address: str) -> Optional[FoundEnclosure]:
     try:
         payload = json.loads(data.decode("utf-8"))
@@ -189,15 +206,22 @@ def _parse(data: bytes, address: str) -> Optional[FoundEnclosure]:
         return None
     if not isinstance(payload, dict) or not payload.get("deviceId"):
         return None
+    link_port = _port(payload.get("linkPort"))
+    portal_port = _port(payload.get("portalPort"), default=80)
+    if link_port is None or portal_port is None:
+        # A reply that cannot say where to reach it is not an enclosure we can
+        # do anything with. Discard it rather than let it stop the search.
+        return None
+
     return FoundEnclosure(
         device_id=str(payload.get("deviceId", "")),
         display_name=str(payload.get("displayName", "PiTrac")),
         address=address,
         reported_address=str(payload.get("address") or ""),
-        link_port=int(payload.get("linkPort") or 0),
+        link_port=link_port,
         version=str(payload.get("version", "")),
         state=str(payload.get("state", "")),
         hostname=str(payload.get("hostname", "")),
-        portal_port=int(payload.get("portalPort") or 80),
+        portal_port=portal_port,
         last_seen=time.time(),
     )

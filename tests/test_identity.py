@@ -62,3 +62,36 @@ def test_a_regenerated_setup_password_replaces_the_old_one(tmp_path):
     store = IdentityStore(tmp_path / "device.json")
     before = store.identity.setup_password
     assert store.regenerate_setup_password().setup_password != before
+
+
+def test_the_owner_card_gives_an_address_that_resolves(monkeypatch, tmp_path):
+    """The generated pitrac-<id>.local name only exists if the installer was
+    allowed to rename the machine, and by default it is not. Printing it
+    anyway put a dead address on the card somebody reads when nothing else
+    is working."""
+
+    import socket
+
+    store = IdentityStore(tmp_path / "device.json")
+    identity = store.identity
+
+    monkeypatch.setattr(socket, "gethostname", lambda: "Pitrac")
+    assert identity.recovery_address == "http://pitrac.local"
+    assert identity.device_id.lower() not in identity.recovery_address
+
+    # And when the machine really was renamed, that name is used.
+    monkeypatch.setattr(socket, "gethostname", lambda: identity.hostname)
+    assert identity.recovery_address == "http://{}.local".format(identity.hostname)
+
+
+def test_an_unreadable_hostname_falls_back_to_the_generated_one(monkeypatch, tmp_path):
+    import socket
+
+    store = IdentityStore(tmp_path / "device.json")
+    identity = store.identity
+
+    def explode():
+        raise OSError("no hostname")
+
+    monkeypatch.setattr(socket, "gethostname", explode)
+    assert identity.hostname in identity.recovery_address

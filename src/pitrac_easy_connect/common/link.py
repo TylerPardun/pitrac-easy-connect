@@ -69,6 +69,11 @@ class FrameStream:
         while True:
             newline = self._buffer.find(b"\n")
             if newline >= 0:
+                # Checked before decoding. The buffer limit below only catches
+                # a frame with no newline yet, so a single oversized line that
+                # arrived complete slipped past it.
+                if newline > MAX_FRAME_BYTES:
+                    raise LinkError("the other side sent an oversized frame")
                 line = bytes(self._buffer[:newline])
                 del self._buffer[: newline + 1]
                 if not line.strip():

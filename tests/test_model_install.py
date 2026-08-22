@@ -174,3 +174,41 @@ def test_the_models_are_only_ever_fetched_from_pitraclm():
     assert ml_models.SOURCE_BASE.startswith(
         "https://raw.githubusercontent.com/PiTracLM/PiTrac/"
     )
+
+
+def test_a_failure_partway_leaves_both_models_as_they_were(tmp_path, upstream):
+    """Deleting each model before moving its replacement meant a failure on
+    the second left the first replaced and the second missing -- exactly what
+    the module promises does not happen."""
+
+    import shutil as _shutil
+
+    target = tmp_path / "models"
+    ml_models.install_from_source(installed_dir=target, source_base=upstream)
+    before = {
+        str(p.relative_to(target)): p.read_bytes()
+        for p in sorted(target.rglob("*")) if p.is_file()
+    }
+
+    # Fail on the second move, after the first has already been replaced.
+    calls = {"n": 0}
+    real_move = _shutil.move
+
+    def fail_second(src, dst):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise OSError("the card filled up")
+        return real_move(src, dst)
+
+    _shutil.move = fail_second
+    try:
+        with pytest.raises(Exception):
+            ml_models.install_from_source(installed_dir=target, source_base=upstream)
+    finally:
+        _shutil.move = real_move
+
+    after = {
+        str(p.relative_to(target)): p.read_bytes()
+        for p in sorted(target.rglob("*")) if p.is_file()
+    }
+    assert after == before, "both models should be exactly as they were"

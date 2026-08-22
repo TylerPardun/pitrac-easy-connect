@@ -230,12 +230,33 @@ def install_from_source(
                     url, staged / name / filename, timeout
                 )
 
+        # Both models go in together or neither does. Deleting each existing
+        # model before moving its replacement meant a failure on the second
+        # left the first replaced and the second gone -- the opposite of what
+        # the docstring above promises.
         installed_dir.mkdir(parents=True, exist_ok=True)
-        for name in MODEL_NAMES:
-            target = installed_dir / name
-            if target.exists():
+        kept = {}
+        try:
+            for name in MODEL_NAMES:
+                target = installed_dir / name
+                if target.exists():
+                    aside = installed_dir / (name + ".previous")
+                    shutil.rmtree(aside, ignore_errors=True)
+                    os.replace(target, aside)
+                    kept[name] = aside
+                shutil.move(str(staged / name), str(target))
+        except Exception:
+            # Put back whatever was there before giving up.
+            for name, aside in kept.items():
+                target = installed_dir / name
                 shutil.rmtree(target, ignore_errors=True)
-            shutil.move(str(staged / name), str(target))
+                try:
+                    os.replace(aside, target)
+                except OSError:
+                    pass
+            raise
+        for aside in kept.values():
+            shutil.rmtree(aside, ignore_errors=True)
 
         _apply_ownership(installed_dir, owner)
         note("Installed")

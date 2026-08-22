@@ -48,17 +48,20 @@ if [ "$UNINSTALL" = yes ]; then
     step "Removing PiTrac Easy Connect"
     systemctl disable --now "$SERVICE" 2>/dev/null || true
     rm -f "$UNIT" /etc/avahi/services/pitrac-easy-connect.service
-    rm -rf "$APP_DIR"
-    systemctl daemon-reload
-    say "Removed. Settings were kept in $STATE_DIR."
-    say "PiTrac's simulator address still points at the relay; set it in PiTrac's"
-    say "dashboard if you want to send shots somewhere else."
-    exit 0
+    rm -rf "$APP_DIR" /usr/share/doc/pitrac-easy-connect
+
     # Ours to remove: a drop-in that changed logging for the whole system.
+    # This used to sit after the exit below, so it never ran.
     rm -f /etc/systemd/journald.conf.d/pitrac-easy-connect.conf
     rmdir /etc/systemd/journald.conf.d 2>/dev/null || true
     systemctl restart systemd-journald >/dev/null 2>&1 || true
-    say "Removed the journal size limits this installer added"
+
+    systemctl daemon-reload
+    say "Removed, including the journal size limits this installer had set."
+    say "Settings were kept in $STATE_DIR."
+    say "PiTrac's simulator address still points at the relay; set it in PiTrac's"
+    say "dashboard if you want to send shots somewhere else."
+    exit 0
 fi
 
 step "Checking this Raspberry Pi"
@@ -107,19 +110,35 @@ install -d -o "$PITRAC_USER" -g "$PITRAC_USER" "$PITRAC_CONFIG_DIR"
 
 step "Installing the application"
 [ -d "$HERE/../../src/pitrac_easy_connect" ] || die "Run this from the repository's packaging/pi directory."
-rm -rf "$APP_DIR"
-install -d -m 0755 "$APP_DIR"
-cp -r "$HERE/../../src/pitrac_easy_connect" "$APP_DIR/"
+
+# Build the new copy beside the running one, then swap. Deleting the working
+# installation before copying its replacement meant a power cut, a full card
+# or a bad copy during an upgrade left an enclosure with no software at all
+# and no way to reach it.
+STAGING="${APP_DIR}.incoming"
+rm -rf "$STAGING"
+install -d -m 0755 "$STAGING"
+cp -r "$HERE/../../src/pitrac_easy_connect" "$STAGING/"
 
 # The licence and notices belong on the machine, not only in the repository
 # somebody built this from.
 install -d -m 0755 /usr/share/doc/pitrac-easy-connect
 install -m 0644 "$HERE/../../LICENSE" /usr/share/doc/pitrac-easy-connect/ 2>/dev/null || true
 install -m 0644 "$HERE/../../NOTICE.md" /usr/share/doc/pitrac-easy-connect/ 2>/dev/null || true
-find "$APP_DIR" -name '__pycache__' -type d -prune -exec rm -rf {} + 2>/dev/null || true
+find "$STAGING" -name '__pycache__' -type d -prune -exec rm -rf {} + 2>/dev/null || true
 # Source copied from a Mac carries AppleDouble sidecars. Python ignores them,
 # but they clutter the install and confuse anyone reading it.
-find "$APP_DIR" -name '._*' -type f -delete 2>/dev/null || true
+find "$STAGING" -name '._*' -type f -delete 2>/dev/null || true
+
+# Check the staged copy actually runs before it becomes the installed one.
+python3 -c "import sys; sys.path.insert(0, '$STAGING'); import pitrac_easy_connect" \
+    || die "The copied software did not load. The existing installation was left alone."
+
+# Swap. The old copy is kept until the service has started.
+PREVIOUS="${APP_DIR}.previous"
+rm -rf "$PREVIOUS"
+[ -d "$APP_DIR" ] && mv "$APP_DIR" "$PREVIOUS"
+mv "$STAGING" "$APP_DIR"
 say "Installed to $APP_DIR"
 
 # Settings, pairings, and the device identity live here and survive upgrades.
@@ -172,10 +191,18 @@ for _ in $(seq 1 30); do
     if systemctl is-active --quiet "$SERVICE"; then break; fi
     sleep 1
 done
-systemctl is-active --quiet "$SERVICE" || {
+if systemctl is-active --quiet "$SERVICE"; then
+    rm -rf "$PREVIOUS"
+else
     journalctl -u "$SERVICE" -n 30 --no-pager || true
-    die "The service did not start. The log above says why."
-}
+    if [ -d "$PREVIOUS" ]; then
+        say "Putting the previous version back"
+        rm -rf "$APP_DIR"
+        mv "$PREVIOUS" "$APP_DIR"
+        systemctl restart "$SERVICE" 2>/dev/null || true
+    fi
+    die "The service did not start. The log above says why; the previous version was restored."
+fi
 
 sleep 3
 printf '\n'
