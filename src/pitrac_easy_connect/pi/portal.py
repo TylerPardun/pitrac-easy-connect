@@ -175,7 +175,7 @@ class PortalHandler(BaseHTTPRequestHandler):
         }
         handler = routes.get(path)
         if handler is None:
-            self._json(HTTPStatus.NOT_FOUND, {"error": {"failed": "That action does not exist"}})
+            self._refuse(HTTPStatus.NOT_FOUND, "That action does not exist")
             return
         try:
             body = self._read_json(
@@ -202,29 +202,45 @@ class PortalHandler(BaseHTTPRequestHandler):
         host = (self.headers.get("Host") or "").strip().lower()
         if not host or _ALLOWED_HOST.match(host) or host in self.server.extra_hosts:
             return True
-        self._json(
-            HTTPStatus.MISDIRECTED_REQUEST,
-            {"error": {"failed": "PiTrac does not answer to that address"}},
-        )
+        self._refuse(HTTPStatus.MISDIRECTED_REQUEST,
+                     "PiTrac does not answer to that address")
         return False
 
     def _request_allowed(self) -> bool:
         if self.headers.get(GUARD_HEADER) is None:
-            self._json(
-                HTTPStatus.FORBIDDEN,
-                {"error": {"failed": "This request did not come from the PiTrac setup page"}},
-            )
+            self._refuse(HTTPStatus.FORBIDDEN,
+                         "This request did not come from the PiTrac setup page")
             return False
         origin = self.headers.get("Origin")
         if origin:
             host = (self.headers.get("Host") or "").strip().lower()
             if urlparse(origin).netloc.lower() != host:
-                self._json(
-                    HTTPStatus.FORBIDDEN,
-                    {"error": {"failed": "This request came from another website"}},
-                )
+                self._refuse(HTTPStatus.FORBIDDEN,
+                             "This request came from another website")
                 return False
         return True
+
+    def _refuse(self, status, message: str) -> None:
+        """Answer a refusal the caller can actually read.
+
+        A handler that responds and returns without reading the request body
+        leaves that body unread in the socket. Closing then resets the
+        connection instead of finishing it, and the caller sees a dropped
+        connection rather than the reason it was refused -- reliably so on
+        Windows, which is where this showed up: WinError 10053 in place of the
+        403 that explains what happened.
+        """
+
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            length = 0
+        if length > 0:
+            # Bounded, for the same reason the oversized-body path is bounded:
+            # draining whatever arrives is how a refusal becomes a way to tie
+            # the server up.
+            self._drain(length, length)
+        self._json(status, {"error": {"failed": message}})
 
     def _guarded(self, work: Callable[[], Any]) -> None:
         try:

@@ -251,3 +251,64 @@ def test_the_status_stays_valid_json_under_load(companion):
         status, body = request(companion + "/api/status")
         assert status == HTTPStatus.OK
         json.loads(body)
+
+
+# --- A refusal has to be readable ------------------------------------------
+#
+# A handler that answers without reading the request body leaves that body in
+# the socket. Closing then resets the connection instead of finishing it, and
+# the caller gets a dropped connection rather than the reason. Linux usually
+# hides this because the kernel has already buffered the body; Windows does
+# not, and reported WinError 10053 in place of the 403.
+
+
+#: Big enough to outrun the socket buffer, so the reset happens everywhere
+#: rather than only on Windows: at half a megabyte macOS still quietly
+#: buffers the whole body and the bug stays invisible. Under the drain limit,
+#: because past that the connection is closed deliberately.
+UNREAD_BODY_SIZES = [1024, 512 * 1024, 1024 * 1024]
+
+
+@pytest.mark.parametrize("size", UNREAD_BODY_SIZES)
+def test_a_refused_portal_post_still_answers_with_its_reason(portal, size):
+    body = b'{"padding": "' + b"x" * size + b'"}'
+    status, payload = request(portal + "/api/country", body=body, header=False)
+
+    assert status == HTTPStatus.FORBIDDEN, "expected the refusal, got {}".format(status)
+    assert b"setup page" in payload, "the caller could not read why"
+
+
+@pytest.mark.parametrize("size", UNREAD_BODY_SIZES)
+def test_a_refused_companion_post_still_answers_with_its_reason(companion, size):
+    body = b'{"padding": "' + b"x" * size + b'"}'
+    status, payload = request(companion + "/api/club", body=body, header=False)
+
+    assert status == HTTPStatus.FORBIDDEN
+    assert b"Easy-Connect" in payload
+
+
+def test_an_unknown_route_with_a_body_answers_rather_than_resetting(portal):
+    body = b'{"padding": "' + b"x" * (1024 * 1024) + b'"}'
+    status, payload = request(portal + "/api/no-such-thing", body=body)
+
+    assert status == HTTPStatus.NOT_FOUND
+    assert b"does not exist" in payload
+
+
+def test_a_wrong_host_with_a_body_answers_rather_than_resetting(portal):
+    import urllib.request as _request
+
+    body = b'{"padding": "' + b"x" * (1024 * 1024) + b'"}'
+    req = _request.Request(
+        portal + "/api/country", data=body,
+        headers={"Host": "somebody-elses-name.example", "Content-Type": "application/json",
+                 "X-PiTrac-Portal": "1"},
+        method="POST",
+    )
+    try:
+        with _request.urlopen(req, timeout=20) as response:
+            status = response.status
+    except urllib.error.HTTPError as error:
+        status = error.code
+        assert b"does not answer" in error.read()
+    assert status == HTTPStatus.MISDIRECTED_REQUEST

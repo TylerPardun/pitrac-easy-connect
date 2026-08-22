@@ -109,7 +109,7 @@ class CompanionHandler(BaseHTTPRequestHandler):
         }
         handler = routes.get(path)
         if handler is None:
-            self._json(HTTPStatus.NOT_FOUND, {"error": {"failed": "That action does not exist"}})
+            self._refuse(HTTPStatus.NOT_FOUND, "That action does not exist")
             return
         try:
             body = self._read_json(
@@ -178,10 +178,8 @@ class CompanionHandler(BaseHTTPRequestHandler):
         host = (self.headers.get("Host") or "").strip().lower()
         if not host or _ALLOWED_HOST.match(host):
             return True
-        self._json(
-            HTTPStatus.MISDIRECTED_REQUEST,
-            {"error": {"failed": "Easy-Connect does not answer to that address"}},
-        )
+        self._refuse(HTTPStatus.MISDIRECTED_REQUEST,
+                     "Easy-Connect does not answer to that address")
         return False
 
     def _request_allowed(self) -> bool:
@@ -195,21 +193,36 @@ class CompanionHandler(BaseHTTPRequestHandler):
         """
 
         if self.headers.get(GUARD_HEADER) is None:
-            self._json(
-                HTTPStatus.FORBIDDEN,
-                {"error": {"failed": "This request did not come from Easy-Connect"}},
-            )
+            self._refuse(HTTPStatus.FORBIDDEN,
+                         "This request did not come from Easy-Connect")
             return False
         origin = self.headers.get("Origin")
         if origin:
             host = (self.headers.get("Host") or "").strip().lower()
             if urlparse(origin).netloc.lower() != host:
-                self._json(
-                    HTTPStatus.FORBIDDEN,
-                    {"error": {"failed": "This request came from another website"}},
-                )
+                self._refuse(HTTPStatus.FORBIDDEN,
+                             "This request came from another website")
                 return False
         return True
+
+    def _refuse(self, status, message: str) -> None:
+        """Answer a refusal the caller can actually read.
+
+        Responding without reading the request body leaves it unread in the
+        socket, and closing then resets the connection rather than finishing
+        it. The caller sees a dropped connection instead of the reason it was
+        refused -- reliably on Windows, as WinError 10053 in place of the 403.
+        """
+
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            length = 0
+        if length > 0:
+            # Bounded, like the oversized-body path: draining whatever arrives
+            # is how a refusal becomes a way to tie the server up.
+            self._drain(length, length)
+        self._json(status, {"error": {"failed": message}})
 
     def _guarded(self, work: Callable[[], Any]) -> None:
         try:
