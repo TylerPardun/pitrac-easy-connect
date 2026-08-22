@@ -15,41 +15,72 @@ on_posix = pytest.mark.skipif(
     reason="this behaviour belongs to the enclosure, which is Linux",
 )
 
-#: Modules that drive real sockets against real servers. Four of these running
-#: at once on a four-vCPU Windows runner starved the serving threads until the
-#: clients timed out and Windows aborted the connections underneath them
-#: (WinError 10053) -- the same commit passed on one run and failed on the
-#: next. They are pinned to two groups so at most two run together.
+#: What makes a module socket-heavy: it stands up a real service, a real
+#: simulator, or a real HTTP server on a real port.
 #:
-#: Two groups rather than one: the pair is balanced -- the endurance run on
-#: its own is about as long as everything else together -- so the isolation
-#: costs no wall-clock time, while halving how many of these run at once.
-NETWORK_GROUPS = {
-    "test_endurance": "network-a",
-    "test_api_robustness": "network-b",
-    "test_companion": "network-b",
-    "test_end_to_end_relay": "network-b",
-    "test_robustness": "network-b",
-    "test_pi_service": "network-b",
-    "test_downloads": "network-b",
-    "test_pi_updates": "network-b",
-    "test_model_install": "network-b",
-    "test_app_startup": "network-b",
-}
+#: Derived rather than listed. A hand-written list was wrong twice -- it missed
+#: test_shot_history_accuracy, which borrows another module's fixture and so
+#: mentions none of the obvious names, and that module then ran alongside the
+#: pool it should have been inside and paired against an enclosure another
+#: worker was tearing down.
+SOCKET_SIGNS = (
+    "PiService(",
+    "CompanionService(",
+    "RunningMock",
+    "start_serving",
+    "serve_forever",
+    "from test_companion import",
+    # Modules that reach for sockets or the relay directly rather than through
+    # a service: test_robustness names none of the above and binds plenty.
+    "import socket",
+    "ShotRelay(",
+    "LinkServer(",
+)
+
+#: Two pools, balanced by measured runtime so neither worker waits on the
+#: other: the endurance run is 80 seconds on its own, and these three come to
+#: about the same as everything else here put together. Anything newly
+#: detected joins the second pool, which is the safe default -- a module in
+#: the wrong pool is slow, a module in no pool is flaky.
+FIRST_POOL = {"test_endurance", "test_range", "test_live_data"}
+
+
+def _socket_modules(directory):
+    """Which test modules put something on a real port."""
+
+    found = set()
+    for path in sorted(directory.glob("test_*.py")):
+        try:
+            source = path.read_text(encoding="utf-8")
+        except OSError:                       # pragma: no cover
+            continue
+        if any(sign in source for sign in SOCKET_SIGNS):
+            found.add(path.stem)
+    return found
 
 
 @pytest.hookimpl(tryfirst=True)
 def pytest_collection_modifyitems(config, items):
     """Group every test, so --dist loadgroup can place them deliberately.
 
-    Anything not named above is grouped by its own module, which is what
-    --dist loadfile used to do: a file stays whole on one worker, so tests
-    that share a fixture are not split across processes.
+    tryfirst matters: xdist stamps the group onto the node id from its own
+    collection hook, and a marker added after that is simply not seen. The
+    tests then spread across every worker and the grouping silently does
+    nothing -- which is exactly what happened, and only showed up as the
+    socket-heavy module running four times faster than it can run serially.
     """
 
+    socket_modules = _socket_modules(pathlib.Path(__file__).parent)
     for item in items:
         module = pathlib.Path(str(item.nodeid).split("::")[0]).stem
-        group = NETWORK_GROUPS.get(module, module)
+        if module in FIRST_POOL:
+            group = "network-a"
+        elif module in socket_modules:
+            group = "network-b"
+        else:
+            # Everything else keeps its own file on one worker, which is what
+            # --dist loadfile used to do.
+            group = module
         item.add_marker(pytest.mark.xdist_group(group))
 
 
