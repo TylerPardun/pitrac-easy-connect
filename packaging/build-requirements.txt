@@ -12,7 +12,7 @@ pillow==12.3.0
 # PyInstaller's own dependencies.
 altgraph==0.17.5
 pyinstaller-hooks-contrib==2026.6
-setuptools==80.9.0
+setuptools==83.0.0
 macholib==1.16.4 ; sys_platform == "darwin"
 pefile==2024.8.26 ; sys_platform == "win32"
 pywin32-ctypes==0.2.3 ; sys_platform == "win32"
