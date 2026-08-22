@@ -110,9 +110,15 @@ Download the build for your computer from
 
 | Platform | File |
 |---|---|
-| macOS 11+, Apple silicon | `PiTrac-Easy-Connect-macos.zip` |
+| macOS 11+, Apple silicon (M1 or later) | `PiTrac-Easy-Connect-macos-apple-silicon.zip` |
+| macOS 11+, Intel | `PiTrac-Easy-Connect-macos-intel.zip` |
 | Windows 11 | `PiTrac-Easy-Connect-windows.zip` |
 | Linux, or any OS with Python 3.9+ | `PiTrac-Easy-Connect-*.pyz` |
+
+The two Mac builds are not interchangeable. Rosetta translates Intel code to
+run on Apple silicon and never the other way, so an Intel Mac given the Apple
+silicon build cannot start it at all. **Apple menu → About This Mac** says
+which you have: a chip beginning with M, or an Intel processor.
 
 Neither native build carries a code-signing certificate, so both operating
 systems warn the first time:

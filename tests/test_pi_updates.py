@@ -556,7 +556,7 @@ def test_the_digest_is_read_from_a_real_release_listing():
 
     release = {
         "assets": [
-            {"name": "PiTrac-Easy-Connect-macos.zip",
+            {"name": "PiTrac-Easy-Connect-macos-apple-silicon.zip",
              "digest": "sha256:28e185448113a1d90036f4b8797ade7b2c6e5f2a1854c37139cf8ff978f4cd8c"},
             {"name": "PiTrac-Easy-Connect-0.3.0.pyz",
              "digest": "sha256:865aa95c7052df8b7c498334b4f6b14a58cf0e8b15b6d5695863720851fedf15"},

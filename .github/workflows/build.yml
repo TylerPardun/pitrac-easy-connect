@@ -367,8 +367,11 @@ jobs:
             it does not recognise the program; choose **More info**, then
             **Run anyway**.
 
-            **macOS** — `PiTrac-Easy-Connect-macos.zip`. Unzip it, then
-            right-click the app and choose **Open** the first time.
+            **macOS** — `PiTrac-Easy-Connect-macos-apple-silicon.zip` for an
+            M1 or later, `PiTrac-Easy-Connect-macos-intel.zip` for an Intel
+            Mac. **Apple menu → About This Mac** says which you have, and the
+            two are not interchangeable. Unzip, then right-click the app and
+            choose **Open** the first time.
 
             **Linux** — the `.pyz` runs on any computer with Python 3.9 or
             newer, without installation.
