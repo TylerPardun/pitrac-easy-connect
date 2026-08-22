@@ -471,6 +471,10 @@ class ArchiveUpdater:
             # later, and disk is cheaper than an unreachable enclosure.
             if not releases:
                 shutil.rmtree(previous, ignore_errors=True)
+            else:
+                # The previous release is deliberately kept -- it is the thing
+                # to go back to -- but only the previous one.
+                self._prune_releases()
             return {"applied": True, "version": tag,
                     "detail": "Updated to {}. PiTrac is restarting.".format(tag)}
 
@@ -581,12 +585,8 @@ class ArchiveUpdater:
         simply be pointed back at it.
         """
 
-        import time as _time
-
         previous = self.link_path.resolve()
-        destination = self.releases_dir / "{}-{}".format(version, int(_time.time()))
-        shutil.rmtree(destination, ignore_errors=True)
-        destination.mkdir(parents=True, exist_ok=True)
+        destination = self._new_release_dir(version)
         shutil.move(str(staged), str(destination / "pitrac_easy_connect"))
 
         temporary = self.link_path.with_name(self.link_path.name + ".new")
@@ -596,6 +596,48 @@ class ArchiveUpdater:
         os.replace(temporary, self.link_path)
         shutil.rmtree(staged.parent.parent, ignore_errors=True)
         return previous
+
+    def _new_release_dir(self, version: str) -> Path:
+        """A release directory of its own, whatever else is already there.
+
+        The name used to be the version and the time in whole seconds, and a
+        directory of that name was deleted before being recreated. Two updates
+        inside one second therefore had the second one delete the first --
+        which, when the first is the release the symlink points at, is the
+        running copy. Rare, but the consequence is an enclosure with no
+        software and nobody at the keyboard.
+        """
+
+        self.releases_dir.mkdir(parents=True, exist_ok=True)
+        prefix = "{}-{}-".format(version, int(time.time()))
+        destination = Path(tempfile.mkdtemp(prefix=prefix, dir=str(self.releases_dir)))
+        # mkdtemp is 0700; releases are read by the service and are not secret.
+        os.chmod(destination, 0o755)
+        return destination
+
+    def _prune_releases(self, keep: int = 2) -> None:
+        """Keep the running release and the one to go back to; drop the rest.
+
+        Installing by hand has always kept two. Updating over the air kept
+        every release ever installed, so an enclosure that updated regularly
+        filled its card with copies of software it would never run again.
+        """
+
+        try:
+            current = self.link_path.resolve()
+        except OSError:
+            return
+        try:
+            releases = [path for path in self.releases_dir.iterdir() if path.is_dir()]
+        except OSError:
+            return
+        # Newest first, and never the one being run, whatever its age.
+        releases.sort(key=lambda path: path.stat().st_mtime, reverse=True)
+        keeping = [path for path in releases if path != current][: max(keep - 1, 0)]
+        for path in releases:
+            if path == current or path in keeping:
+                continue
+            shutil.rmtree(path, ignore_errors=True)
 
     def _roll_back_release(self, previous: Path) -> None:
         if not previous or not previous.exists():

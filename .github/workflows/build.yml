@@ -11,8 +11,26 @@ on:
 permissions:
   contents: read
 
+# A tag usually points at a commit that is already on main, so both events
+# fire and one commit ends up carrying two runs. Naming the jobs by which kind
+# of run they belong to keeps a passing branch check from sitting next to a
+# failing release check of exactly the same name.
+run-name: >-
+  ${{ startsWith(github.ref, 'refs/tags/v')
+      && format('Release {0}', github.ref_name)
+      || format('CI: {0}', github.event.head_commit.message || github.ref_name) }}
+
+# A new push makes the run before it irrelevant. Cancelling saves the runner
+# time and the artifact storage that a superseded run would keep for a week.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+
 jobs:
   test:
+    name: >-
+      test${{ startsWith(github.ref, 'refs/tags/v') && ' [release]' || '' }}
+      (${{ matrix.os }}, ${{ matrix.python }})
     strategy:
       fail-fast: false
       matrix:
@@ -130,6 +148,10 @@ jobs:
           name: ${{ matrix.artifact }}
           path: ${{ matrix.path }}
           if-no-files-found: error
+          # These exist to hand the build to the release job in the same run.
+          # Once a release is published they are a duplicate of its assets, so
+          # the default ninety days is ninety days of storing them twice.
+          retention-days: 7
 
   portable:
     needs: test
@@ -166,6 +188,7 @@ jobs:
           name: PiTrac-portable
           path: dist/*.pyz
           if-no-files-found: error
+          retention-days: 7
 
   release:
     if: startsWith(github.ref, 'refs/tags/v')

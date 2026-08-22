@@ -566,3 +566,82 @@ def test_the_digest_is_read_from_a_real_release_listing():
     assert ArchiveUpdater._archive_digest(release) == (
         "865aa95c7052df8b7c498334b4f6b14a58cf0e8b15b6d5695863720851fedf15"
     )
+
+
+# --- Releases must not pile up, and must not collide -----------------------
+
+
+def _bare_updater(released):
+    """An updater over the installed layout, with no release server involved."""
+
+    _root, link, releases, current = released
+    return ArchiveUpdater(installed="0.2.0", app_dir=current,
+                          link_path=link, releases_dir=releases)
+
+
+@on_posix
+def test_two_updates_in_one_second_do_not_delete_each_other(released):
+    """The running copy is one of the directories a collision would remove."""
+
+    updater = _bare_updater(released)
+    first = updater._new_release_dir("2.0.0")
+    second = updater._new_release_dir("2.0.0")
+
+    assert first != second, "a second update would have deleted the first"
+    assert first.exists() and second.exists()
+
+
+@on_posix
+def test_updating_over_the_air_keeps_the_current_and_previous_releases(released):
+    """Installing by hand keeps two; updating kept every release ever made."""
+
+    import os
+    import time as _time
+
+    updater = _bare_updater(released)
+    releases_dir = updater.releases_dir
+
+    made = []
+    for index in range(5):
+        path = updater._new_release_dir("1.{}.0".format(index))
+        (path / "pitrac_easy_connect").mkdir()
+        # Distinct mtimes, so "newest" is not down to filesystem resolution.
+        os.utime(path, (_time.time() + index, _time.time() + index))
+        made.append(path)
+
+    # The symlink points at the newest, as it would after an update.
+    link = updater.link_path
+    if link.is_symlink() or link.exists():
+        link.unlink()
+    link.symlink_to(made[-1])
+
+    updater._prune_releases()
+
+    left = sorted(path for path in releases_dir.iterdir() if path.is_dir())
+    assert len(left) == 2, "expected the current and previous only, got {}".format(left)
+    assert made[-1] in left, "the running release was removed"
+    assert made[-2] in left, "the release to go back to was removed"
+
+
+@on_posix
+def test_pruning_never_removes_the_release_that_is_running(released):
+    """Even when it is the oldest directory there."""
+
+    import os
+    import time as _time
+
+    updater = _bare_updater(released)
+    oldest = updater._new_release_dir("0.1.0")
+    os.utime(oldest, (1, 1))
+    for index in range(3):
+        newer = updater._new_release_dir("9.{}.0".format(index))
+        os.utime(newer, (_time.time() + index, _time.time() + index))
+
+    link = updater.link_path
+    if link.is_symlink() or link.exists():
+        link.unlink()
+    link.symlink_to(oldest)
+
+    updater._prune_releases()
+
+    assert oldest.exists(), "the running release was deleted as stale"
