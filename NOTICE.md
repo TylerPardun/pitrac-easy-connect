@@ -36,6 +36,10 @@ window. Each component remains licensed by its respective author.
 | [PyObjC](https://pyobjc.readthedocs.io/) (macOS) | MIT | Connects pywebview to macOS frameworks and WKWebView |
 | [pythonnet](https://pythonnet.github.io/) and [clr-loader](https://github.com/pythonnet/clr-loader) (Windows) | MIT | Connect pywebview to .NET and WebView2 |
 | [proxy-tools](https://pypi.org/project/proxy-tools/) | MIT | Required by pywebview |
+| [cffi](https://cffi.readthedocs.io/) (Windows) | MIT-0 | Required by clr-loader |
+| [pycparser](https://github.com/eliben/pycparser) (Windows) | BSD-3-Clause | Required by cffi |
+| [setuptools](https://setuptools.pypa.io/) (Windows) | MIT | Required by pythonnet at runtime |
+| [packaging](https://pypi.org/project/packaging/) (Windows) | Apache-2.0 OR BSD-2-Clause | Required by setuptools |
 | [typing-extensions](https://pypi.org/project/typing-extensions/) | PSF-2.0 | Required by pywebview |
 | OpenSSL (`libssl` and `libcrypto`) | Apache-2.0 | HTTPS support used by the bundled Python runtime |
 | zlib | Zlib | Compression support used by the bundled Python runtime |
@@ -43,9 +47,17 @@ window. Each component remains licensed by its respective author.
 | xz (`liblzma`) | 0BSD | Compression support used by the bundled Python runtime |
 | Expat (`libexpat`) | MIT | XML support used by the bundled Python runtime |
 | libffi | MIT | Foreign-function support used by the bundled Python runtime |
+| Microsoft C runtime (Windows) | [Microsoft Visual Studio redistributable terms](https://visualstudio.microsoft.com/license-terms/) | The Universal C Runtime the bundled Python is built against: `ucrtbase`, `VCRUNTIME140`, and the `api-ms-win-*` stubs |
+| [WebView2](https://developer.microsoft.com/microsoft-edge/webview2/) loader (Windows) | [Microsoft WebView2 redistributable terms](https://developer.microsoft.com/microsoft-edge/webview2/) | `WebView2Loader` and the interop assemblies, redistributed inside pywebview, that reach the WebView2 runtime |
 
 The browser engines are not bundled. The app uses WKWebView on macOS and
-WebView2 on Windows, both supplied by the operating system.
+WebView2 on Windows, both supplied by the operating system. What does ship on
+Windows is the small loader that finds the installed WebView2 runtime, credited
+above; the runtime itself is Microsoft's and is not redistributed here.
+
+The two Microsoft rows are the only entries whose licence text is not in
+`THIRD-PARTY-LICENCES.txt`. Those components are not Python packages, so there
+is no wheel to read the text out of; the terms are the ones linked above.
 
 The full text of each licence above is in `THIRD-PARTY-LICENCES.txt`, which is
 generated from the installed packages at build time and ships beside every

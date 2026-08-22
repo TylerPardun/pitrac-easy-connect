@@ -30,6 +30,11 @@ BUNDLED = {
     "typing_extensions": ["typing_extensions"],
     "pythonnet": ["clr"],
     "clr_loader": ["clr_loader"],
+    # Pulled in beneath pythonnet on Windows, and bundled with it.
+    "cffi": ["cffi", "_cffi_backend"],
+    "pycparser": ["pycparser"],
+    "setuptools": ["setuptools", "pkg_resources"],
+    "packaging": ["packaging"],
 }
 
 LICENCE_NAMES = ("LICENSE", "LICENSE.txt", "LICENSE.md", "LICENCE", "LICENCE.txt",
