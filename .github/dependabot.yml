@@ -1,0 +1,16 @@
+# The workflow pins every action to a commit SHA, which is the right way to
+# use them and also the way they go quietly stale: a pinned SHA never picks up
+# a security fix. This opens a pull request when one moves, so the pinning
+# stays deliberate rather than forgotten.
+#
+# Nothing else is watched, because nothing else has dependencies: what ships
+# uses only the Python standard library.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "ci"

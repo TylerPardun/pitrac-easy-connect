@@ -140,13 +140,19 @@ jobs:
           Stop-Process -Id $app.Id -Force -ErrorAction SilentlyContinue
           if (-not $ok) { Write-Error "the Windows app did not start"; exit 1 }
 
-      # The check above proves the packaged backend runs. It says nothing about
-      # the part Windows users actually see, because --no-browser never reaches
-      # pywebview or WebView2. This one unpacks the zip that gets published and
-      # opens the real window, then asks Windows whether a window exists --
-      # a process that starts and serves but never draws anything is exactly
-      # the failure that would otherwise ship.
-      - name: Check a real window opens from the published zip
+      # The check above proves the packaged backend runs. It says nothing
+      # about the part Windows users actually see, because --no-browser never
+      # reaches pywebview or WebView2. This one unpacks the zip that gets
+      # published and opens the real window.
+      #
+      # What it asserts is that WebView2 started: the runtime runs as msedge
+      # child processes of the app, so their presence means pywebview loaded
+      # the runtime and handed it the page. A window handle would be a nicer
+      # thing to check, but this runner has no interactive desktop and reports
+      # none even when the window exists -- confirmed by watching WebView2
+      # start here while MainWindowHandle stayed zero. Whether the window is
+      # usable is a question for a real machine; see docs/windows-testing.md.
+      - name: Check the real window opens from the published zip
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
@@ -169,29 +175,37 @@ jobs:
             } catch { }
           }
 
-          # A window takes a moment longer than the server it shows.
-          $windowed = $false
+          # WebView2 takes a moment longer than the server it displays.
+          $webview = $false
           foreach ($i in 1..20) {
             Start-Sleep -Seconds 2
             $app.Refresh()
             if ($app.HasExited) { break }
-            if ($app.MainWindowHandle -ne 0) {
-              Write-Host "window title: '$($app.MainWindowTitle)'"
-              $windowed = $true; break
+            $kids = Get-CimInstance Win32_Process -Filter "Name='msedge.exe'" |
+                    Where-Object { $_.ParentProcessId -eq $app.Id }
+            if ($kids) {
+              Write-Host "WebView2 running as $(@($kids).Count) child process(es)"
+              $webview = $true; break
             }
+          }
+          $app.Refresh()
+          if (-not $app.HasExited -and $app.MainWindowHandle -ne 0) {
+            Write-Host "window title: '$($app.MainWindowTitle)'"
+          } else {
+            Write-Host "no window handle, as expected on a runner with no desktop"
           }
 
           $exited = $app.HasExited
           Stop-Process -Id $app.Id -Force -ErrorAction SilentlyContinue
 
-          if ($exited)      { Write-Error "the app exited on its own"; exit 1 }
+          if ($exited)       { Write-Error "the app exited on its own"; exit 1 }
           if (-not $serving) { Write-Error "the app never answered /api/status"; exit 1 }
-          if (-not $windowed) {
-            Write-Error ("the app served but never opened a window. Either WebView2 " +
-                         "is missing on this runner or the native path is broken.")
+          if (-not $webview) {
+            Write-Error ("the app served but never started WebView2, so the window " +
+                         "it is supposed to draw in never existed")
             exit 1
           }
-          Write-Host "the packaged app opened a real window"
+          Write-Host "the packaged app started its native window"
 
       - name: Check NOTICE.md credits everything the build bundles
         run: python packaging/bundled-licences.py --check
