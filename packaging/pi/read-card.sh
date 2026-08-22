@@ -102,7 +102,16 @@ done
 [ -f "$STATE/device.json" ] && say "device.json is present (identity intact)"
 
 head2 "Was a network change interrupted?"
-if grep -q '"pending"' "$STATE/network.json" 2>/dev/null; then
+# "pending": null is the normal state. Looking for the word alone reported
+# every healthy card as an interrupted network change.
+if python3 - "$STATE/network.json" <<'PENDING' 2>/dev/null; then
+import json, sys
+try:
+    value = json.load(open(sys.argv[1])).get("pending")
+except Exception:
+    sys.exit(1)
+sys.exit(0 if isinstance(value, dict) and value else 1)
+PENDING
     say "YES. A change was in progress when the power went."
     say "Easy-Connect should undo it on the next boot and go back to the"
     say "previous network. If it did not, that is the bug to chase."

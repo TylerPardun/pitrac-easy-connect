@@ -292,6 +292,7 @@ PAGE = r"""<!doctype html>
 
       <h3>Backup</h3>
       <button class="quiet" id="makeBackup">Save a backup</button>
+      <button class="quiet" id="fullBackup">Save a complete recovery backup</button>
       <label class="linkbtn quiet" for="bkFile" style="cursor:pointer">Restore from a file</label>
       <input type="file" id="bkFile" accept=".pitracbackup,.json,application/json" class="hidden">
       <div id="bkPreview"></div>
@@ -821,7 +822,24 @@ $("quit").addEventListener("click",e=>run(e.target, async()=>{
 }));
 $("makeBackup").addEventListener("click",e=>run(e.target, async()=>{
   window.location.href="/api/backup";
-  $("note").innerHTML='<div class="note good">Saved to this computer.</div>';
+  $("note").innerHTML='<div class="note good">Saved to this computer. This one '+
+    'has your calibration and settings, and no secrets.</div>';
+}));
+
+// A backup that can replace a dead memory card has to carry the enclosure's
+// identity and its paired computers. Without those, restoring onto a new card
+// gives a machine that has lost its owner card password and forgotten every
+// computer. It is separate and it is labelled, because the file is worth
+// protecting.
+$("fullBackup").addEventListener("click",e=>run(e.target, async()=>{
+  if(!confirm("Save a complete recovery backup?\n\n"+
+      "This one also contains your setup Wi-Fi password and the secrets your "+
+      "paired computers use. Keep it somewhere private \u2014 anyone with this "+
+      "file can take over the enclosure.\n\n"+
+      "It is the only kind of backup that can restore a failed memory card.")) return;
+  window.location.href="/api/backup?identity=1&pairings=1";
+  $("note").innerHTML='<div class="note">Saved. Keep it somewhere private: it '+
+    'contains your setup password and pairing secrets.</div>';
 }));
 $("bkFile").addEventListener("change",async event=>{
   const file=event.target.files && event.target.files[0];
@@ -835,11 +853,39 @@ $("bkFile").addEventListener("change",async event=>{
       ${info.sameDevice?"":"<br><span style='color:var(--amber)'>From a different enclosure.</span>"}
       </div><button class="quiet" id="doRestore" style="margin-top:9px">Restore this</button>`;
     $("doRestore").addEventListener("click",b=>run(b.target, async()=>{
+      // Calibration describes one particular pair of cameras in one
+      // particular enclosure. Sending the override without asking meant an
+      // amber note was the only thing between somebody and a machine
+      // calibrated for a different unit.
+      if(!info.sameDevice){
+        if(!confirm("This backup is from a different PiTrac.\n\n"+
+            "Its camera calibration describes that enclosure's cameras, not "+
+            "this one's. Restoring it will make this PiTrac measure shots "+
+            "incorrectly until it is calibrated again.\n\n"+
+            "Restore it anyway?")) return;
+      }
       const result=await api("/api/backup/restore",{file:text, calibration:true, preferences:true,
         identity:info.sections.includes("identity"), pairings:info.sections.includes("pairings"),
-        confirmDifferentDevice:true});
+        confirmDifferentDevice:!info.sameDevice});
       $("bkPreview").innerHTML="";
-      $("note").innerHTML='<div class="note good">Restored: '+result.restored.map(esc).join(", ")+'</div>';
+      // PiTrac reads its calibration at startup, so it keeps using the old
+      // one until it is restarted. Saying "Restored" and stopping there left
+      // people believing a restore had taken effect when it had not.
+      if(result.needsRestart){
+        $("note").innerHTML='<div class="note">Restored: '+
+          result.restored.map(esc).join(", ")+'. Restarting PiTrac so it '+
+          'picks this up\u2026</div>';
+        try{
+          await api("/api/enclosure",{command:"restartPitrac"});
+          $("note").innerHTML='<div class="note good">Restored and PiTrac restarted.</div>';
+        }catch(err){
+          $("note").innerHTML='<div class="note bad">Restored, but PiTrac could '+
+            'not be restarted. Restart it from Advanced before playing.</div>';
+        }
+      }else{
+        $("note").innerHTML='<div class="note good">Restored: '+
+          result.restored.map(esc).join(", ")+'</div>';
+      }
     }));
   }catch(error){ showError(error); }
   event.target.value="";

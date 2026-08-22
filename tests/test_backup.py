@@ -390,3 +390,96 @@ def test_a_failure_partway_through_a_restore_puts_everything_back(tmp_path, monk
 
     assert pitrac.calibration_path.read_text() == before, \
         "calibration was left changed by a restore that failed"
+
+
+def test_restoring_actually_restores_a_pitrac_setting(tmp_path):
+    """The merge let every current value override the backup, so restoring a
+    backup made when a setting was 7 onto a machine set to 8 left it at 8 and
+    reported success. Nothing in the suite noticed."""
+
+    _identity, _settings, pitrac, _pairings, manager = build(tmp_path)
+
+    pitrac.settings_path.write_text(json.dumps(
+        {"gs_config": {"cameras": {"kCamera1Gain": 7}}}))
+    document = json.loads(manager.create_bytes().decode())
+
+    # The machine has since been changed.
+    pitrac.settings_path.write_text(json.dumps(
+        {"gs_config": {"cameras": {"kCamera1Gain": 8}}}))
+
+    manager.restore(document, preferences=True)
+
+    after = json.loads(pitrac.settings_path.read_text())
+    assert after["gs_config"]["cameras"]["kCamera1Gain"] == 7, \
+        "the backup's value should have been restored"
+
+
+def test_a_restore_does_not_redirect_where_shots_are_sent(tmp_path):
+    """That is this installation's own wiring, not a preference. A backup from
+    another machine must not point this one's shots somewhere else."""
+
+    _identity, _settings, pitrac, _pairings, manager = build(tmp_path)
+
+    pitrac.settings_path.write_text(json.dumps({"gs_config": {
+        "cameras": {"kCamera1Gain": 7},
+        "golf_simulator_interfaces": {"GSPro": {
+            "kGSProConnectAddress": "10.9.9.9", "kGSProConnectPort": 1111}},
+    }}))
+    document = json.loads(manager.create_bytes().decode())
+
+    pitrac.point_at_relay({Simulator.GSPRO: 9210, Simulator.E6: 9248})
+    before = json.loads(pitrac.settings_path.read_text())
+    wired = before["gs_config"]["golf_simulator_interfaces"]["GSPro"]
+
+    manager.restore(document, preferences=True)
+
+    after = json.loads(pitrac.settings_path.read_text())
+    assert after["gs_config"]["cameras"]["kCamera1Gain"] == 7, "the setting restored"
+    assert after["gs_config"]["golf_simulator_interfaces"]["GSPro"] == wired, \
+        "but the relay wiring stayed as this machine had it"
+
+
+def test_a_failed_restore_puts_pitracs_own_settings_back_too(tmp_path, monkeypatch):
+    """The rollback recorded Easy-Connect's preferences but not PiTrac's own
+    settings file, which the same step writes. A failure afterwards left
+    PiTrac changed while everything else was put back."""
+
+    _identity, _settings, pitrac, _pairings, manager = build(tmp_path)
+    pitrac.settings_path.write_text(json.dumps(
+        {"gs_config": {"cameras": {"kCamera1Gain": 7}}}))
+    document = json.loads(manager.create_bytes(include_identity=True).decode())
+
+    pitrac.settings_path.write_text(json.dumps(
+        {"gs_config": {"cameras": {"kCamera1Gain": 8}}}))
+    before = pitrac.settings_path.read_text()
+
+    def explode(_section):
+        raise RuntimeError("the identity section is corrupt")
+
+    monkeypatch.setattr(manager.identity_store, "restore", explode)
+    with pytest.raises(Exception):
+        manager.restore(document, preferences=True, identity=True,
+                        confirm_different_device=True)
+
+    assert pitrac.settings_path.read_text() == before, \
+        "PiTrac's settings were left changed by a restore that failed"
+
+
+def test_restoring_an_identity_updates_the_pairing_manager_immediately(tmp_path):
+    """The pairing manager captured the device id when it was built. Left
+    stale, pairings are checked against an enclosure that no longer exists
+    until the service restarts."""
+
+    _identity, _settings, _pitrac, pairings, manager = build(tmp_path)
+    document = json.loads(manager.create_bytes(include_identity=True).decode())
+
+    original = pairings.device_id
+    document["payload"]["identity"]["deviceId"] = "ZZZZ9999"
+    from pitrac_easy_connect.pi.backup import checksum_of
+
+    document["checksum"] = checksum_of(document["payload"])
+
+    manager.restore(document, identity=True, confirm_different_device=True)
+
+    assert pairings.device_id == "ZZZZ9999"
+    assert pairings.device_id != original

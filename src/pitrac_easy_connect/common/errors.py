@@ -144,6 +144,13 @@ NET_COUNTRY_INVALID = _define(
 
 # Pairing and ownership -----------------------------------------------------
 
+BACKUP_ROLLBACK_FAILED = _define(
+    "PT-CFG-006",
+    "A restore failed, and undoing it did not fully succeed either.",
+    "Some settings may be from the backup and some from before it.",
+    "Restore the same backup again, or use the automatic backup taken just "
+    "before it, which is listed on the setup page.",
+)
 BACKUP_NEEDS_A_COMPUTER = _define(
     "PT-CFG-005",
     "A backup containing your setup password or paired computers cannot be "

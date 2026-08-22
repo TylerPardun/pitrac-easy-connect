@@ -286,6 +286,8 @@ class ArchiveUpdater:
         installed: str,
         app_dir: Path,
         repository: str = REPOSITORY,
+        link_path: Optional[Path] = None,
+        releases_dir: Optional[Path] = None,
         restart: Optional[Callable[[], None]] = None,
         healthy: Optional[Callable[[], bool]] = None,
         verify: Optional[Callable[[Path], bool]] = None,
@@ -294,6 +296,11 @@ class ArchiveUpdater:
     ):
         self.installed = installed
         self.app_dir = Path(app_dir)
+        #: When the installation uses versioned releases behind a symlink,
+        #: these say where. Set, an update becomes a new sibling release and a
+        #: symlink move rather than an edit of the directory being run from.
+        self.link_path = Path(link_path) if link_path else None
+        self.releases_dir = Path(releases_dir) if releases_dir else None
         self.repository = repository
         self._restart = restart
         #: Asked after the restart. Returning False rolls the update back.
@@ -376,8 +383,10 @@ class ArchiveUpdater:
                               "nothing was changed.",
                 }
 
+            releases = self._uses_releases()
             try:
-                previous = self._swap(staged)
+                previous = (self._swap_release(staged, inside) if releases
+                            else self._swap(staged))
             except Exception as exc:
                 shutil.rmtree(staged.parent, ignore_errors=True)
                 return {"applied": False,
@@ -391,12 +400,12 @@ class ArchiveUpdater:
                 try:
                     self._restart()
                 except Exception as exc:
-                    self._roll_back(previous)
+                    (self._roll_back_release if releases else self._roll_back)(previous)
                     return {"applied": False,
                             "detail": "The update was undone: it could not be started ({})".format(exc)}
 
             if self._healthy is not None and not self._healthy():
-                self._roll_back(previous)
+                (self._roll_back_release if releases else self._roll_back)(previous)
                 if self._restart:
                     try:
                         self._restart()
@@ -406,7 +415,11 @@ class ArchiveUpdater:
                         "detail": "Version {} would not start, so the previous "
                                   "version was put back.".format(tag)}
 
-            shutil.rmtree(previous, ignore_errors=True)
+            # The previous release is deliberately kept when there is one:
+            # it is the thing to go back to if the new version misbehaves
+            # later, and disk is cheaper than an unreachable enclosure.
+            if not releases:
+                shutil.rmtree(previous, ignore_errors=True)
             return {"applied": True, "version": tag,
                     "detail": "Updated to {}. PiTrac is restarting.".format(tag)}
 
@@ -483,6 +496,46 @@ class ArchiveUpdater:
             return ""
         found = _re.search(r'__version__ = "([^"]+)"', source)
         return found.group(1) if found else ""
+
+    def _uses_releases(self) -> bool:
+        return bool(
+            self.link_path and self.releases_dir
+            and self.link_path.is_symlink() and self.releases_dir.is_dir()
+        )
+
+    def _swap_release(self, staged: Path, version: str) -> Path:
+        """Install as a new release and move the symlink onto it.
+
+        The running release is never touched, so there is no moment where the
+        application directory is missing and nothing to undo if the new one
+        will not start -- the old release is still there and the symlink can
+        simply be pointed back at it.
+        """
+
+        import time as _time
+
+        previous = self.link_path.resolve()
+        destination = self.releases_dir / "{}-{}".format(version, int(_time.time()))
+        shutil.rmtree(destination, ignore_errors=True)
+        destination.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(staged), str(destination / "pitrac_easy_connect"))
+
+        temporary = self.link_path.with_name(self.link_path.name + ".new")
+        if temporary.is_symlink() or temporary.exists():
+            temporary.unlink()
+        temporary.symlink_to(destination)
+        os.replace(temporary, self.link_path)
+        shutil.rmtree(staged.parent.parent, ignore_errors=True)
+        return previous
+
+    def _roll_back_release(self, previous: Path) -> None:
+        if not previous or not previous.exists():
+            return
+        temporary = self.link_path.with_name(self.link_path.name + ".new")
+        if temporary.is_symlink() or temporary.exists():
+            temporary.unlink()
+        temporary.symlink_to(previous)
+        os.replace(temporary, self.link_path)
 
     def _swap(self, staged: Path) -> Path:
         """Put the new copy in place, keeping the old one until it has proved

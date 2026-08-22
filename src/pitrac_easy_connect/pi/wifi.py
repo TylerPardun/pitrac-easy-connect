@@ -668,7 +668,14 @@ class WifiProvisioner:
         """Play without a router: the PC joins the enclosure's own signal."""
 
         with self._lock:
-            self._cancel_pending_change()
+            if enabled:
+                # Cancelling merely forgot that a change was pending. The
+                # provisional network's profile stayed saved with autoconnect
+                # on, so leaving Direct Mode later could silently rejoin a
+                # network nobody ever confirmed. Undo it properly instead.
+                self._abandon_provisional_network()
+            else:
+                self._cancel_pending_change()
             self._journal.update({"directMode": bool(enabled)})
             if enabled:
                 return self._fall_back_to_hotspot(None)

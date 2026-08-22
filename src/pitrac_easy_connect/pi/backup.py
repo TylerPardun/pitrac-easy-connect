@@ -34,7 +34,9 @@ from typing import Any, Dict, List
 
 from .. import __version__
 from ..common.configstore import ConfigStore, atomic_write_bytes
+from .pitrac import SIMULATOR_KEYS
 from ..common.errors import (
+    BACKUP_ROLLBACK_FAILED,
     CFG_BACKUP_INVALID,
     CFG_BACKUP_WRONG_DEVICE,
     CFG_SCHEMA_NEWER,
@@ -328,14 +330,32 @@ class BackupManager:
         if preferences:
             state["settings"] = dict(self.settings.all())
             state["displayName"] = self.identity_store.identity.display_name
+            # PiTrac's own settings file is written by the same step. Leaving
+            # it out meant a rollback put Easy-Connect's preferences back and
+            # left PiTrac changed.
+            try:
+                state["pitracSettings"] = self.pitrac.settings_path.read_bytes()
+            except OSError:
+                state["pitracSettings"] = None
         if identity:
             state["identity"] = self.identity_store.identity.as_dict(include_secrets=True)
         if pairings:
             state["pairings"] = self.pairings.export()
         return state
 
+    def _write_raw(self, path: Path, payload: bytes) -> None:
+        atomic_write_bytes(path, payload)
+        self.pitrac.restore_owner_of(path)
+
     def _put_back(self, state: Dict[str, Any]) -> None:
-        """Undo whatever a failed restore had already written."""
+        """Undo whatever a failed restore had already written.
+
+        A rollback that quietly fails is worse than one that does not run: the
+        machine is left in a state nobody described. Anything that could not be
+        put back is collected and raised.
+        """
+
+        failures: List[str] = []
 
         if "calibration" in state:
             try:
@@ -343,23 +363,36 @@ class BackupManager:
                     self.pitrac.calibration_path.unlink(missing_ok=True)
                 else:
                     atomic_write_bytes(self.pitrac.calibration_path, state["calibration"])
-            except OSError:
-                pass
+            except OSError as exc:
+                failures.append("calibration: {}".format(exc))
         if "settings" in state:
             try:
                 self.settings.replace(state["settings"])
-            except Exception:
-                pass
+            except Exception as exc:
+                failures.append("preferences: {}".format(exc))
+        if "pitracSettings" in state:
+            try:
+                if state["pitracSettings"] is None:
+                    self.pitrac.settings_path.unlink(missing_ok=True)
+                else:
+                    self._write_raw(self.pitrac.settings_path, state["pitracSettings"])
+            except Exception as exc:
+                failures.append("PiTrac settings: {}".format(exc))
         if "identity" in state:
             try:
                 self.identity_store.restore(state["identity"])
-            except Exception:
-                pass
+            except Exception as exc:
+                failures.append("identity: {}".format(exc))
         if "pairings" in state:
             try:
                 self.pairings.restore(state["pairings"])
-            except Exception:
-                pass
+            except Exception as exc:
+                failures.append("paired computers: {}".format(exc))
+        if failures:
+            raise EasyConnectError(
+                BACKUP_ROLLBACK_FAILED,
+                "; ".join(failures),
+            )
 
     def _apply(self, payload, available, result, wants_calibration,
                calibration, preferences, identity, pairings) -> RestoreResult:
@@ -380,6 +413,11 @@ class BackupManager:
         if identity:
             if SECTION_IDENTITY in available:
                 self.identity_store.restore(payload[SECTION_IDENTITY])
+                # The pairing manager captured the device id when it was
+                # built. Leaving it stale means pairings are checked against
+                # an enclosure that no longer exists until the service
+                # restarts.
+                self.pairings.device_id = self.identity_store.identity.device_id
                 result.restored.append(SECTION_IDENTITY)
                 result.needs_restart = True
             else:
@@ -416,13 +454,24 @@ class BackupManager:
 
         pitrac_settings = section.get("pitracSettings")
         if isinstance(pitrac_settings, dict) and pitrac_settings:
-            # PiTrac's own settings are merged rather than replaced: the relay
-            # addresses this build wrote must survive a restore from a backup
-            # made when they were different.
+            # The backup's settings win. They are what the owner asked to have
+            # back. Merging the other way round -- which is what this did --
+            # let every current value override the backup, so restoring a
+            # backup made when a camera gain was 7 onto a machine set to 8
+            # silently left it at 8 and reported success.
+            #
+            # The exception is where PiTrac has been told to send its shots.
+            # That is this installation's own wiring, not a preference, and a
+            # backup from another machine must not redirect it.
             current, readable = self.pitrac.read_settings()
+            restored = dict(pitrac_settings)
             if readable:
-                merged = _deep_merge(dict(pitrac_settings), current)
-                self._write_json(self.pitrac.settings_path, merged)
+                for keys in SIMULATOR_KEYS.values():
+                    for dotted in keys:
+                        value = _dig(current, dotted)
+                        if value is not None:
+                            _plant(restored, dotted, value)
+            self._write_json(self.pitrac.settings_path, restored)
 
     def _snapshot(self) -> str:
         try:
@@ -480,3 +529,28 @@ def _deep_merge(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any
         else:
             result[key] = value
     return result
+
+
+def _dig(document: Dict[str, Any], dotted: str) -> Any:
+    """Read a value at a dotted path, or None if it is not there."""
+
+    node: Any = document
+    for part in dotted.split("."):
+        if not isinstance(node, dict) or part not in node:
+            return None
+        node = node[part]
+    return node
+
+
+def _plant(document: Dict[str, Any], dotted: str, value: Any) -> None:
+    """Write a value at a dotted path, making the parents as needed."""
+
+    parts = dotted.split(".")
+    node = document
+    for part in parts[:-1]:
+        nxt = node.get(part)
+        if not isinstance(nxt, dict):
+            nxt = {}
+            node[part] = nxt
+        node = nxt
+    node[parts[-1]] = value

@@ -129,9 +129,16 @@ class PiService:
         # and swaps it in instead. Anywhere else -- a development checkout, a
         # test -- the ordinary updater still applies.
         self.updates = Updater(version)
+        # Where the installer puts releases, and the symlink that points at
+        # the live one. Updating in place would modify the running release
+        # directory; instead a new sibling release is created and the symlink
+        # is moved, which is one atomic operation and leaves the old release
+        # on disk to go back to.
         self.enclosure_updates = ArchiveUpdater(
             installed=version,
             app_dir=Path(__file__).resolve().parent.parent.parent,
+            link_path=Path("/usr/lib/pitrac-easy-connect"),
+            releases_dir=Path("/usr/lib/pitrac-easy-connect-releases/releases"),
             restart=self._restart_service,
             verify=_can_run,
         )

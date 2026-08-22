@@ -279,9 +279,13 @@ class NmcliBackend(PiBackend):
             if name == HOTSPOT_PROFILE:
                 continue
             try:
-                ssid = self._nmcli(
+                # -g still escapes colons and backslashes, so a saved
+                # "Bob:s Wi-Fi" came back as "Bob\:s Wi-Fi" and never matched
+                # the scanned name, which meant it was never shown as known.
+                raw = self._nmcli(
                     "-g", "802-11-wireless.ssid", "con", "show", name, timeout=10
                 ).stdout.strip()
+                ssid = split_terse(raw)[0] if raw else ""
             except Exception:
                 # One unreadable profile must not cost the whole list.
                 continue
@@ -306,6 +310,11 @@ class NmcliBackend(PiBackend):
         digest = hashlib.sha256(ssid.encode("utf-8")).hexdigest()[:8]
         return "{}{}-{}".format(PROFILE_PREFIX, slug, digest)
 
+    #: nmcli takes the passphrase as an argument, which means it is briefly
+    #: visible in the process list to anyone who can read /proc on the Pi --
+    #: which is root, and the one user account. Passing it by file or over
+    #: D-Bus would remove even that, and is worth doing; until then this says
+    #: plainly what the exposure is rather than implying there is none.
     def connect(
         self, ssid: str, password: Optional[str], hidden: bool = False, timeout: float = 45.0
     ) -> ActiveConnection:

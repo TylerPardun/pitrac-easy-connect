@@ -35,8 +35,10 @@ project cares about most. Say so plainly and it will go to the front.
 
 ## What is deliberately out of scope
 
-- Anything PiTrac itself does — shots, calibration, configuration, its
-  dashboard. This project handles the setup and connection around it.
+- Reimplementing anything PiTrac itself does — measuring shots, calibration,
+  its configuration, or its dashboard. Easy-Connect shows PiTrac's dashboard
+  in a tab rather than building one of its own, and handles the setup and
+  connection around it.
 - Signing into GSPro or E6, or launching them. They are separate licensed
   products with their own accounts.
 - Bundling PiTrac's trained models. They are proprietary and their licence is

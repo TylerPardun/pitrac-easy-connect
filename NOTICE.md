@@ -47,9 +47,13 @@ window. Each component remains licensed by its respective author.
 The browser engines are not bundled. The app uses WKWebView on macOS and
 WebView2 on Windows, both supplied by the operating system.
 
-`packaging/bundled-licences.py` checks PyInstaller's build manifest against this
-list. The complete license texts still need to be included with each native
-release artifact; this summary does not replace them.
+The full text of each licence above is in `THIRD-PARTY-LICENCES.txt`, which is
+generated from the installed packages at build time and ships beside every
+download and inside the app. This table is a summary and does not replace it.
+
+`packaging/bundled-licences.py` checks PyInstaller's build manifest against
+this list, so a component added to the build without being credited here fails
+the build.
 
 ### Build and test tools
 

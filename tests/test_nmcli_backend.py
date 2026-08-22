@@ -225,8 +225,9 @@ def test_connecting_creates_a_profile_brings_it_up_and_waits_for_an_address(back
     assert connection.ipv4.startswith("10.0.0.51")
     assert nmcli.asked("con add", "Ferndale")
     assert nmcli.asked("con up", profile)
-    # The password goes in the profile, never on a command line where it would
-    # land in the shell history of anyone debugging.
+    # The passphrase is passed to nmcli as an argument. That is briefly
+    # visible in the process list, and the comment here used to claim the
+    # opposite. Asserting what actually happens keeps the claim honest.
     assert any("wifi-sec.psk" in call for call in nmcli.calls)
 
 

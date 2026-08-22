@@ -294,3 +294,83 @@ def test_the_real_verifier_accepts_the_package_that_is_running(tmp_path):
 
     here = _p.Path(__file__).resolve().parent.parent / "src" / "pitrac_easy_connect"
     assert _can_run(here) is True
+
+
+# --- The versioned-release layout the installer creates --------------------
+
+
+@pytest.fixture
+def released(tmp_path):
+    """An enclosure installed the way install.sh installs it."""
+
+    root = tmp_path / "usr-lib"
+    releases = root / "releases"
+    current = releases / "0.2.0-1000"
+    package = current / "pitrac_easy_connect"
+    (package / "pi").mkdir(parents=True)
+    (package / "__init__.py").write_text('__version__ = "0.2.0"\n')
+    (package / "pi" / "service.py").write_text("# the running version\n")
+
+    link = root / "pitrac-easy-connect"
+    link.symlink_to(current)
+    return root, link, releases, current
+
+
+def release_updater(released, upstream, **kwargs):
+    root, link, releases, current = released
+    base, _state = upstream
+    return ArchiveUpdater(
+        installed="0.2.0", app_dir=current, repository="owner/repo",
+        api_base=base, link_path=link, releases_dir=releases, **kwargs)
+
+
+def test_an_update_becomes_a_new_release_and_moves_the_link(released, upstream):
+    """The running release is never modified, so there is no moment where the
+    application directory is missing."""
+
+    _root, link, releases, current = released
+    up = release_updater(released, upstream, restart=lambda: None)
+    up._verify = lambda staged: True
+
+    assert up.apply()["applied"] is True
+
+    assert link.resolve() != current, "the link should point at a new release"
+    assert '"9.9.9"' in (link.resolve() / "pitrac_easy_connect" / "__init__.py").read_text()
+    assert current.exists(), "the previous release must stay, to go back to"
+    assert len(list(releases.iterdir())) == 2
+
+
+def test_a_release_that_will_not_start_leaves_the_link_alone(released, upstream):
+    _root, link, _releases, current = released
+    up = release_updater(released, upstream, restart=lambda: None)
+    up._verify = lambda staged: False
+
+    assert up.apply()["applied"] is False
+    assert link.resolve() == current
+    assert '"0.2.0"' in (link.resolve() / "pitrac_easy_connect" / "__init__.py").read_text()
+
+
+def test_a_release_that_starts_but_is_unhealthy_points_the_link_back(released, upstream):
+    _root, link, _releases, current = released
+    up = release_updater(released, upstream, restart=lambda: None)
+    up._verify = lambda staged: True
+    up._healthy = lambda: False
+
+    result = up.apply()
+    assert result["applied"] is False and result.get("rolledBack") is True
+    assert link.resolve() == current, "the link must be back on the working release"
+    assert '"0.2.0"' in (link.resolve() / "pitrac_easy_connect" / "__init__.py").read_text()
+
+
+def test_the_running_release_is_never_written_to(released, upstream):
+    """Modifying the directory being executed from is what the symlink layout
+    exists to avoid."""
+
+    _root, link, _releases, current = released
+    before = (current / "pitrac_easy_connect" / "__init__.py").read_text()
+
+    up = release_updater(released, upstream, restart=lambda: None)
+    up._verify = lambda staged: True
+    up.apply()
+
+    assert (current / "pitrac_easy_connect" / "__init__.py").read_text() == before

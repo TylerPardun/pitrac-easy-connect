@@ -547,11 +547,34 @@ $("bkFile").addEventListener("change",async event=>{
       ${info.sameDevice?"":"<br><span style='color:var(--amber)'>From a different enclosure.</span>"}
       </div><button class="quiet" id="doRestore" style="margin-top:9px">Restore this</button>`;
     $("doRestore").addEventListener("click",b=>run(b.target, async()=>{
+      // Calibration belongs to one particular pair of cameras. Sending the
+      // override without asking left an amber note as the only thing between
+      // somebody and a machine calibrated for a different enclosure.
+      if(!info.sameDevice){
+        if(!confirm("This backup is from a different PiTrac.\n\n"+
+            "Its camera calibration describes that enclosure's cameras, not "+
+            "this one's. Restoring it will make this PiTrac measure shots "+
+            "incorrectly until it is calibrated again.\n\n"+
+            "Restore it anyway?")) return;
+      }
       const result=await api("/api/backup/restore",{file:text, calibration:true, preferences:true,
         identity:info.sections.includes("identity"), pairings:info.sections.includes("pairings"),
-        confirmDifferentDevice:true});
+        confirmDifferentDevice:!info.sameDevice});
       $("bkPreview").innerHTML="";
-      $("note").innerHTML='<div class="note good">Restored: '+result.restored.map(esc).join(", ")+'</div>';
+      if(result.needsRestart){
+        $("note").innerHTML='<div class="note">Restored. Restarting PiTrac so it '+
+          'picks this up\u2026</div>';
+        try{
+          await api("/api/restart-pitrac",{});
+          $("note").innerHTML='<div class="note good">Restored and PiTrac restarted.</div>';
+        }catch(err){
+          $("note").innerHTML='<div class="note bad">Restored, but PiTrac could not '+
+            'be restarted. Use Restart PiTrac under Advanced before playing.</div>';
+        }
+      }else{
+        $("note").innerHTML='<div class="note good">Restored: '+
+          result.restored.map(esc).join(", ")+'</div>';
+      }
     }));
   }catch(error){ showError(error); }
   event.target.value="";

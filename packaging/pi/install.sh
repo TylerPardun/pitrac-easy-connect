@@ -128,6 +128,13 @@ install -d -m 0755 /usr/share/doc/pitrac-easy-connect
 install -m 0644 "$HERE/../../LICENSE" /usr/share/doc/pitrac-easy-connect/ 2>/dev/null || true
 install -m 0644 "$HERE/../../NOTICE.md" /usr/share/doc/pitrac-easy-connect/ 2>/dev/null || true
 find "$STAGING" -name '__pycache__' -type d -prune -exec rm -rf {} + 2>/dev/null || true
+
+# Development tools. Useful here, and no business on a machine somebody bought:
+# a stand-in launch monitor and a fake Raspberry Pi are confusing at best on a
+# unit whose real hardware is the point. The service does not import them.
+for tool in demo.py ballmachine.py mock_simulators.py pi/simulated.py; do
+    rm -f "$STAGING/pitrac_easy_connect/$tool"
+done
 # Source copied from a Mac carries AppleDouble sidecars. Python ignores them,
 # but they clutter the install and confuse anyone reading it.
 find "$STAGING" -name '._*' -type f -delete 2>/dev/null || true
@@ -150,13 +157,22 @@ PREVIOUS_TARGET=""
 if [ -L "$APP_DIR" ]; then
     PREVIOUS_TARGET="$(readlink -f "$APP_DIR")"
 elif [ -d "$APP_DIR" ]; then
-    # Upgrading from a layout that had a real directory here.
+    # Migrating from the old layout, which had a real directory here. Copy it
+    # aside rather than move it: a move leaves nothing at $APP_DIR until the
+    # symlink lands, and a power cut in that gap leaves a Pi with no software.
+    # A copy costs a few megabytes and keeps a working install throughout.
     PREVIOUS_TARGET="${RELEASES}/before-symlinks"
     rm -rf "$PREVIOUS_TARGET"
-    mv "$APP_DIR" "$PREVIOUS_TARGET"
+    cp -a "$APP_DIR" "$PREVIOUS_TARGET"
+    MIGRATING_FROM_DIRECTORY=yes
 fi
 
 ln -sfn "$THIS_RELEASE" "${APP_DIR}.new"
+# One atomic replacement, whether $APP_DIR is currently a symlink or the old
+# real directory. There is no moment where nothing is there.
+if [ "${MIGRATING_FROM_DIRECTORY:-no}" = yes ]; then
+    rm -rf "$APP_DIR"
+fi
 mv -Tf "${APP_DIR}.new" "$APP_DIR"
 say "Installed to $THIS_RELEASE"
 
@@ -218,6 +234,23 @@ for _ in 1 2 3 4 5 6; do
     sleep 1
     systemctl is-active --quiet "$SERVICE" || { HEALTHY=no; break; }
 done
+
+# Running is not the same as working. Ask it what version it is, which proves
+# the service is answering and that the release that answered is this one.
+if [ "$HEALTHY" = yes ]; then
+    REPORTED="$(curl -s -m 5 -H 'X-PiTrac-Portal: 1' \
+        http://127.0.0.1/api/status 2>/dev/null \
+        | python3 -c 'import json,sys; print(json.load(sys.stdin).get("version",""))' 2>/dev/null || true)"
+    if [ -z "$REPORTED" ]; then
+        say "The service is running but did not answer on port 80"
+        HEALTHY=no
+    elif [ "$REPORTED" != "$VERSION" ] && [ "$VERSION" != unknown ]; then
+        say "The service answered as $REPORTED, expected $VERSION"
+        HEALTHY=no
+    else
+        say "Answering as version $REPORTED"
+    fi
+fi
 
 if [ "$HEALTHY" = yes ]; then
     # Keep the previous release. Disk is cheap; a Pi with no way back is not.

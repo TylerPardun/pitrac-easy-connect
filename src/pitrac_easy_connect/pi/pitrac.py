@@ -309,6 +309,15 @@ class PitracInstallation:
             return info.st_uid, info.st_gid
         return None
 
+    def restore_owner_of(self, path: "Path") -> None:
+        """Give a file the ownership PiTrac's own files carry.
+
+        Easy-Connect runs as root; PiTrac's dashboard does not. A file written
+        here as root would be one the dashboard could no longer save.
+        """
+
+        self._restore_owner(self._intended_owner())
+
     def _restore_owner(self, owner: Optional[Tuple[int, int]]) -> None:
         if owner is None or os.geteuid() != 0:
             return

@@ -42,6 +42,10 @@ if [ "$WANT_PYZ" = yes ]; then
     python3 packaging/collect-licences.py >/dev/null
     cp LICENSE NOTICE.md THIRD-PARTY-LICENCES.txt "$STAGE/"
     find "$STAGE" -name '__pycache__' -type d -prune -exec rm -rf {} + 2>/dev/null || true
+    # Development tools do not ship to people who downloaded a golf app.
+    for tool in demo.py ballmachine.py mock_simulators.py pi/simulated.py; do
+        rm -f "$STAGE/pitrac_easy_connect/$tool"
+    done
     cat > "$STAGE/__main__.py" <<'PY'
 from pitrac_easy_connect.companion.app import main
 
@@ -57,18 +61,19 @@ if [ "$WANT_APP" = yes ]; then
     step "Native app"
     # Pinned, so two builds of the same commit contain the same code and the
     # licences in NOTICE.md keep matching what actually shipped.
-    if ! python3 -c "import PyInstaller, webview" 2>/dev/null; then
-        say "Installing build tools (not shipped; see NOTICE.md)"
-        python3 -m pip install --quiet --disable-pip-version-check \
-            -r packaging/build-requirements.txt
-    fi
+    # Installed every time, not only when missing. Accepting whatever version
+    # happened to be present meant a build could use a different PyInstaller
+    # than the pins say, and ship different code than the licence list beside
+    # it claims. Pillow is in the pinned set too, for the icons below.
+    say "Installing the pinned build environment (not shipped; see NOTICE.md)"
+    python3 -m pip install --quiet --disable-pip-version-check \
+        -r packaging/build-requirements.txt
 
     say "Collecting third-party licence texts"
     python3 packaging/collect-licences.py
 
     if [ ! -f packaging/icon/PiTrac.icns ] || [ ! -f packaging/icon/PiTrac.ico ]; then
         say "Generating icons"
-        python3 -m pip install --quiet --disable-pip-version-check pillow
         python3 packaging/icon/make-icons.py packaging/icon >/dev/null
         if command -v iconutil >/dev/null; then
             iconutil -c icns packaging/icon/PiTrac.iconset -o packaging/icon/PiTrac.icns
