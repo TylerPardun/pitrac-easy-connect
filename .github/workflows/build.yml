@@ -202,8 +202,8 @@ jobs:
             **macOS** — `PiTrac-Easy-Connect-macos.zip`. Unzip it, then
             right-click the app and choose **Open** the first time.
 
-            **Any computer with Python 3.9+** — the `.pyz` runs without
-            installation.
+            **Linux** — the `.pyz` runs on any computer with Python 3.9 or
+            newer, without installation.
 
             Neither build is code-signed yet, which is why both operating
             systems warn about them.
