@@ -140,6 +140,59 @@ jobs:
           Stop-Process -Id $app.Id -Force -ErrorAction SilentlyContinue
           if (-not $ok) { Write-Error "the Windows app did not start"; exit 1 }
 
+      # The check above proves the packaged backend runs. It says nothing about
+      # the part Windows users actually see, because --no-browser never reaches
+      # pywebview or WebView2. This one unpacks the zip that gets published and
+      # opens the real window, then asks Windows whether a window exists --
+      # a process that starts and serves but never draws anything is exactly
+      # the failure that would otherwise ship.
+      - name: Check a real window opens from the published zip
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Expand-Archive -Path dist/PiTrac-Easy-Connect-windows.zip `
+            -DestinationPath dist/unpacked -Force
+          $exe = Get-ChildItem dist/unpacked -Recurse -Filter "*.exe" | Select-Object -First 1
+          if (-not $exe) { Write-Error "no executable inside the release zip"; exit 1 }
+          Write-Host "launching $($exe.FullName)"
+
+          $app = Start-Process -FilePath $exe.FullName `
+            -ArgumentList "--window","--port","8898" -PassThru
+
+          $serving = $false
+          foreach ($i in 1..30) {
+            Start-Sleep -Seconds 2
+            try {
+              $r = Invoke-WebRequest -Uri "http://127.0.0.1:8898/api/status" `
+                    -Headers @{"X-PiTrac-App"="1"} -UseBasicParsing -TimeoutSec 5
+              if ($r.StatusCode -eq 200) { $serving = $true; break }
+            } catch { }
+          }
+
+          # A window takes a moment longer than the server it shows.
+          $windowed = $false
+          foreach ($i in 1..20) {
+            Start-Sleep -Seconds 2
+            $app.Refresh()
+            if ($app.HasExited) { break }
+            if ($app.MainWindowHandle -ne 0) {
+              Write-Host "window title: '$($app.MainWindowTitle)'"
+              $windowed = $true; break
+            }
+          }
+
+          $exited = $app.HasExited
+          Stop-Process -Id $app.Id -Force -ErrorAction SilentlyContinue
+
+          if ($exited)      { Write-Error "the app exited on its own"; exit 1 }
+          if (-not $serving) { Write-Error "the app never answered /api/status"; exit 1 }
+          if (-not $windowed) {
+            Write-Error ("the app served but never opened a window. Either WebView2 " +
+                         "is missing on this runner or the native path is broken.")
+            exit 1
+          }
+          Write-Host "the packaged app opened a real window"
+
       - name: Check NOTICE.md credits everything the build bundles
         run: python packaging/bundled-licences.py --check
 
