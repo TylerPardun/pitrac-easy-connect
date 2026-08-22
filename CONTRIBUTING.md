@@ -24,8 +24,16 @@ project cares about most. Say so plainly and it will go to the front.
 
 - Open an issue first for anything larger than a fix. It may already be on the
   list, or deliberately out of scope.
-- `python3 -m pytest -q` must pass. The suite runs without hardware, against a
-  simulated Raspberry Pi.
+- Install what the suite needs once:
+
+  ```
+  python3 -m pip install -e ".[test]"
+  ```
+
+  Then `python3 -m pytest -q` must pass. It runs without hardware, against a
+  simulated Raspberry Pi, and takes about two minutes. The suite runs in
+  parallel, so `pytest` alone is not enough — without `pytest-xdist` it will
+  not start at all.
 - New behaviour needs a test. Failure paths especially: most of this codebase
   exists to handle things going wrong.
 - The Python that ships has **no third-party dependencies** and must stay that

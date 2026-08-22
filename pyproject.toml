@@ -15,6 +15,12 @@ license = { text = "MIT" }
 # macOS and Windows apps bundle is a separate matter, described in NOTICE.md.
 dependencies = []
 
+# Not shipped, and not installed on the enclosure. These are what running the
+# suite needs: the settings below run it in parallel, which is not something
+# pytest can do on its own.
+[project.optional-dependencies]
+test = ["pytest", "pytest-xdist"]
+
 [project.scripts]
 pitrac-easy-connect = "pitrac_easy_connect.pi.app:main"
 pitrac-easy-connect-app = "pitrac_easy_connect.companion.app:main"
@@ -27,13 +33,17 @@ where = ["src"]
 [tool.pytest.ini_options]
 pythonpath = ["src"]
 testpaths = ["tests"]
-# Most of this suite waits on sockets, services starting, and confirmation
-# windows, so it parallelises almost perfectly: eleven minutes becomes three
-# and a half on eight cores. Every test builds its own servers on port 0 and
-# its own tmp_path, so nothing is shared between workers.
+# Most of this suite waits on sockets and on services starting, so it
+# parallelises almost perfectly. Every test builds its own servers on port 0
+# and its own tmp_path, so nothing is shared between workers.
 #
-# -p no:randomly keeps ordering stable, and --dist loadfile keeps the tests in
-# one file on one worker, which matters where a module-level fixture is shared.
+# This needs pytest-xdist, which is why there is a "test" extra above: without
+# it these options are not merely ignored, pytest fails to start. Install with
+#     python3 -m pip install -e ".[test]"
+#
+# --dist loadgroup places tests by the group tests/conftest.py assigns, which
+# keeps each file on one worker and, for the socket-heavy files, keeps them
+# from all running at once. See the comment there for why.
 addopts = "-n auto --dist loadgroup"
 
 [tool.setuptools.dynamic]
