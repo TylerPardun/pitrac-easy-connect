@@ -66,10 +66,19 @@ class CompanionService:
         version: str = __version__,
         discovery_port: int = discovery.DISCOVERY_PORT,
         computer_name: Optional[str] = None,
+        search_seconds: float = 2.0,
+        research_seconds: float = 3.0,
     ):
         self.version = version
         self.simulator_host = simulator_host
         self.discovery_port = discovery_port
+        #: How long a search listens for enclosures announcing themselves, and
+        #: how long the second look takes when an enclosure is asked for by an
+        #: id that is not in the current list. Real values on a real network;
+        #: the tests turn them down, because a route that answers in three
+        #: seconds cannot be exercised three hundred times.
+        self.search_seconds = search_seconds
+        self.research_seconds = research_seconds
         self.computer_name = computer_name or default_computer_name()
         # Always hold a port for every simulator. A caller that overrides only
         # one must not leave the other unmapped, or switching to it later fails
@@ -153,7 +162,9 @@ class CompanionService:
 
     # --- Finding an enclosure --------------------------------------------
 
-    def search(self, timeout: float = 2.0) -> List[Dict[str, Any]]:
+    def search(self, timeout: Optional[float] = None) -> List[Dict[str, Any]]:
+        if timeout is None:
+            timeout = self.search_seconds
         found = discovery.discover(timeout=timeout, port=self.discovery_port)
         with self._lock:
             self._found = found
@@ -186,7 +197,7 @@ class CompanionService:
         if enclosure is None:
             # The caller may not have searched through this object, or the list
             # may be stale. Look again before refusing.
-            self.search(timeout=3.0)
+            self.search(timeout=self.research_seconds)
             enclosure = self._found_by_id(device_id)
         if enclosure is None:
             raise EasyConnectError(LINK_NOT_FOUND, "that enclosure was not found on this network")
@@ -367,7 +378,7 @@ class CompanionService:
         # fallback for when the beacon is blocked.
         enclosure = self._found_by_id(device_id)
         if enclosure is None:
-            self.search(timeout=3.0)
+            self.search(timeout=self.research_seconds)
             enclosure = self._found_by_id(device_id)
         host = enclosure.address if enclosure else record.get("address", "")
         port = (enclosure.link_port if enclosure else 0) or record.get("linkPort") or link.LINK_PORT

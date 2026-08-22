@@ -390,3 +390,88 @@ def test_the_running_release_is_never_written_to(released, upstream):
     up.apply()
 
     assert (current / "pitrac_easy_connect" / "__init__.py").read_text() == before
+
+
+# --- Running the check as somebody other than root -------------------------
+#
+# The enclosure runs as root and drops to "nobody" to try the downloaded code
+# before trusting it. Every test here runs as an ordinary user, where that drop
+# does not happen, so the parts that only bite as root are asserted directly.
+
+
+@on_posix
+def test_the_staged_tree_can_be_read_by_the_account_that_checks_it(tmp_path):
+    """mkdtemp is 0700; the probe runs as nobody and must get in.
+
+    With the directory left at 0700 the probe cannot traverse to the package
+    at all, so every valid update is rejected -- on a real enclosure only.
+    """
+
+    import os
+    import stat
+
+    from pitrac_easy_connect.common.updates import ArchiveUpdater
+
+    updater = ArchiveUpdater(installed="1.0.0", app_dir=tmp_path / "install")
+    package = updater._unpack(build_archive(tmp_path, "2.0.0"))
+
+    staging = package.parent.parent
+    walked = 0
+    for path in [staging] + [
+        pathlib.Path(parent) / name
+        for parent, directories, files in os.walk(staging)
+        for name in list(directories) + list(files)
+    ]:
+        mode = stat.S_IMODE(path.stat().st_mode)
+        walked += 1
+        if path.is_dir():
+            assert mode & stat.S_IROTH, "{} cannot be listed by the prober".format(path)
+            assert mode & stat.S_IXOTH, "{} cannot be entered by the prober".format(path)
+        else:
+            assert mode & stat.S_IROTH, "{} cannot be read by the prober".format(path)
+        # Readable, never writable: the prober must not be able to edit the
+        # code that is about to be installed as root.
+        assert not mode & stat.S_IWOTH, "{} is writable by the prober".format(path)
+    assert walked > 3, "the staged tree was not actually walked"
+
+
+def test_the_check_drops_privileges_without_running_python_after_the_fork(monkeypatch):
+    """preexec_fn is not safe in a process with threads, and this one has them."""
+
+    from pitrac_easy_connect.pi import service as service_module
+
+    monkeypatch.setattr(service_module.os, "geteuid", lambda: 0, raising=False)
+
+    class FakePasswd:
+        pw_uid, pw_gid = 65534, 65534
+
+    import pwd
+
+    monkeypatch.setattr(pwd, "getpwnam", lambda name: FakePasswd)
+
+    lowered = service_module._unprivileged()
+    assert lowered == {"user": 65534, "group": 65534, "extra_groups": []}
+    assert "preexec_fn" not in lowered
+
+
+def test_an_ordinary_user_runs_the_check_as_itself(monkeypatch):
+    from pitrac_easy_connect.pi import service as service_module
+
+    monkeypatch.setattr(service_module.os, "geteuid", lambda: 1000, raising=False)
+    assert service_module._unprivileged() == {}
+
+
+def test_the_check_stays_as_root_rather_than_failing_when_nobody_is_missing(monkeypatch):
+    """A machine without a nobody account still has to be able to update."""
+
+    from pitrac_easy_connect.pi import service as service_module
+
+    monkeypatch.setattr(service_module.os, "geteuid", lambda: 0, raising=False)
+
+    import pwd
+
+    def no_such_user(name):
+        raise KeyError(name)
+
+    monkeypatch.setattr(pwd, "getpwnam", no_such_user)
+    assert service_module._unprivileged() == {}

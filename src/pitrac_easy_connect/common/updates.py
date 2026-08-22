@@ -278,6 +278,33 @@ MIN_ARCHIVE_BYTES = 50 * 1024
 MAX_ARCHIVE_BYTES = 80 * 1024 * 1024
 
 
+def _let_others_read(root: Path) -> None:
+    """Open the staged tree just far enough for an unprivileged check.
+
+    mkdtemp makes its directory 0700, which is right for a secret and wrong
+    here: the enclosure runs as root and deliberately drops to ``nobody`` to
+    run the downloaded code before trusting it. ``nobody`` could not traverse
+    into 0700, so the check failed on every real enclosure and every valid
+    update was rejected -- while passing in tests, where the check runs as the
+    same user that unpacked the files.
+
+    Readable and traversable, never writable: the account running the probe
+    must not be able to edit the code that is about to be installed as root.
+    """
+
+    try:
+        os.chmod(root, 0o755)
+        for parent, directories, files in os.walk(root):
+            for name in directories:
+                os.chmod(os.path.join(parent, name), 0o755)
+            for name in files:
+                os.chmod(os.path.join(parent, name), 0o644)
+    except OSError:
+        # Losing the relaxation is survivable on a system where the check
+        # never drops privileges in the first place.
+        pass
+
+
 class ArchiveUpdater:
     """Replaces an installed copy from a published release archive."""
 
@@ -476,6 +503,7 @@ class ArchiveUpdater:
             raise ValueError("the archive does not contain the application")
         if not (package / "pi" / "service.py").exists():
             raise ValueError("the archive is missing the enclosure service")
+        _let_others_read(staging)
         return package
 
     @staticmethod

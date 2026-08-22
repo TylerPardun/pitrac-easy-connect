@@ -9,6 +9,7 @@ possible. Networking is recovered before anything else, because an enclosure
 nobody can reach cannot be told about any other problem it has.
 """
 
+import os
 import threading
 import time
 from dataclasses import dataclass
@@ -745,7 +746,6 @@ def _can_run(package: "Path") -> bool:
     no longer resolves, a version that needs a newer Python.
     """
 
-    import os
     import subprocess
     import sys
 
@@ -757,31 +757,44 @@ def _can_run(package: "Path") -> bool:
         "assert p.__version__;"
         "print('ok')"
     ).format(str(package.parent))
-    # The service runs as root, and this executes code that was just
-    # downloaded. Updates are not signed yet, so the download is trusted only
-    # as far as TLS to the release host. Dropping to an unprivileged user for
-    # the check means that trust does not have to extend to root as well.
-    def drop_privileges():                       # pragma: no cover - root only
-        import pwd
-
-        try:
-            nobody = pwd.getpwnam("nobody")
-        except KeyError:
-            return
-        os.setgroups([])
-        os.setgid(nobody.pw_gid)
-        os.setuid(nobody.pw_uid)
-
-    lower = None
-    if hasattr(os, "geteuid") and os.geteuid() == 0 and hasattr(os, "setuid"):
-        lower = drop_privileges
-
     try:
         done = subprocess.run(
             [sys.executable, "-c", probe],
             capture_output=True, text=True, timeout=60,
-            preexec_fn=lower,
+            **_unprivileged()
         )
     except (OSError, subprocess.SubprocessError):
         return False
     return done.returncode == 0 and "ok" in done.stdout
+
+
+def _unprivileged() -> Dict[str, Any]:
+    """How to run the probe as somebody other than root.
+
+    The service runs as root, and the probe executes code that was just
+    downloaded, trusted only as far as TLS to the release host. Running it as
+    ``nobody`` means that trust does not have to extend to root as well.
+
+    Popen switches user itself, in C, after the fork. The previous version
+    passed a Python function as preexec_fn, which runs arbitrary Python
+    between fork and exec -- unsafe in a process that has threads, and this
+    service has several. It could deadlock on a lock another thread happened
+    to hold at the moment of the fork.
+    """
+
+    if not (hasattr(os, "geteuid") and os.geteuid() == 0):
+        return {}
+    try:
+        import pwd
+
+        nobody = pwd.getpwnam("nobody")
+    except (ImportError, KeyError):             # pragma: no cover - root only
+        # No account to drop to. Running the probe as root is worse than not
+        # running it, because the probe is what proves the update works.
+        return {}
+    return {
+        "user": nobody.pw_uid,
+        "group": nobody.pw_gid,
+        # Without this the child keeps root's supplementary groups.
+        "extra_groups": [],
+    }

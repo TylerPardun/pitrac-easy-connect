@@ -34,7 +34,7 @@ testpaths = ["tests"]
 #
 # -p no:randomly keeps ordering stable, and --dist loadfile keeps the tests in
 # one file on one worker, which matters where a module-level fixture is shared.
-addopts = "-n auto --dist loadfile"
+addopts = "-n auto --dist loadgroup"
 
 [tool.setuptools.dynamic]
 # One authoritative version, in the package itself. Repeating it here is how

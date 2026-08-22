@@ -82,6 +82,11 @@ def companion(tmp_path):
         simulator_ports={Simulator.GSPRO: 0, Simulator.E6: 0},
         discovery_port=0,
         computer_name="Robustness",
+        # Nothing is broadcasting on this port, so every search here waits out
+        # its full timeout. At the real values that is five seconds a call on
+        # the pairing routes, which this module exercises hundreds of times.
+        search_seconds=0.05,
+        research_seconds=0.05,
     )
     server = CompanionHTTPServer(("127.0.0.1", 0), service)
     stop = start_serving(server)
