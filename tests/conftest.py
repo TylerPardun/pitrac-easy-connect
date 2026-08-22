@@ -1,9 +1,19 @@
 """Shared helpers for the test suite, and how it is spread across workers."""
 
+import os
 import pathlib
 import threading
 
 import pytest
+
+#: Parts of this project only ever run on the enclosure, which is Linux. File
+#: ownership, the accounts a privilege drop needs, permission bits and the
+#: NetworkManager backend have no meaning on Windows, and a test for them there
+#: fails for reasons that say nothing about the code.
+on_posix = pytest.mark.skipif(
+    os.name != "posix",
+    reason="this behaviour belongs to the enclosure, which is Linux",
+)
 
 #: Modules that drive real sockets against real servers. Four of these running
 #: at once on a four-vCPU Windows runner starved the serving threads until the

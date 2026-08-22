@@ -18,7 +18,7 @@ permissions:
 run-name: >-
   ${{ startsWith(github.ref, 'refs/tags/v')
       && format('Release {0}', github.ref_name)
-      || format('CI: {0}', github.event.head_commit.message || github.ref_name) }}
+      || format('CI on {0}', github.ref_name) }}
 
 # A new push makes the run before it irrelevant. Cancelling saves the runner
 # time and the artifact storage that a superseded run would keep for a week.

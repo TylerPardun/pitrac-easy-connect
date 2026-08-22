@@ -11,6 +11,8 @@ from unittest import mock
 
 import pytest
 
+from conftest import on_posix
+
 from pitrac_easy_connect.common.configstore import ConfigStore
 from pitrac_easy_connect.common.errors import EasyConnectError
 from pitrac_easy_connect.common.identity import IdentityStore
@@ -554,6 +556,7 @@ def test_a_rolled_back_identity_takes_the_pairing_manager_with_it(tmp_path):
     assert pairings.device_id == original, "the pairing manager was left on the abandoned id"
 
 
+@on_posix
 def test_a_rolled_back_calibration_is_left_owned_by_pitrac(tmp_path, monkeypatch):
     """Easy-Connect runs as root; PiTrac's dashboard does not.
 
@@ -577,6 +580,7 @@ def test_a_rolled_back_calibration_is_left_owned_by_pitrac(tmp_path, monkeypatch
     assert pitrac.calibration_path in asked, "calibration was put back without its owner"
 
 
+@on_posix
 def test_the_owner_is_restored_on_the_file_that_was_named(tmp_path, monkeypatch):
     """restore_owner_of ignored its argument and always chowned the settings."""
 

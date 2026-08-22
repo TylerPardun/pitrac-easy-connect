@@ -14,7 +14,7 @@ import json
 import os
 import threading
 
-from conftest import start_serving
+from conftest import on_posix, start_serving
 import zipapp
 import http.server
 import pathlib
@@ -313,10 +313,7 @@ def test_the_real_verifier_accepts_the_package_that_is_running(tmp_path):
 # replacing one is not the same atomic operation, so these say nothing useful
 # on Windows and fail for reasons that have nothing to do with the code.
 
-on_posix = pytest.mark.skipif(
-    os.name != "posix",
-    reason="the enclosure's release layout is POSIX-only; it never runs on Windows",
-)
+
 
 
 @pytest.fixture
@@ -443,6 +440,7 @@ def test_the_staged_tree_can_be_read_by_the_account_that_checks_it(tmp_path):
     assert walked > 3, "the staged tree was not actually walked"
 
 
+@on_posix
 def test_the_check_drops_privileges_without_running_python_after_the_fork(monkeypatch):
     """preexec_fn is not safe in a process with threads, and this one has them."""
 
@@ -469,6 +467,7 @@ def test_an_ordinary_user_runs_the_check_as_itself(monkeypatch):
     assert service_module._unprivileged() == {}
 
 
+@on_posix
 def test_the_check_stays_as_root_rather_than_failing_when_nobody_is_missing(monkeypatch):
     """A machine without a nobody account still has to be able to update."""
 

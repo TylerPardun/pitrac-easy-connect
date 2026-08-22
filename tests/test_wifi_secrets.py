@@ -17,7 +17,11 @@ from unittest import mock
 
 import pytest
 
+from conftest import on_posix
 from pitrac_easy_connect.pi.nmcli_backend import NmcliBackend
+
+# NetworkManager is the enclosure's, and so is every permission bit below.
+pytestmark = on_posix
 
 #: Exactly what the Pi answers, including the /run path netplan's profiles use.
 REAL_LISTING = (
