@@ -11,6 +11,8 @@ machine it is running on.
 
 import json
 import threading
+
+from conftest import start_serving
 import urllib.error
 import urllib.request
 from http import HTTPStatus
@@ -82,15 +84,9 @@ def companion(tmp_path):
         computer_name="Robustness",
     )
     server = CompanionHTTPServer(("127.0.0.1", 0), service)
-    serving = threading.Thread(target=server.serve_forever, daemon=True)
-    serving.start()
+    stop = start_serving(server)
     yield "http://127.0.0.1:{}".format(server.server_port)
-    # Wait for the serving thread to leave select() before closing the socket
-    # under it. On Windows that raises WinError 10038 from the thread, which
-    # fills the log with tracebacks that look like failures and are not.
-    server.shutdown()
-    serving.join(timeout=5)
-    server.server_close()
+    stop()
     service.close()
 
 
@@ -108,12 +104,9 @@ def portal(tmp_path):
     )
     service.start()
     server = PortalServer(("127.0.0.1", 0), service)
-    serving = threading.Thread(target=server.serve_forever, daemon=True)
-    serving.start()
+    stop = start_serving(server)
     yield "http://127.0.0.1:{}".format(server.server_port)
-    server.shutdown()
-    serving.join(timeout=5)
-    server.server_close()
+    stop()
     service.stop()
 
 

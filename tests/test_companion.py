@@ -1,6 +1,8 @@
 """The Companion, including the pairing exchange and the four-hop chain."""
 
 import threading
+
+from conftest import start_serving
 import time
 
 import pytest
@@ -48,7 +50,7 @@ class Rig:
         )
         self.pi.start()
         self.portal = PortalServer(("127.0.0.1", 0), self.pi)
-        threading.Thread(target=self.portal.serve_forever, daemon=True).start()
+        self._stop_portal = start_serving(self.portal)
         self.portal_port = self.portal.server_port
         # The enclosure advertises where its setup page is, and the beacon reads
         # this live, so it can be set once the port is actually known.
@@ -113,7 +115,7 @@ class Rig:
 
     def close(self):
         for closer in (
-            self.companion.close, self.portal.server_close, self.pi.stop, self.mock.stop
+            self.companion.close, self._stop_portal, self.pi.stop, self.mock.stop
         ):
             try:
                 closer()

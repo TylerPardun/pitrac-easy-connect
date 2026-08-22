@@ -476,9 +476,7 @@ class BackupManager:
     def _snapshot(self) -> str:
         try:
             self.backup_dir.mkdir(parents=True, exist_ok=True)
-            path = self.backup_dir / "before-restore-{}.pitracbackup".format(
-                time.strftime("%Y%m%d-%H%M%S")
-            )
+            path = self._snapshot_path()
             # Everything the restore can change has to be in here, or the undo
             # file it advertises cannot actually undo it. Pairings were left
             # out, so a restore that replaced the paired computers could not
@@ -495,9 +493,33 @@ class BackupManager:
             # the caller is told it did not happen.
             return ""
 
+    def _snapshot_path(self) -> Path:
+        """A name no existing snapshot has.
+
+        The stamp only resolves to the second. Two restores inside one second
+        used to land on the same name, and the atomic write pushes whatever is
+        already there aside as a ``.bak`` -- a second full copy of the
+        enclosure's secrets, under a name the pruning below did not count, kept
+        forever. Snapshots are written once and never revised, so the answer is
+        a name that is free rather than an overwrite.
+        """
+
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        path = self.backup_dir / "before-restore-{}.pitracbackup".format(stamp)
+        serial = 2
+        while path.exists():
+            path = self.backup_dir / "before-restore-{}-{}.pitracbackup".format(stamp, serial)
+            serial += 1
+        return path
+
     def _prune_snapshots(self, keep: int = 5) -> None:
-        snapshots = sorted(self.backup_dir.glob("before-restore-*.pitracbackup"))
-        for stale in snapshots[:-keep]:
+        # Deliberately wider than the snapshots themselves: a half-finished
+        # write leaves a sibling holding the same secrets, and it is never
+        # wanted once the write it belonged to is over.
+        everything = sorted(self.backup_dir.glob("before-restore-*"))
+        snapshots = [path for path in everything if path.suffix == ".pitracbackup"]
+        debris = [path for path in everything if path.suffix != ".pitracbackup"]
+        for stale in debris + snapshots[:-keep]:
             try:
                 stale.unlink()
             except OSError:

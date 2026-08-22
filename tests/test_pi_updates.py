@@ -12,6 +12,8 @@ the only way to test what happens when the download is wrong.
 import json
 import os
 import threading
+
+from conftest import start_serving
 import zipapp
 import http.server
 import pathlib
@@ -81,10 +83,9 @@ def upstream(tmp_path):
 
     server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
     base = ["http://127.0.0.1:{}".format(server.server_port)]
-    threading.Thread(target=server.serve_forever, daemon=True).start()
+    stop = start_serving(server)
     yield base[0], state
-    server.shutdown()
-    server.server_close()
+    stop()
 
 
 @pytest.fixture

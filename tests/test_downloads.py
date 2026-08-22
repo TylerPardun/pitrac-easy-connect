@@ -7,6 +7,8 @@ is exactly where Direct Mode is supposed to be the answer.
 """
 
 import threading
+
+from conftest import start_serving
 import urllib.error
 import urllib.request
 
@@ -36,10 +38,9 @@ def served(tmp_path):
     (directory / "readme.txt").write_text("not a download")
 
     server = PortalServer(("127.0.0.1", 0), service)
-    threading.Thread(target=server.serve_forever, daemon=True).start()
+    stop = start_serving(server)
     yield service, server, "http://127.0.0.1:{}".format(server.server_port), directory
-    server.shutdown()
-    server.server_close()
+    stop()
     service.stop()
 
 

@@ -19,6 +19,8 @@ from pitrac_easy_connect.pi.simulated import home_network_pi
 
 import threading
 
+from conftest import start_serving
+
 
 @pytest.fixture
 def service(tmp_path):
@@ -43,11 +45,9 @@ def service(tmp_path):
 @pytest.fixture
 def portal(service):
     server = PortalServer(("127.0.0.1", 0), service)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
+    stop = start_serving(server)
     yield server, "http://127.0.0.1:{}".format(server.server_port)
-    server.shutdown()
-    server.server_close()
+    stop()
 
 
 def request(url, body=None, headers=None, method=None):

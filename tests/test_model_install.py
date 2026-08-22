@@ -7,6 +7,8 @@ their repository, which is also the only way to test the failure paths.
 import http.server
 import threading
 
+from conftest import start_serving
+
 import pytest
 
 from pitrac_easy_connect.common.errors import EasyConnectError
@@ -48,10 +50,9 @@ def upstream():
     FakeUpstream.behaviour = "ok"
     FakeUpstream.served = []
     server = http.server.HTTPServer(("127.0.0.1", 0), FakeUpstream)
-    threading.Thread(target=server.serve_forever, daemon=True).start()
+    stop = start_serving(server)
     yield "http://127.0.0.1:{}".format(server.server_port)
-    server.shutdown()
-    server.server_close()
+    stop()
 
 
 # --- The happy path --------------------------------------------------------

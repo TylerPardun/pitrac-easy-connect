@@ -6,6 +6,7 @@ tests are mostly about the ways a restore could quietly make things worse.
 """
 
 import pathlib
+from unittest import mock
 
 import json
 
@@ -15,6 +16,7 @@ from pitrac_easy_connect.common.configstore import ConfigStore
 from pitrac_easy_connect.common.errors import EasyConnectError
 from pitrac_easy_connect.common.identity import IdentityStore
 from pitrac_easy_connect.models import Simulator
+from pitrac_easy_connect.pi import backup as backup_module
 from pitrac_easy_connect.pi.backup import (
     SECTION_CALIBRATION,
     SECTION_IDENTITY,
@@ -225,7 +227,45 @@ def test_snapshots_do_not_pile_up_forever(tmp_path):
     backup = manager.create_bytes()
     for _ in range(9):
         manager.restore(backup)
+    # Everything by that name, not just the finished snapshots: each one holds
+    # the whole enclosure's secrets, whatever its extension.
     assert len(list((tmp_path / "a" / "backups").glob("before-restore-*"))) <= 5
+
+
+def test_restores_in_the_same_second_do_not_shove_a_snapshot_aside(tmp_path):
+    """The stamp resolves to the second; two restores can share one.
+
+    The atomic write keeps a .bak of whatever it replaces, so an overwritten
+    snapshot used to survive as a second copy of the secrets under a name
+    nothing pruned.
+    """
+
+    _identity, _settings, _pitrac, _pairings, manager = build(tmp_path)
+    backup = manager.create_bytes()
+    backups = tmp_path / "a" / "backups"
+
+    with mock.patch.object(backup_module.time, "strftime", return_value="20260101-120000"):
+        first = manager.restore(backup).pre_restore_backup
+        second = manager.restore(backup).pre_restore_backup
+
+    assert first != second, "one restore must not overwrite another's snapshot"
+    assert list(backups.glob("*.bak")) == []
+    assert sorted(path.name for path in backups.glob("before-restore-*")) == [
+        "before-restore-20260101-120000-2.pitracbackup",
+        "before-restore-20260101-120000.pitracbackup",
+    ]
+
+
+def test_debris_from_an_interrupted_write_is_cleared_away(tmp_path):
+    _identity, _settings, _pitrac, _pairings, manager = build(tmp_path)
+    backups = tmp_path / "a" / "backups"
+    backups.mkdir(parents=True, exist_ok=True)
+    stray = backups / "before-restore-20200101-000000.pitracbackup.new"
+    stray.write_text("half a snapshot, all of the secrets")
+
+    manager.restore(manager.create_bytes())
+
+    assert not stray.exists()
 
 
 # --- Restoring onto a different enclosure ---------------------------------
