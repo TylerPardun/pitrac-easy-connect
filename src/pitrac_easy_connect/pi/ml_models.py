@@ -236,6 +236,7 @@ def install_from_source(
         # the docstring above promises.
         installed_dir.mkdir(parents=True, exist_ok=True)
         kept = {}
+        placed = []
         try:
             for name in MODEL_NAMES:
                 target = installed_dir / name
@@ -245,8 +246,13 @@ def install_from_source(
                     os.replace(target, aside)
                     kept[name] = aside
                 shutil.move(str(staged / name), str(target))
+                placed.append(target)
         except Exception:
-            # Put back whatever was there before giving up.
+            # Undo everything this attempt did. Only restoring what had a
+            # previous copy left the first model of a *fresh* install sitting
+            # there on its own, which is a machine that half works.
+            for target in placed:
+                shutil.rmtree(target, ignore_errors=True)
             for name, aside in kept.items():
                 target = installed_dir / name
                 shutil.rmtree(target, ignore_errors=True)

@@ -1,3 +1,4 @@
+import pathlib
 """Backup and restore.
 
 Calibration is the thing worth protecting: Wi-Fi takes a minute to re-enter and a
@@ -198,6 +199,8 @@ def test_restoring_keeps_the_relay_pointers_this_build_wrote(tmp_path):
     }
     from pitrac_easy_connect.pi.backup import checksum_of
 
+    from pitrac_easy_connect.pi.backup import checksum_of
+
     document["checksum"] = checksum_of(document["payload"])
 
     manager.restore(json.dumps(document))
@@ -308,6 +311,8 @@ def test_a_broken_identity_section_changes_nothing(tmp_path):
     document["payload"][SECTION_IDENTITY]["setupPassword"] = "short"
     from pitrac_easy_connect.pi.backup import checksum_of
 
+    from pitrac_easy_connect.pi.backup import checksum_of
+
     document["checksum"] = checksum_of(document["payload"])
     before = identity.identity
 
@@ -322,3 +327,39 @@ def test_sections_that_are_absent_are_reported_as_skipped(tmp_path):
     result = manager.restore(backup, identity=True, pairings=True)
     assert SECTION_IDENTITY in result.skipped
     assert SECTION_PAIRINGS in result.skipped
+
+
+def test_a_bad_identity_stops_the_restore_before_anything_changes(tmp_path):
+    """Sections used to be checked as they were applied, so a backup with good
+    calibration and a bad identity rewrote calibration and settings and then
+    raised, leaving the enclosure half restored."""
+
+    _identity, _settings, pitrac, _pairings, manager = build(tmp_path)
+    document = json.loads(manager.create_bytes(include_identity=True).decode())
+
+    calibration_before = pitrac.calibration_path.read_text()
+    document["payload"]["identity"]["deviceId"] = "!!not a device id!!"
+    from pitrac_easy_connect.pi.backup import checksum_of
+
+    document["checksum"] = checksum_of(document["payload"])
+
+    with pytest.raises(Exception):
+        manager.restore(document, calibration=True, preferences=True, identity=True)
+
+    assert pitrac.calibration_path.read_text() == calibration_before, \
+        "calibration must not have been written before the identity was checked"
+
+
+def test_the_undo_file_can_restore_the_paired_computers(tmp_path):
+    """The snapshot advertised as an undo omitted pairings, so a restore that
+    replaced the paired computers could not actually be reversed."""
+
+    _identity, _settings, _pitrac, pairings, manager = build(tmp_path)
+    original = pairings.create_pairing("The original PC").pairing_id
+
+    document = json.loads(manager.create_bytes(include_pairings=True).decode())
+    result = manager.restore(document, pairings=True)
+
+    snapshot = json.loads(pathlib.Path(result.pre_restore_backup).read_text())
+    assert "pairings" in snapshot["payload"], "the undo file must carry them"
+    assert original in json.dumps(snapshot["payload"]["pairings"])

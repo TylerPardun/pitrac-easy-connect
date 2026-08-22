@@ -62,6 +62,12 @@ jobs:
         if: runner.os == 'macOS'
         run: iconutil -c icns packaging/icon/PiTrac.iconset -o packaging/icon/PiTrac.icns
 
+      # Before the build, so the file PyInstaller embeds and the zips
+      # carry is this platform's own list. Generated afterwards, Windows
+      # shipped the macOS dependencies that happened to be checked in.
+      - name: Collect third-party licence texts
+        run: python packaging/collect-licences.py
+
       - name: Build the app
         run: python -m PyInstaller --noconfirm --clean --distpath dist --workpath build packaging/PiTrac-Easy-Connect.spec
 
@@ -89,9 +95,6 @@ jobs:
           Copy-Item LICENSE, NOTICE.md dist/payload/
           Copy-Item THIRD-PARTY-LICENCES.txt dist/payload/
           Compress-Archive -Path dist/payload/* -DestinationPath dist/PiTrac-Easy-Connect-windows.zip -Force
-
-      - name: Collect third-party licence texts
-        run: python packaging/collect-licences.py
 
       # Built and never run is not the same as working. The macOS app is
       # exercised by hand here; this is the only thing that touches Windows.

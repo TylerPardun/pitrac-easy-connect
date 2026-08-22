@@ -641,3 +641,50 @@ def test_confirmation_from_the_right_network_is_accepted(tmp_path):
     result = provisioner.confirm()
     assert result.ok is True
     assert not provisioner._journal.get("pending")
+
+
+def test_direct_mode_is_not_undone_by_an_older_pending_change(tmp_path):
+    """A confirmation deadline outlives whatever set it. Entering Direct Mode
+    with one still running meant it expired minutes later and quietly put the
+    enclosure back on the residence network."""
+
+    backend, provisioner, clock = build(tmp_path=tmp_path)
+    provisioner.join("Ferndale", "GoodPassword1")
+    provisioner.confirm()
+
+    provisioner.join("Neighbour-2G", "unknown")     # left unconfirmed
+    assert provisioner.awaiting_confirmation is True
+
+    provisioner.set_direct_mode(True)
+    assert provisioner.direct_mode is True
+    assert provisioner.awaiting_confirmation is False, \
+        "the old deadline must be gone, not merely ignored"
+
+    # Long after the deadline would have fired.
+    clock.advance(600)
+    provisioner.ensure_online(grace=0.0)
+    assert provisioner.direct_mode is True, "Direct Mode was undone by a stale timer"
+
+
+def test_a_network_reset_cancels_a_pending_change(tmp_path):
+    backend, provisioner, clock = build(tmp_path=tmp_path)
+    provisioner.join("Ferndale", "GoodPassword1")
+    provisioner.confirm()
+    provisioner.join("Neighbour-2G", "unknown")
+
+    provisioner.forget_all_networks()
+    assert provisioner.awaiting_confirmation is False
+    assert not provisioner._journal.get("pending")
+
+
+def test_a_second_join_replaces_the_first_pending_change(tmp_path):
+    backend, provisioner, clock = build(tmp_path=tmp_path)
+    provisioner.join("Ferndale", "GoodPassword1")
+    provisioner.confirm()
+
+    provisioner.join("Neighbour-2G", "unknown")
+    provisioner.join("Ferndale", "GoodPassword1")
+
+    pending = provisioner._journal.get("pending")
+    assert not pending or pending.get("ssid") == "Ferndale", \
+        "the older attempt must not still be pending"

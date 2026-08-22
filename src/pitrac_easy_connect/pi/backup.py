@@ -296,6 +296,12 @@ class BackupManager:
                     ),
                 )
 
+        # Check everything that was asked for before changing anything. The
+        # sections used to be validated as they were applied, so a backup with
+        # good calibration and a bad identity rewrote calibration and settings
+        # and then raised, leaving the enclosure half restored.
+        self._check_sections(payload, available, identity, pairings)
+
         # Always take a snapshot first, so a restore can itself be undone.
         result = RestoreResult(pre_restore_backup=self._snapshot())
 
@@ -330,6 +336,14 @@ class BackupManager:
 
         return result
 
+    def _check_sections(self, payload, available, identity: bool, pairings: bool) -> None:
+        """Refuse a restore that would fail partway, before it starts."""
+
+        if identity and SECTION_IDENTITY in available:
+            self.identity_store.validate(payload[SECTION_IDENTITY])
+        if pairings and SECTION_PAIRINGS in available:
+            self.pairings.validate(payload[SECTION_PAIRINGS])
+
     def _restore_preferences(self, section: Dict[str, Any]) -> None:
         settings = section.get("settings")
         if isinstance(settings, dict):
@@ -358,7 +372,15 @@ class BackupManager:
             path = self.backup_dir / "before-restore-{}.pitracbackup".format(
                 time.strftime("%Y%m%d-%H%M%S")
             )
-            atomic_write_bytes(path, self.create_bytes(include_identity=True), mode=0o600)
+            # Everything the restore can change has to be in here, or the undo
+            # file it advertises cannot actually undo it. Pairings were left
+            # out, so a restore that replaced the paired computers could not
+            # be reversed.
+            atomic_write_bytes(
+                path,
+                self.create_bytes(include_identity=True, include_pairings=True),
+                mode=0o600,
+            )
             self._prune_snapshots()
             return str(path)
         except OSError:

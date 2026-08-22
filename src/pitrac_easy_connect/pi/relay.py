@@ -198,12 +198,38 @@ class ShotRelay:
             self._send_to_companion = sender
 
     def detach_companion(self) -> None:
+        """The computer has gone. Answer anything still in the air.
+
+        Clearing the pending records was not enough: PiTrac was left waiting
+        for a reply that would never come, and the shots did not show up as
+        failures anywhere, so a disconnect mid-swing looked like nothing had
+        happened at all. This does what the send-failure path already does.
+        """
+
         with self._lock:
             self._send_to_companion = None
-            # Anything still waiting will never be answered now.
-            for record in self._pending.values():
+            stranded = list(self._pending.values())
+            for record in stranded:
                 record.message = "the connection to the computer was lost"
+                self.messages_failed += 1
+                if record.is_shot:
+                    self.shots_failed += 1
             self._pending.clear()
+            connections = dict(self._connections)
+
+        reason = "the connection to the computer was lost"
+        for record in stranded:
+            try:
+                simulator = Simulator(record.simulator)
+            except ValueError:
+                continue
+            connection = connections.get(simulator)
+            if connection is None:
+                continue
+            try:
+                connection.send(unavailable_reply(simulator, reason))
+            except OSError:
+                pass
 
     @property
     def companion_attached(self) -> bool:

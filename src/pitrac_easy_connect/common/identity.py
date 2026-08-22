@@ -178,14 +178,7 @@ class IdentityStore:
         whose password no longer works.
         """
 
-        device_id = str(section.get("deviceId", "")).strip().upper()
-        setup_password = str(section.get("setupPassword", ""))
-        display_name = " ".join(str(section.get("displayName", "")).split())
-
-        if not device_id or not all(character in _ID_ALPHABET for character in device_id):
-            raise ValueError("The backup does not contain a usable device ID")
-        if len(setup_password) < 8:
-            raise ValueError("The backup does not contain a usable setup password")
+        device_id, setup_password, display_name = self.validate(section)
 
         self._store.update(
             {
@@ -196,6 +189,31 @@ class IdentityStore:
             }
         )
         return self.identity
+
+    @staticmethod
+    def validate(section: Dict[str, Any]):
+        """Check a saved identity without applying it.
+
+        Separate from ``restore`` so a caller can find out whether a whole
+        backup is usable before it changes anything.
+        """
+
+        device_id = str(section.get("deviceId", "")).strip().upper()
+        setup_password = str(section.get("setupPassword", ""))
+        display_name = " ".join(str(section.get("displayName", "")).split())
+
+        if not device_id or not all(character in _ID_ALPHABET for character in device_id):
+            raise ValueError("The backup does not contain a usable device ID")
+        if len(device_id) != DEVICE_ID_LENGTH:
+            raise ValueError("The backup's device ID is not the right length")
+        if not 8 <= len(setup_password) <= 63:
+            # 63 is the longest a WPA2 passphrase can be. A longer one would be
+            # saved and then rejected by the radio, which is worse than saying
+            # so now.
+            raise ValueError("The backup does not contain a usable setup password")
+        if len(display_name) > 60:
+            raise ValueError("The backup's name for this enclosure is too long")
+        return device_id, setup_password, display_name
 
     def regenerate_setup_password(self) -> DeviceIdentity:
         self._store.set("setupPassword", new_setup_password())

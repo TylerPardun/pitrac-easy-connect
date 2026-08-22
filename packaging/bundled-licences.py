@@ -41,6 +41,28 @@ CREDITED_AS = {
 }
 
 
+#: sys.stdlib_module_names arrived in 3.10, and this project supports 3.9.
+def _standard_library_names():
+    names = getattr(sys, "stdlib_module_names", None)
+    if names:
+        return set(names)
+    import os
+    import sysconfig
+
+    found = set(sys.builtin_module_names)
+    stdlib = sysconfig.get_paths().get("stdlib")
+    if stdlib and os.path.isdir(stdlib):
+        for entry in os.listdir(stdlib):
+            if entry.endswith(".py"):
+                found.add(entry[:-3])
+            elif "." not in entry:
+                found.add(entry)
+    return found
+
+
+_STDLIB = _standard_library_names()
+
+
 def bundled():
     text = TOC.read_text()
     found = collections.Counter()
@@ -50,7 +72,7 @@ def bundled():
         root = name.split(".")[0].split("/")[0]
         if root in OURS or root.startswith("_"):
             continue
-        if root in sys.stdlib_module_names:
+        if root in _STDLIB:
             continue
         found[CREDITED_AS.get(root, root)] += 1
     return found

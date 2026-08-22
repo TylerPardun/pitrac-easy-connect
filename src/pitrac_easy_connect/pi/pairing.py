@@ -370,6 +370,21 @@ class PairingManager:
         with self._lock:
             return {"pairings": dict(self._store.get("pairings") or {})}
 
+    @staticmethod
+    def validate(section: Dict[str, Any]) -> None:
+        """Check a saved pairing section without applying it."""
+
+        if not isinstance(section, dict):
+            raise ValueError("The backup's paired computers are not readable")
+        entries = section.get("pairings")
+        if entries is not None and not isinstance(entries, dict):
+            raise ValueError("The backup's paired computers are not readable")
+        for pairing_id, record in (entries or {}).items():
+            if not isinstance(pairing_id, str) or not pairing_id:
+                raise ValueError("The backup contains a paired computer with no identifier")
+            if not isinstance(record, dict) or not record.get("secret"):
+                raise ValueError("The backup contains a paired computer with no key")
+
     def restore(self, section: Dict[str, Any]) -> None:
         pairings = section.get("pairings")
         if not isinstance(pairings, dict):

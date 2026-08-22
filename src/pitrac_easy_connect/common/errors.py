@@ -151,6 +151,13 @@ BACKUP_NEEDS_A_COMPUTER = _define(
     "Nothing was changed, and a backup without those parts can still be saved here.",
     "Save it from PiTrac Easy-Connect on a computer that is already paired.",
 )
+OWNER_CARD_NEEDS_A_COMPUTER = _define(
+    "PT-CFG-006",
+    "The owner card is not shown over your home network.",
+    "Nothing was changed.",
+    "Open it from PiTrac Easy-Connect on a paired computer, or from PiTrac's "
+    "own setup network where being connected means being in the room.",
+)
 PAIR_NOT_ACCEPTING = _define(
     "PT-PAIR-001",
     "PiTrac is not letting new computers connect right now.",

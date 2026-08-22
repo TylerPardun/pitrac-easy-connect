@@ -150,7 +150,7 @@ def build() -> tuple:
 
     sections.append(
         "Third-party licences bundled in PiTrac Easy-Connect\n"
-        "=" * 52 + "\n\n"
+        + ("=" * 52) + "\n\n"
         "The Raspberry Pi service and running from source use only the Python\n"
         "standard library. The packaged macOS and Windows applications bundle\n"
         "the components below, and their licence texts follow in full.\n"

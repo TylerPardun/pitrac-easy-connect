@@ -26,7 +26,11 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Callable, Dict
 from urllib.parse import urlparse
 
-from ..common.errors import BACKUP_NEEDS_A_COMPUTER, EasyConnectError
+from ..common.errors import (
+    BACKUP_NEEDS_A_COMPUTER,
+    OWNER_CARD_NEEDS_A_COMPUTER,
+    EasyConnectError,
+)
 from .downloads import CompanionDownloads
 from .portal_page import PAGE, downloads_page
 
@@ -120,7 +124,11 @@ class PortalHandler(BaseHTTPRequestHandler):
             self._download_backup()
             return
         if path == "/api/owner-card":
-            self._guarded(lambda: {"text": self._service().identity.owner_card()})
+            # The card carries the setup Wi-Fi password. Treated like the
+            # backup that carries it: available from the enclosure's own setup
+            # network, where being connected already means being in the room,
+            # and otherwise only through a paired computer.
+            self._guarded(self._owner_card)
             return
         self._json(HTTPStatus.NOT_FOUND, {"error": {"failed": "That page does not exist"}})
 
@@ -266,6 +274,15 @@ class PortalHandler(BaseHTTPRequestHandler):
         self.send_header("X-Content-Type-Options", "nosniff")
         self.end_headers()
         self.wfile.write(payload)
+
+    def _owner_card(self) -> Dict[str, Any]:
+        service = self._service()
+        if not service.provisioner.on_setup_hotspot:
+            raise EasyConnectError(
+                OWNER_CARD_NEEDS_A_COMPUTER,
+                "the owner card is not shown over the residence network",
+            )
+        return {"text": service.identity.owner_card()}
 
     def _download_backup(self) -> None:
         """Hand the browser a backup file to save.

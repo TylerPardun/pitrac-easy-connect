@@ -1,56 +1,5 @@
 Third-party licences bundled in PiTrac Easy-Connect
-=Third-party licences bundled in PiTrac Easy-Connect
-=Third-party licences bundled in PiTrac Easy-Connect
-=Third-party licences bundled in PiTrac Easy-Connect
-=Third-party licences bundled in PiTrac Easy-Connect
-=Third-party licences bundled in PiTrac Easy-Connect
-=Third-party licences bundled in PiTrac Easy-Connect
-=Third-party licences bundled in PiTrac Easy-Connect
-=Third-party licences bundled in PiTrac Easy-Connect
-=Third-party licences bundled in PiTrac Easy-Connect
-=Third-party licences bundled in PiTrac Easy-Connect
-=Third-party licences bundled in PiTrac Easy-Connect
-=Third-party licences bundled in PiTrac Easy-Connect
-=Third-party licences bundled in PiTrac Easy-Connect
-=Third-party licences bundled in PiTrac Easy-Connect
-=Third-party licences bundled in PiTrac Easy-Connect
-=Third-party licences bundled in PiTrac Easy-Connect
-=Third-party licences bundled in PiTrac Easy-Connect
-=Third-party licences bundled in PiTrac Easy-Connect
-=Third-party licences bundled in PiTrac Easy-Connect
-=Third-party licences bundled in PiTrac Easy-Connect
-=Third-party licences bundled in PiTrac Easy-Connect
-=Third-party licences bundled in PiTrac Easy-Connect
-=Third-party licences bundled in PiTrac Easy-Connect
-=Third-party licences bundled in PiTrac Easy-Connect
-=Third-party licences bundled in PiTrac Easy-Connect
-=Third-party licences bundled in PiTrac Easy-Connect
-=Third-party licences bundled in PiTrac Easy-Connect
-=Third-party licences bundled in PiTrac Easy-Connect
-=Third-party licences bundled in PiTrac Easy-Connect
-=Third-party licences bundled in PiTrac Easy-Connect
-=Third-party licences bundled in PiTrac Easy-Connect
-=Third-party licences bundled in PiTrac Easy-Connect
-=Third-party licences bundled in PiTrac Easy-Connect
-=Third-party licences bundled in PiTrac Easy-Connect
-=Third-party licences bundled in PiTrac Easy-Connect
-=Third-party licences bundled in PiTrac Easy-Connect
-=Third-party licences bundled in PiTrac Easy-Connect
-=Third-party licences bundled in PiTrac Easy-Connect
-=Third-party licences bundled in PiTrac Easy-Connect
-=Third-party licences bundled in PiTrac Easy-Connect
-=Third-party licences bundled in PiTrac Easy-Connect
-=Third-party licences bundled in PiTrac Easy-Connect
-=Third-party licences bundled in PiTrac Easy-Connect
-=Third-party licences bundled in PiTrac Easy-Connect
-=Third-party licences bundled in PiTrac Easy-Connect
-=Third-party licences bundled in PiTrac Easy-Connect
-=Third-party licences bundled in PiTrac Easy-Connect
-=Third-party licences bundled in PiTrac Easy-Connect
-=Third-party licences bundled in PiTrac Easy-Connect
-=Third-party licences bundled in PiTrac Easy-Connect
-=Third-party licences bundled in PiTrac Easy-Connect
-=
+====================================================
 
 The Raspberry Pi service and running from source use only the Python
 standard library. The packaged macOS and Windows applications bundle

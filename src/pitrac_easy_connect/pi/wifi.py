@@ -352,6 +352,10 @@ class WifiProvisioner:
             if not str(ssid).strip():
                 raise EasyConnectError(NET_NOT_FOUND, "no network name was given")
             self._validate_details(str(ssid), password)
+            # A previous unconfirmed attempt still has a deadline and a
+            # checkpoint. Starting another on top of them means the older one
+            # expires later and rolls back a change that has been superseded.
+            self._cancel_pending_change()
 
             self._reject_unsupported_security(ssid, hidden)
 
@@ -614,10 +618,34 @@ class WifiProvisioner:
             ssid=connection.ssid,
         )
 
+    def _cancel_pending_change(self) -> None:
+        """Abandon an unconfirmed network change, without undoing it.
+
+        Anything that deliberately changes where the enclosure lives has to
+        call this first. A confirmation deadline and its NetworkManager
+        checkpoint outlive whatever set them, so entering Direct Mode with one
+        still running meant the old timer expired minutes later and quietly
+        put the enclosure back on the residence network -- undoing a choice
+        the owner had just made, with nothing on screen to explain it.
+
+        The caller has already decided where the machine should be, so the
+        checkpoint is destroyed rather than rolled back.
+        """
+
+        if self._checkpoint:
+            try:
+                self.backend.destroy_checkpoint(self._checkpoint)
+            except BackendError:
+                pass
+            self._checkpoint = None
+        self._pending_deadline = None
+        self._journal.update({"pending": None})
+
     def set_direct_mode(self, enabled: bool) -> ProvisioningResult:
         """Play without a router: the PC joins the enclosure's own signal."""
 
         with self._lock:
+            self._cancel_pending_change()
             self._journal.update({"directMode": bool(enabled)})
             if enabled:
                 return self._fall_back_to_hotspot(None)
@@ -627,6 +655,18 @@ class WifiProvisioner:
             return self.ensure_online(grace=self.LEAVING_DIRECT_MODE_GRACE_SECONDS)
 
     @property
+    def on_setup_hotspot(self) -> bool:
+        """Whether the enclosure is currently serving its own setup network.
+
+        Being connected to it means being within Wi-Fi range of the enclosure,
+        which is a meaningfully different thing from being somewhere on the
+        residence network.
+        """
+
+        connection = self.backend.active_connection()
+        return bool(connection and connection.is_hotspot)
+
+    @property
     def direct_mode(self) -> bool:
         return bool(self._journal.get("directMode"))
 
@@ -634,6 +674,9 @@ class WifiProvisioner:
         """Reset networking only. Calibration and pairings are not touched."""
 
         with self._lock:
+            # A pending change would otherwise expire later and try to restore
+            # a profile this has just deleted.
+            self._cancel_pending_change()
             for profile in self.backend.saved_profiles():
                 try:
                     self.backend.forget_profile(profile)

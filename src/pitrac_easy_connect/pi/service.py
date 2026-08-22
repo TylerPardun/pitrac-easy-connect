@@ -738,6 +738,7 @@ def _can_run(package: "Path") -> bool:
     no longer resolves, a version that needs a newer Python.
     """
 
+    import os
     import subprocess
     import sys
 
@@ -749,10 +750,30 @@ def _can_run(package: "Path") -> bool:
         "assert p.__version__;"
         "print('ok')"
     ).format(str(package.parent))
+    # The service runs as root, and this executes code that was just
+    # downloaded. Updates are not signed yet, so the download is trusted only
+    # as far as TLS to the release host. Dropping to an unprivileged user for
+    # the check means that trust does not have to extend to root as well.
+    def drop_privileges():                       # pragma: no cover - root only
+        import pwd
+
+        try:
+            nobody = pwd.getpwnam("nobody")
+        except KeyError:
+            return
+        os.setgroups([])
+        os.setgid(nobody.pw_gid)
+        os.setuid(nobody.pw_uid)
+
+    lower = None
+    if hasattr(os, "geteuid") and os.geteuid() == 0 and hasattr(os, "setuid"):
+        lower = drop_privileges
+
     try:
         done = subprocess.run(
             [sys.executable, "-c", probe],
             capture_output=True, text=True, timeout=60,
+            preexec_fn=lower,
         )
     except (OSError, subprocess.SubprocessError):
         return False
