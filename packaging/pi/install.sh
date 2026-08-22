@@ -16,7 +16,9 @@
 #
 set -euo pipefail
 
+APP_ROOT=/usr/lib/pitrac-easy-connect-releases
 APP_DIR=/usr/lib/pitrac-easy-connect
+VERSION="$(python3 -c "import re,pathlib,sys; print(re.search(r'__version__ = \"([^\"]+)\"', pathlib.Path(sys.argv[1]).read_text()).group(1))" "$(dirname "$0")/../../src/pitrac_easy_connect/__init__.py" 2>/dev/null || echo unknown)"
 STATE_DIR=/var/lib/pitrac-easy-connect
 UNIT=/etc/systemd/system/pitrac-easy-connect.service
 SERVICE=pitrac-easy-connect.service
@@ -48,7 +50,7 @@ if [ "$UNINSTALL" = yes ]; then
     step "Removing PiTrac Easy Connect"
     systemctl disable --now "$SERVICE" 2>/dev/null || true
     rm -f "$UNIT" /etc/avahi/services/pitrac-easy-connect.service
-    rm -rf "$APP_DIR" /usr/share/doc/pitrac-easy-connect
+    rm -rf "$APP_DIR" "$APP_ROOT" /usr/share/doc/pitrac-easy-connect
 
     # Ours to remove: a drop-in that changed logging for the whole system.
     # This used to sit after the exit below, so it never ran.
@@ -134,12 +136,29 @@ find "$STAGING" -name '._*' -type f -delete 2>/dev/null || true
 python3 -c "import sys; sys.path.insert(0, '$STAGING'); import pitrac_easy_connect" \
     || die "The copied software did not load. The existing installation was left alone."
 
-# Swap. The old copy is kept until the service has started.
-PREVIOUS="${APP_DIR}.previous"
-rm -rf "$PREVIOUS"
-[ -d "$APP_DIR" ] && mv "$APP_DIR" "$PREVIOUS"
-mv "$STAGING" "$APP_DIR"
-say "Installed to $APP_DIR"
+# Versioned directories behind a symlink. Two renames left a moment with no
+# application directory at all, and a power cut in that moment leaves a Pi
+# with no software and no way to reach it. A symlink swap is one atomic
+# operation: it either points at the old version or the new one, never at
+# nothing.
+RELEASES="${APP_ROOT}/releases"
+THIS_RELEASE="${RELEASES}/${VERSION}-$(date +%s)"
+install -d -m 0755 "$RELEASES"
+mv "$STAGING" "$THIS_RELEASE"
+
+PREVIOUS_TARGET=""
+if [ -L "$APP_DIR" ]; then
+    PREVIOUS_TARGET="$(readlink -f "$APP_DIR")"
+elif [ -d "$APP_DIR" ]; then
+    # Upgrading from a layout that had a real directory here.
+    PREVIOUS_TARGET="${RELEASES}/before-symlinks"
+    rm -rf "$PREVIOUS_TARGET"
+    mv "$APP_DIR" "$PREVIOUS_TARGET"
+fi
+
+ln -sfn "$THIS_RELEASE" "${APP_DIR}.new"
+mv -Tf "${APP_DIR}.new" "$APP_DIR"
+say "Installed to $THIS_RELEASE"
 
 # Settings, pairings, and the device identity live here and survive upgrades.
 install -d -m 0750 "$STATE_DIR"
@@ -191,14 +210,24 @@ for _ in $(seq 1 30); do
     if systemctl is-active --quiet "$SERVICE"; then break; fi
     sleep 1
 done
-if systemctl is-active --quiet "$SERVICE"; then
-    rm -rf "$PREVIOUS"
+# Sustained health, not the first moment systemd says "active". A service that
+# starts and dies two seconds later used to pass this and take the only
+# working copy with it.
+HEALTHY=yes
+for _ in 1 2 3 4 5 6; do
+    sleep 1
+    systemctl is-active --quiet "$SERVICE" || { HEALTHY=no; break; }
+done
+
+if [ "$HEALTHY" = yes ]; then
+    # Keep the previous release. Disk is cheap; a Pi with no way back is not.
+    ls -1dt "${RELEASES}"/* 2>/dev/null | tail -n +3 | xargs -r rm -rf
 else
     journalctl -u "$SERVICE" -n 30 --no-pager || true
-    if [ -d "$PREVIOUS" ]; then
+    if [ -n "$PREVIOUS_TARGET" ] && [ -d "$PREVIOUS_TARGET" ]; then
         say "Putting the previous version back"
-        rm -rf "$APP_DIR"
-        mv "$PREVIOUS" "$APP_DIR"
+        ln -sfn "$PREVIOUS_TARGET" "${APP_DIR}.new"
+        mv -Tf "${APP_DIR}.new" "$APP_DIR"
         systemctl restart "$SERVICE" 2>/dev/null || true
     fi
     die "The service did not start. The log above says why; the previous version was restored."

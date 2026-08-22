@@ -36,6 +36,9 @@ ProtectSystem=true
 # the update fails at the moment it tries to swap the new copy in, and only on
 # a real Pi -- a test that writes to a temporary directory never sees it.
 ReadWritePaths=/usr/lib/pitrac-easy-connect
+# Versioned releases live here and the symlink above points into them,
+# so a self-update writes here rather than into the symlink itself.
+ReadWritePaths=/usr/lib/pitrac-easy-connect-releases
 ProtectKernelTunables=yes
 ProtectKernelModules=yes
 ProtectControlGroups=yes
