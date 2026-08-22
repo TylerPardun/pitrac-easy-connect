@@ -114,13 +114,32 @@ Download the build for your computer from
 | Windows 11 | `PiTrac-Easy-Connect-windows.zip` |
 | Linux, or any OS with Python 3.9+ | `PiTrac-Easy-Connect-*.pyz` |
 
-Neither native build is code signed yet, so both operating systems warn the
-first time:
+Neither native build carries a code-signing certificate, so both operating
+systems warn the first time:
 
 | Platform | What to do |
 |---|---|
 | macOS | Right-click the app and choose **Open** rather than double-clicking |
 | Windows | Choose **More info**, then **Run anyway** |
+
+### Checking a download
+
+Every release is signed at build time, and each one ships a `SHA256SUMS.txt`.
+To confirm a file came from this repository's own build, with the
+[GitHub CLI](https://cli.github.com):
+
+```bash
+gh attestation verify PiTrac-Easy-Connect-windows.zip --repo TylerPardun/pitrac-easy-connect
+```
+
+That names the workflow, commit and run that produced it. To check the bytes
+alone, compare them against `SHA256SUMS.txt` — `sha256sum -c` on Linux,
+`shasum -a 256 -c` on macOS, `Get-FileHash` on Windows.
+
+This proves where a file came from. It is not the certificate that would stop
+the warnings above; those need paid programmes from Microsoft and Apple. The
+enclosure enforces the same idea for itself and refuses an update whose bytes
+do not match the checksum its release publishes.
 
 Open the app and follow five steps: find the enclosure, choose your simulator,
 open it, send a test shot, and play. The guide does not appear again after

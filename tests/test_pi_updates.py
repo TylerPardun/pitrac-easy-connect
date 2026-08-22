@@ -9,6 +9,7 @@ Nothing here talks to GitHub. A local stand-in serves a release, which is also
 the only way to test what happens when the download is wrong.
 """
 
+import hashlib
 import json
 import os
 import threading
@@ -63,8 +64,15 @@ def upstream(tmp_path):
     class Handler(http.server.BaseHTTPRequestHandler):
         def do_GET(self):
             if self.path.endswith("/releases/latest"):
+                # The real API states a sha256 for every asset, and the
+                # enclosure refuses an archive that does not match it, so a
+                # stand-in without one is not a useful stand-in.
+                digest = state.get("digest")
+                if digest is None:
+                    digest = "sha256:" + hashlib.sha256(state["blob"]).hexdigest()
                 assets = ([{"name": "PiTrac-Easy-Connect.pyz",
-                            "browser_download_url": base[0] + "/download"}]
+                            "browser_download_url": base[0] + "/download",
+                            "digest": digest}]
                           if state["asset"] else [])
                 body = json.dumps({"tag_name": state["tag"], "assets": assets,
                                    "html_url": "http://example.invalid"}).encode()
@@ -475,3 +483,86 @@ def test_the_check_stays_as_root_rather_than_failing_when_nobody_is_missing(monk
 
     monkeypatch.setattr(pwd, "getpwnam", no_such_user)
     assert service_module._unprivileged() == {}
+
+
+# --- Checking the download against what the release says it is -------------
+
+
+def _release_with(tmp_path, blob, digest=None):
+    release = {
+        "tag_name": "v9.9.9",
+        "assets": [{
+            "name": "PiTrac-Easy-Connect-9.9.9.pyz",
+            "browser_download_url": "https://example.invalid/a.pyz",
+        }],
+    }
+    if digest is not None:
+        release["assets"][0]["digest"] = digest
+    return release
+
+
+def _updater(tmp_path, release, blob):
+    from pitrac_easy_connect.common.updates import ArchiveUpdater
+
+    updater = ArchiveUpdater(
+        installed="1.0.0",
+        app_dir=tmp_path / "app",
+        fetch=lambda url: blob,
+    )
+    updater._release = lambda: release
+    return updater
+
+
+def test_an_archive_that_does_not_match_its_published_checksum_is_refused(tmp_path):
+    """The listing and the bytes come from different hosts."""
+
+    import hashlib
+
+    blob = build_archive(tmp_path, "9.9.9")
+    wrong = hashlib.sha256(b"something else entirely").hexdigest()
+    updater = _updater(tmp_path, _release_with(tmp_path, blob, "sha256:" + wrong), blob)
+
+    result = updater.apply()
+
+    assert result["applied"] is False
+    assert "checksum" in result["detail"]
+    assert not (tmp_path / "app").exists(), "nothing may be staged from a bad download"
+
+
+def test_an_archive_that_matches_its_checksum_is_installed(tmp_path):
+    import hashlib
+
+    blob = build_archive(tmp_path, "9.9.9")
+    right = hashlib.sha256(blob).hexdigest()
+    (tmp_path / "app").mkdir(parents=True)
+    updater = _updater(tmp_path, _release_with(tmp_path, blob, "sha256:" + right), blob)
+
+    assert updater.apply()["applied"] is True
+
+
+def test_a_release_with_no_checksum_at_all_is_refused(tmp_path):
+    blob = build_archive(tmp_path, "9.9.9")
+    updater = _updater(tmp_path, _release_with(tmp_path, blob, None), blob)
+
+    result = updater.apply()
+
+    assert result["applied"] is False
+    assert "no checksum" in result["detail"]
+
+
+def test_the_digest_is_read_from_a_real_release_listing():
+    """Exactly the shape api.github.com returns."""
+
+    from pitrac_easy_connect.common.updates import ArchiveUpdater
+
+    release = {
+        "assets": [
+            {"name": "PiTrac-Easy-Connect-macos.zip",
+             "digest": "sha256:28e185448113a1d90036f4b8797ade7b2c6e5f2a1854c37139cf8ff978f4cd8c"},
+            {"name": "PiTrac-Easy-Connect-0.3.0.pyz",
+             "digest": "sha256:865aa95c7052df8b7c498334b4f6b14a58cf0e8b15b6d5695863720851fedf15"},
+        ]
+    }
+    assert ArchiveUpdater._archive_digest(release) == (
+        "865aa95c7052df8b7c498334b4f6b14a58cf0e8b15b6d5695863720851fedf15"
+    )

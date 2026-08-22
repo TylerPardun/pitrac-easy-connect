@@ -174,6 +174,11 @@ jobs:
     permissions:
       # The only job that writes anything back to the repository.
       contents: write
+      # Signing. id-token lets this job prove to Sigstore which workflow, at
+      # which commit, produced these files; attestations lets it record the
+      # result against the repository so anyone can check it later.
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
       - name: The tag must match the version in the package
@@ -188,12 +193,39 @@ jobs:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4
         with:
           path: artifacts
+
+      # Every downloadable file gathered into one directory, so the checksums
+      # and the signatures cover exactly the set that gets published.
+      - name: Gather what is being released
+        run: |
+          mkdir -p release
+          find artifacts -type f \( -name '*.zip' -o -name '*.pyz' \) -exec cp {} release/ \;
+          ls -l release
+
+      - name: Write the checksums
+        run: |
+          cd release
+          sha256sum * > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      # Signs the files themselves, keylessly, through Sigstore: the signature
+      # records the workflow, repository and commit that built them, and is
+      # checkable with `gh attestation verify`. This is not a code-signing
+      # certificate -- it does not quiet SmartScreen or Gatekeeper -- but it is
+      # what proves a download came from this repository's own build.
+      - name: Sign the release
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8  # v4.2.2
+        with:
+          subject-path: |
+            release/*.zip
+            release/*.pyz
+
       - name: Publish the release
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65  # v2
         with:
-          files: artifacts/**/*
+          files: release/*
           generate_release_notes: true
-          # Neither build is signed yet, so say so where people download them.
+          # What the signing does and does not do, said where people download.
           body: |
             Download the build for your computer.
 
@@ -207,8 +239,31 @@ jobs:
             **Linux** — the `.pyz` runs on any computer with Python 3.9 or
             newer, without installation.
 
-            Neither build is code-signed yet, which is why both operating
-            systems warn about them.
+            ### Checking what you downloaded
+
+            Every file here is signed at build time, and `SHA256SUMS.txt`
+            lists the checksums. To confirm a download came from this
+            repository's own build, with the [GitHub CLI](https://cli.github.com):
+
+            ```
+            gh attestation verify PiTrac-Easy-Connect-windows.zip --repo TylerPardun/pitrac-easy-connect
+            ```
+
+            That reports the workflow, the commit, and the run that produced
+            the file. To check the bytes alone, compare against
+            `SHA256SUMS.txt` — `sha256sum -c SHA256SUMS.txt` on Linux,
+            `shasum -a 256 -c SHA256SUMS.txt` on macOS, or
+            `Get-FileHash` on Windows.
+
+            This is not a code-signing certificate, so Windows and macOS still
+            warn about the app as described above. Those warnings need a paid
+            certificate from Microsoft's and Apple's programmes; the signing
+            here proves where the file came from, which is the part that can
+            be done without one.
+
+            The enclosure checks the same thing for itself: it refuses an
+            update whose bytes do not match the checksum this release
+            publishes.
 
   pages:
     if: github.ref == 'refs/heads/main'

@@ -23,6 +23,7 @@ Three rules shape all of it:
   development install, and pulling over it would discard work.
 """
 
+import hashlib
 import json
 import os
 import shutil
@@ -274,6 +275,13 @@ class Updater:
 ARCHIVE_SUFFIX = ".pyz"
 
 #: A release archive far outside this range is not one of ours.
+#: Refuse an archive the release publishes no checksum for. GitHub states a
+#: sha256 for every asset, so a release without one is not a release this
+#: enclosure should be installing. The failure direction is deliberate: an
+#: enclosure that declines to update is recoverable, one that installed
+#: something unverified is not.
+REQUIRE_DIGEST = True
+
 MIN_ARCHIVE_BYTES = 50 * 1024
 MAX_ARCHIVE_BYTES = 80 * 1024 * 1024
 
@@ -388,6 +396,22 @@ class ArchiveUpdater:
                 return {"applied": False,
                         "detail": "The downloaded file is not the right size to be an update."}
 
+            expected = self._archive_digest(release)
+            if expected:
+                actual = hashlib.sha256(blob).hexdigest()
+                if actual != expected:
+                    return {
+                        "applied": False,
+                        "detail": "The download did not match the checksum this "
+                                  "release publishes, so it was not installed.",
+                    }
+            elif REQUIRE_DIGEST:
+                return {
+                    "applied": False,
+                    "detail": "That release publishes no checksum for its archive, "
+                              "so it was not installed.",
+                }
+
             try:
                 staged = self._unpack(blob)
             except Exception as exc:
@@ -466,6 +490,23 @@ class ArchiveUpdater:
             name = str(asset.get("name") or "")
             if name.endswith(ARCHIVE_SUFFIX):
                 return str(asset.get("browser_download_url") or "")
+        return ""
+
+    @staticmethod
+    def _archive_digest(release: Dict[str, Any]) -> str:
+        """The sha256 the release API states for the archive, if it states one.
+
+        The listing and the download come from different hosts: the API is
+        api.github.com, the bytes come from a content host. Checking the bytes
+        against the digest the API gave means the download has to match what
+        the release actually says it contains, not merely arrive over TLS.
+        """
+
+        for asset in release.get("assets") or []:
+            name = str(asset.get("name") or "")
+            if name.endswith(ARCHIVE_SUFFIX):
+                digest = str(asset.get("digest") or "")
+                return digest[7:] if digest.startswith("sha256:") else ""
         return ""
 
     def _unpack(self, blob: bytes) -> Path:

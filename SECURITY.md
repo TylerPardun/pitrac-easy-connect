@@ -47,7 +47,7 @@ These are real and unfixed. They are listed rather than hidden.
 | | |
 |---|---|
 | **The link is authenticated but not encrypted** | Both ends prove they hold the pairing secret when they connect. After that, frames are plain JSON over TCP with no per-message integrity. Somebody positioned to inject into an established connection could send commands, including a factory reset |
-| **Update downloads are not signed** | A release archive is checked for size and structure, not authenticity. Anyone able to serve a different release, or to intercept the download, could replace the software on an enclosure |
+| **Neither app carries a code-signing certificate** | Releases are signed at build time through Sigstore, which proves which workflow and commit produced a file, and the enclosure refuses an update whose bytes do not match the checksum its release publishes. That is not the same as an Authenticode or Apple Developer ID certificate: Windows and macOS still warn about the app, and someone who compromised the release account could publish a signed release of their own |
 | **Trained models are fetched from a mutable branch** | Their contents are recorded after download but not compared against a known-good digest |
 | **No at-rest encryption** | Anyone holding the memory card holds the secrets on it. Physical access already means everything on a device like this, but it is worth being explicit |
 
