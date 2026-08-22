@@ -144,6 +144,13 @@ NET_COUNTRY_INVALID = _define(
 
 # Pairing and ownership -----------------------------------------------------
 
+BACKUP_NEEDS_A_COMPUTER = _define(
+    "PT-CFG-005",
+    "A backup containing your setup password or paired computers cannot be "
+    "downloaded from this page.",
+    "Nothing was changed, and a backup without those parts can still be saved here.",
+    "Save it from PiTrac Easy-Connect on a computer that is already paired.",
+)
 PAIR_NOT_ACCEPTING = _define(
     "PT-PAIR-001",
     "PiTrac is not letting new computers connect right now.",

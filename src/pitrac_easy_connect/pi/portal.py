@@ -26,7 +26,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Callable, Dict
 from urllib.parse import urlparse
 
-from ..common.errors import EasyConnectError
+from ..common.errors import BACKUP_NEEDS_A_COMPUTER, EasyConnectError
 from .downloads import CompanionDownloads
 from .portal_page import PAGE, downloads_page
 
@@ -110,6 +110,13 @@ class PortalHandler(BaseHTTPRequestHandler):
             self._guarded(self._pair_hello)
             return
         if path == "/api/backup":
+            # Guarded like every other route. This one was not, and it hands
+            # out a file: anything on the network could fetch a backup, and
+            # with ?identity=1 that file carries the setup Wi-Fi password --
+            # the one thing on the owner card that gets you back into an
+            # enclosure that cannot reach a network.
+            if not self._request_allowed():
+                return
             self._download_backup()
             return
         if path == "/api/owner-card":
@@ -261,11 +268,25 @@ class PortalHandler(BaseHTTPRequestHandler):
         self.wfile.write(payload)
 
     def _download_backup(self) -> None:
-        """Hand the browser a backup file to save."""
+        """Hand the browser a backup file to save.
+
+        Sections carrying secrets are refused here whatever the query asks
+        for. The setup page is reachable by anything on the residence network,
+        and the header guard only stops a browser on some other site -- not a
+        device sitting on the same Wi-Fi. A backup that carries the setup
+        password or pairing secrets has to come through a paired computer,
+        which has proved it holds a secret of its own.
+        """
 
         from urllib.parse import parse_qs
 
         query = parse_qs(urlparse(self.path).query)
+        if query.get("identity", ["0"])[0] == "1" or query.get("pairings", ["0"])[0] == "1":
+            self._json(
+                HTTPStatus.FORBIDDEN,
+                {"error": BACKUP_NEEDS_A_COMPUTER.as_dict()},
+            )
+            return
         try:
             made = self._service().command(
                 "createBackup",

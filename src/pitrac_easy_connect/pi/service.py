@@ -133,6 +133,7 @@ class PiService:
             installed=version,
             app_dir=Path(__file__).resolve().parent.parent.parent,
             restart=self._restart_service,
+            verify=_can_run,
         )
         self.discovery = discovery.DiscoveryResponder(self.describe, port=discovery_port)
 
@@ -647,6 +648,8 @@ class PiService:
         return self._updater().apply()
 
     def _restart_service(self) -> None:
+        # Restarting kills this process, so nothing after it in the update runs.
+        # That is why the new copy is checked *before* the swap, not after.
         """Restart Easy-Connect itself, so the new code is the running code.
 
         Deliberately not a plain exit: systemd brings the unit back, and if
@@ -654,7 +657,7 @@ class PiService:
         anyway, so the caller is told the files are in place either way.
         """
 
-        self.backend.run(["systemctl", "restart", "pitrac-easy-connect"], timeout=20)
+        self.backend.restart_service("pitrac-easy-connect")
 
     def _restart_pitrac(self) -> Dict[str, Any]:
         from .pitrac import PITRAC_WEB_SERVICE
@@ -722,3 +725,35 @@ class PiService:
             "log": messages,
             "uptimeSeconds": time.time() - self.started_at,
         }
+
+
+def _can_run(package: "Path") -> bool:
+    """Whether a staged copy of the application will actually start.
+
+    Restarting the service kills the process performing the update, so nothing
+    after the restart can check anything or roll anything back. The check has
+    to happen before the swap. This runs the staged code in a separate
+    interpreter and asks it to build the pieces the service needs, which
+    catches the failures that matter -- a truncated download, an import that
+    no longer resolves, a version that needs a newer Python.
+    """
+
+    import subprocess
+    import sys
+
+    probe = (
+        "import sys; sys.path.insert(0, {!r});"
+        "import pitrac_easy_connect as p;"
+        "from pitrac_easy_connect.pi import service, portal;"
+        "from pitrac_easy_connect.common import link, discovery;"
+        "assert p.__version__;"
+        "print('ok')"
+    ).format(str(package.parent))
+    try:
+        done = subprocess.run(
+            [sys.executable, "-c", probe],
+            capture_output=True, text=True, timeout=60,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return done.returncode == 0 and "ok" in done.stdout

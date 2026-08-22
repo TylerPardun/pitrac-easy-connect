@@ -251,3 +251,46 @@ def test_an_archive_cannot_write_outside_its_own_directory(installed, upstream, 
 
     result = updater(installed, upstream).apply()
     assert result["applied"] is False
+
+
+def test_a_version_that_will_not_run_is_rejected_before_anything_is_swapped(installed, upstream):
+    """Restarting the service kills the process doing the update, so a check
+    made afterwards can never act on the answer. The check has to come first."""
+
+    swapped = []
+    up = updater(installed, upstream, restarted=lambda: swapped.append("restart"))
+    up._verify = lambda staged: False
+
+    result = up.apply()
+    assert result["applied"] is False
+    assert "would not start" in result["detail"]
+    assert swapped == [], "nothing should have been restarted"
+    assert '"0.2.0"' in (installed / "pitrac_easy_connect" / "__init__.py").read_text()
+    assert [p.name for p in installed.iterdir()] == ["pitrac_easy_connect"]
+
+
+def test_a_version_that_runs_is_installed(installed, upstream):
+    up = updater(installed, upstream, restarted=lambda: None)
+    up._verify = lambda staged: True
+    assert up.apply()["applied"] is True
+    assert '"9.9.9"' in (installed / "pitrac_easy_connect" / "__init__.py").read_text()
+
+
+def test_the_real_verifier_rejects_a_broken_package(tmp_path):
+    """The check that ships, against a package that cannot import."""
+
+    from pitrac_easy_connect.pi.service import _can_run
+
+    broken = tmp_path / "staged" / "pitrac_easy_connect"
+    broken.mkdir(parents=True)
+    (broken / "__init__.py").write_text("import a_module_that_does_not_exist\n")
+    assert _can_run(broken) is False
+
+
+def test_the_real_verifier_accepts_the_package_that_is_running(tmp_path):
+    import pathlib as _p
+
+    from pitrac_easy_connect.pi.service import _can_run
+
+    here = _p.Path(__file__).resolve().parent.parent / "src" / "pitrac_easy_connect"
+    assert _can_run(here) is True

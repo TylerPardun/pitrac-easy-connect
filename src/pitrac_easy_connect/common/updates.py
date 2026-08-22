@@ -288,6 +288,7 @@ class ArchiveUpdater:
         repository: str = REPOSITORY,
         restart: Optional[Callable[[], None]] = None,
         healthy: Optional[Callable[[], bool]] = None,
+        verify: Optional[Callable[[Path], bool]] = None,
         fetch: Optional[Callable[[str], bytes]] = None,
         api_base: str = None,
     ):
@@ -296,7 +297,13 @@ class ArchiveUpdater:
         self.repository = repository
         self._restart = restart
         #: Asked after the restart. Returning False rolls the update back.
+        #: On the enclosure this cannot be used, because the restart ends this
+        #: process -- see ``verify``.
         self._healthy = healthy
+        #: Asked about the *staged* copy before anything is swapped. This is
+        #: the check that actually protects an enclosure: restarting kills the
+        #: updater, so a decision made after it can never be acted on.
+        self._verify = verify
         self._fetch = fetch or _download
         self._api = (api_base or API_BASE).rstrip("/")
         self._lock = threading.RLock()
@@ -351,6 +358,14 @@ class ArchiveUpdater:
                 staged = self._unpack(blob)
             except Exception as exc:
                 return {"applied": False, "detail": "The update could not be unpacked: {}".format(exc)}
+
+            if self._verify is not None and not self._verify(staged):
+                shutil.rmtree(staged.parent.parent, ignore_errors=True)
+                return {
+                    "applied": False,
+                    "detail": "That version would not start on this machine, so "
+                              "nothing was changed.",
+                }
 
             try:
                 previous = self._swap(staged)
