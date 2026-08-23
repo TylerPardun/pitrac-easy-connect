@@ -258,23 +258,29 @@ jobs:
                                   [int]$_.ProcessId -ne $rootId }
           }
 
-          # msedge.exe alone proves nothing. When the native window fails, the
-          # app opens the default browser, which on this image is Edge, so the
-          # process name is identical either way -- and that is exactly how a
-          # release went out with every packaged build opening a browser while
-          # this step reported a window. WebView2 processes carry
-          # --embedded-browser-webview=1; a browser opened as a browser does not.
+          # The two cases are told apart by the process name, and the previous
+          # version of this check got it exactly wrong. The WebView2 runtime
+          # runs as msedgewebview2.exe. A browser opened because the window
+          # failed runs as msedge.exe -- and since Edge is the default browser
+          # on this image, looking for "msedge" matched the failure and called
+          # it success, which is how a release went out where every packaged
+          # build opened a browser.
           $webview = $false
+          $browser = $false
           foreach ($i in 1..20) {
             Start-Sleep -Seconds 2
             $app.Refresh()
             if ($app.HasExited) { break }
-            $edge = Get-Descendants $app.Id | Where-Object { $_.Name -eq "msedge.exe" }
-            $embedded = $edge | Where-Object { $_.CommandLine -like "*--embedded-browser-webview=1*" }
-            if ($embedded) {
-              Write-Host "WebView2 running as $(@($embedded).Count) embedded process(es)"
+            $tree = Get-Descendants $app.Id
+            if ($tree | Where-Object { $_.Name -eq "msedgewebview2.exe" }) {
+              $n = @($tree | Where-Object { $_.Name -eq "msedgewebview2.exe" }).Count
+              Write-Host "WebView2 running as $n process(es)"
               $webview = $true; break
             }
+            if ($tree | Where-Object { $_.Name -eq "msedge.exe" }) { $browser = $true }
+          }
+          if ($browser -and -not $webview) {
+            Write-Host "Edge started as a browser, not as an embedded window."
           }
           if (-not $webview) {
             Write-Host "processes under the app when giving up:"

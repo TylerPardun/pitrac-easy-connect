@@ -36,6 +36,7 @@ window. Each component remains licensed by its respective author.
 | [PyObjC](https://pyobjc.readthedocs.io/) (macOS) | MIT | Connects pywebview to macOS frameworks and WKWebView |
 | [pythonnet](https://pythonnet.github.io/) and [clr-loader](https://github.com/pythonnet/clr-loader) (Windows) | MIT | Connect pywebview to .NET and WebView2 |
 | [proxy-tools](https://pypi.org/project/proxy-tools/) | MIT | Required by pywebview |
+| [bottle](https://bottlepy.org/) | MIT | Required by pywebview, which imports it whether or not its HTTP server is used |
 | [cffi](https://cffi.readthedocs.io/) (Windows) | MIT-0 | Required by clr-loader |
 | [pycparser](https://github.com/eliben/pycparser) (Windows) | BSD-3-Clause | Required by cffi |
 | [setuptools](https://setuptools.pypa.io/) (Windows) | MIT | Required by pythonnet at runtime |
