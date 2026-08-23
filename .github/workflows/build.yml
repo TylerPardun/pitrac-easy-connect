@@ -164,7 +164,9 @@ jobs:
             sleep 2
             STATUS=$(curl -fsS -m 3 -H "X-PiTrac-App: 1" http://127.0.0.1:8899/api/status || true)
             PAGE_CHECK=$(curl -fsS -m 3 -H "X-PiTrac-App: 1" http://127.0.0.1:8899/api/page-check || true)
-            echo "$PAGE_CHECK" | grep -q 'POST /api/finish-setup' && break
+            if echo "$PAGE_CHECK" | grep -q 'POST /api/finish-setup'; then
+              break
+            fi
           done
 
           if [ -z "$STATUS" ]; then
@@ -436,8 +438,10 @@ jobs:
             sleep 2
             STATUS=$(curl -fsS -m 3 -H "X-PiTrac-App: 1" http://127.0.0.1:8899/api/status || true)
             PAGE_CHECK=$(curl -fsS -m 3 -H "X-PiTrac-App: 1" http://127.0.0.1:8899/api/page-check || true)
-            echo "$STATUS" | grep -qE '"state": *"native"' && \
-              echo "$PAGE_CHECK" | grep -q 'POST /api/finish-setup' && break
+            if echo "$STATUS" | grep -qE '"state": *"native"' && \
+               echo "$PAGE_CHECK" | grep -q 'POST /api/finish-setup'; then
+              break
+            fi
           done
           echo "$STATUS" | grep -qE '"state": *"native"' || {
             echo "::error::the Linux artifact did not create a native WebKitGTK window"
