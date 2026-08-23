@@ -16,13 +16,13 @@ PiTrac without adding that incompatibility.
 
 ## What each build contains
 
-### Raspberry Pi service, portable app, and source
+### Raspberry Pi service and source
 
 The Raspberry Pi service and source distribution use only the Python standard
-library and install no third-party Python packages. The portable `.pyz` contains
-only Easy-Connect source and runs with the user's existing Python installation.
+library and install no third-party Python packages. A source-based desktop
+install adds the dependencies listed in the `desktop` optional extra.
 
-### Native macOS and Windows apps
+### Native macOS, Windows, and Linux apps
 
 The native apps bundle Easy-Connect, a CPython interpreter, the PyInstaller
 bootloader, pywebview, and the platform-specific libraries needed to create the
@@ -42,19 +42,27 @@ window. Each component remains licensed by its respective author.
 | [setuptools](https://setuptools.pypa.io/) (Windows) | MIT | Required by pythonnet at runtime |
 | [packaging](https://pypi.org/project/packaging/) (Windows) | Apache-2.0 OR BSD-2-Clause | Required by setuptools |
 | [typing-extensions](https://pypi.org/project/typing-extensions/) | PSF-2.0 | Required by pywebview |
+| [psutil](https://pypi.org/project/psutil/) | BSD-3-Clause | Enumerates active IPv4 interfaces and their directed broadcast addresses |
+| [PyGObject](https://pygobject.gnome.org/) (Linux) | LGPL-2.1-or-later | Connects pywebview to GTK and WebKitGTK |
+| [pycairo](https://pycairo.readthedocs.io/) (Linux) | LGPL-2.1-only OR MPL-1.1 | Cairo bindings required by PyGObject |
+| [GLib](https://gitlab.gnome.org/GNOME/glib) (Linux) | LGPL-2.1-or-later | GObject, GIO, module loading, and introspection libraries bundled by the GTK backend |
+| [util-linux](https://github.com/util-linux/util-linux) (`libblkid` and `libmount`, Linux) | LGPL-2.1-or-later | Storage and mount support pulled in by GLib |
+| [PCRE2](https://www.pcre.org/) (Linux) | BSD-3-Clause | Regular-expression support pulled in by GLib |
+| [libselinux](https://github.com/SELinuxProject/selinux) (Linux) | Public domain with GPL-2.0-only utility code | SELinux support pulled in by GLib |
 | OpenSSL (`libssl` and `libcrypto`) | Apache-2.0 | HTTPS support used by the bundled Python runtime |
 | zlib | Zlib | Compression support used by the bundled Python runtime |
 | bzip2 | bzip2-1.0.6 | Compression support used by the bundled Python runtime |
 | xz (`liblzma`) | 0BSD | Compression support used by the bundled Python runtime |
 | Expat (`libexpat`) | MIT | XML support used by the bundled Python runtime |
 | libffi | MIT | Foreign-function support used by the bundled Python runtime |
+| [libmpdec](https://www.bytereef.org/mpdecimal/) | BSD-2-Clause | Decimal arithmetic support bundled by some CPython distributions |
 | Microsoft C runtime (Windows) | [Microsoft Visual Studio redistributable terms](https://visualstudio.microsoft.com/license-terms/) | The Universal C Runtime the bundled Python is built against: `ucrtbase`, `VCRUNTIME140`, and the `api-ms-win-*` stubs |
 | [WebView2](https://developer.microsoft.com/microsoft-edge/webview2/) loader (Windows) | [Microsoft WebView2 redistributable terms](https://developer.microsoft.com/microsoft-edge/webview2/) | `WebView2Loader` and the interop assemblies, redistributed inside pywebview, that reach the WebView2 runtime |
 
-The browser engines are not bundled. The app uses WKWebView on macOS and
-WebView2 on Windows, both supplied by the operating system. What does ship on
-Windows is the small loader that finds the installed WebView2 runtime, credited
-above; the runtime itself is Microsoft's and is not redistributed here.
+The rendering engines are not bundled. The app uses WKWebView on macOS,
+WebView2 on Windows, and WebKitGTK 4.1 on Linux. What does ship on Windows is
+the small loader that finds the installed WebView2 runtime, credited above;
+the runtime itself is Microsoft's and is not redistributed here.
 
 The two Microsoft rows are the only entries whose licence text is not in
 `THIRD-PARTY-LICENCES.txt`. Those components are not Python packages, so there

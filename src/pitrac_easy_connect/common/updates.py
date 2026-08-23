@@ -9,9 +9,12 @@ Two kinds of installation exist and they update differently:
 which is how this is normally run during development and by anyone who installed
 from source.
 
-**A packaged build** — the ``.exe`` or ``.pyz`` someone downloaded. There is no
-repository to pull, so the newest published release is looked up and the user is
-pointed at the download.
+**A packaged desktop build** — the macOS app, Windows executable, or native
+Linux executable someone downloaded. There is no repository to pull, so the
+newest published release is looked up and the user is pointed at the download.
+
+The enclosure has a separate verified ``.pyz`` archive updater below. That
+archive is an installation payload for the Pi service, not a desktop release.
 
 Three rules shape all of it:
 

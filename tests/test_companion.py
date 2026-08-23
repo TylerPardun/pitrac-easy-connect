@@ -271,6 +271,39 @@ def test_the_pairing_survives_a_companion_restart(rig, tmp_path):
         restarted.close()
 
 
+def test_changed_ip_reconnects_through_the_saved_hostname(rig, monkeypatch):
+    import socket
+    import pitrac_easy_connect.companion.link_client as client_module
+
+    rig.pair()
+    assert rig.wait_linked()
+    device_id = rig.pi.identity.device_id
+    records = dict(rig.companion.paired_enclosures)
+    record = dict(records[device_id])
+    assert record["hostname"] == rig.pi.identity.hostname
+
+    rig.companion.disconnect()
+    record.update({"address": "192.0.2.99", "hostname": "localhost"})
+    records[device_id] = record
+    rig.companion.store.set("enclosures", records)
+    rig.companion._found = []
+    monkeypatch.setattr(rig.companion, "search", lambda timeout=None: [])
+
+    attempted = []
+    real_connect = socket.create_connection
+
+    def changing_address(target, *args, **kwargs):
+        attempted.append(target[0])
+        if target[0] == "192.0.2.99":
+            raise ConnectionRefusedError("old DHCP address")
+        return real_connect(target, *args, **kwargs)
+
+    monkeypatch.setattr(client_module.socket, "create_connection", changing_address)
+    rig.companion.connect(device_id)
+    assert rig.wait_linked()
+    assert attempted[:2] == ["192.0.2.99", "localhost"]
+
+
 # --- The chain ------------------------------------------------------------
 
 
@@ -636,16 +669,16 @@ def test_a_search_that_cannot_send_says_so(rig, monkeypatch):
             raise OSError(65, "No route to host")
 
     monkeypatch.setattr(socket_module, "socket", Blocked)
-    found = rig.companion.search(timeout=0.2)
+    result = rig.companion.search_payload(timeout=0.2)
 
-    assert found == []
-    problem = rig.companion.search_problem()
+    assert result["enclosures"] == []
+    problem = result["problem"]
     assert problem, "an empty result with no reason is the bug"
-    assert "Local Network" in problem, problem
+    assert "Local Network" in problem["message"] or "Local Network" in problem["nextStep"]
 
 
 def test_a_search_that_sends_and_hears_nothing_reports_no_problem(rig):
     """Nothing there is a normal answer, not a fault."""
 
-    found = rig.companion.search(timeout=0.2)
-    assert rig.companion.search_problem() is None
+    result = rig.companion.search_payload(timeout=0.2)
+    assert result["problem"] is None

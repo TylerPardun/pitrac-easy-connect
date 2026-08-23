@@ -44,7 +44,11 @@ def test_a_second_launch_shows_the_copy_that_is_already_running(running_copy, tm
     argv = ["--port", str(running_copy), "--config", str(tmp_path / "second.json"),
             "--discovery-port", "0"]
 
-    with mock.patch.object(app_module, "_show", lambda args, url: shown.append(url)):
+    def show(service, url):
+        shown.append(url)
+        return 0
+
+    with mock.patch.object(app_module, "_show_native", show):
         code = app_module.main(argv)
 
     assert code == 0, "a second launch must not exit as a failure"
@@ -69,7 +73,7 @@ def test_a_port_held_by_something_else_does_not_stop_the_app(tmp_path):
         return 0
 
     argv = ["--port", str(port), "--config", str(tmp_path / "c.json"),
-            "--discovery-port", "0", "--no-browser"]
+            "--discovery-port", "0", "--headless"]
     try:
         with mock.patch.object(app_module, "_run", capture):
             code = app_module.main(argv)

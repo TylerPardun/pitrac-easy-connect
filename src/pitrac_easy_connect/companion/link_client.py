@@ -15,7 +15,7 @@ finished.
 import socket
 import threading
 import time
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from ..common import link
 from ..common.errors import LINK_LOST, LINK_VERSION_MISMATCH
@@ -38,6 +38,7 @@ class CompanionLinkClient:
         on_state: Optional[Callable[[], None]] = None,
         on_enclosure_status: Optional[Callable[[Dict[str, Any]], None]] = None,
         reconnect_seconds: float = RECONNECT_SECONDS,
+        fallback_hosts: Optional[List[str]] = None,
     ):
         self.host = host
         self.port = port
@@ -49,6 +50,7 @@ class CompanionLinkClient:
         self.on_state = on_state
         self.on_enclosure_status = on_enclosure_status
         self.reconnect_seconds = reconnect_seconds
+        self._hosts = list(dict.fromkeys([host, *(fallback_hosts or [])]))
 
         self._lock = threading.RLock()
         self._stop = threading.Event()
@@ -92,12 +94,23 @@ class CompanionLinkClient:
 
     def _run(self) -> None:
         while not self._stop.is_set():
-            try:
-                self._connect_once()
-            except Exception as exc:  # every failure here is a retry, not a crash
-                self._set_error(_as_error(exc))
-            finally:
-                self._mark_disconnected()
+            for candidate in self._hosts:
+                if self._stop.is_set():
+                    return
+                with self._lock:
+                    self.host = candidate
+                try:
+                    self._connect_once()
+                except Exception as exc:  # every failure here is a retry, not a crash
+                    self._set_error(_as_error(exc))
+                    continue
+                finally:
+                    self._mark_disconnected()
+                # A completed connection that later dropped should keep its
+                # successful hostname/address first on the next retry cycle.
+                self._hosts.remove(candidate)
+                self._hosts.insert(0, candidate)
+                break
             if self._stop.wait(self.reconnect_seconds):
                 return
 

@@ -127,6 +127,14 @@ def test_losing_the_link_brings_the_window_back_to_something_usable():
     assert COMPANION.index("let pane=") < COMPANION.index("function render(")
 
 
+def test_discovery_problem_is_shown_in_the_desktop_ui():
+    search = COMPANION.split("async function findDevices()")[1].split("\n}")[0]
+    assert "data.problem" in search
+    assert "problem.message" in search
+    assert "problem.nextStep" in search
+    assert "No PiTrac was found" in search
+
+
 @pytest.mark.parametrize("name,page", PAGES, ids=[case[0] for case in PAGES])
 def test_no_style_is_left_behind_with_nothing_using_it(name, page):
     """Rules for elements that no longer exist quietly rot.

@@ -2,7 +2,12 @@
 
 **Connect your PiTrac enclosure to Wi-Fi and send shots to GSPro or E6 Connect from one desktop app.**
 
-PiTrac Easy-Connect makes a PiTrac launch monitor easier to set up and use. It includes a small program that runs on the Raspberry Pi inside the enclosure and a desktop app for macOS and Windows. The app connects the enclosure to your home Wi-Fi, finds it automatically, and sends each measured shot to GSPro or E6 Connect. It also includes PiTrac's dashboard, shot history, and a practice range.
+PiTrac Easy-Connect makes a PiTrac launch monitor easier to set up and use. It
+includes a small program that runs on the Raspberry Pi inside the enclosure and
+a native desktop app for macOS, Windows, and Linux. The app always runs in its
+own application window. It connects the enclosure to your home Wi-Fi, finds it
+automatically, and sends each measured shot to GSPro or E6 Connect. It also
+includes PiTrac's dashboard, shot history, and a practice range.
 
 A five-step guide walks you through the first setup. If you move the enclosure to another home, you only need to choose the new Wi-Fi network. You do not need to reconfigure PiTrac.
 
@@ -110,23 +115,35 @@ Download the build for your computer from
 
 | Platform | File |
 |---|---|
-| macOS 11+, Apple silicon (M1 or later) | `PiTrac-Easy-Connect-macos-apple-silicon.zip` |
-| macOS 11+, Intel | `PiTrac-Easy-Connect-macos-intel.zip` |
-| Windows 11 | `PiTrac-Easy-Connect-windows.zip` |
-| Linux, or any OS with Python 3.9+ | `PiTrac-Easy-Connect-*.pyz` |
+| macOS 11+, Apple silicon (M1 or later) | [`PiTrac-Easy-Connect-macos-apple-silicon.zip`](https://github.com/TylerPardun/pitrac-easy-connect/releases/latest/download/PiTrac-Easy-Connect-macos-apple-silicon.zip) |
+| macOS 11+, Intel | [`PiTrac-Easy-Connect-macos-intel.zip`](https://github.com/TylerPardun/pitrac-easy-connect/releases/latest/download/PiTrac-Easy-Connect-macos-intel.zip) |
+| Windows 11 | [`PiTrac-Easy-Connect-windows.zip`](https://github.com/TylerPardun/pitrac-easy-connect/releases/latest/download/PiTrac-Easy-Connect-windows.zip) |
+| Linux x86-64 | [`PiTrac-Easy-Connect-linux-x86_64.zip`](https://github.com/TylerPardun/pitrac-easy-connect/releases/latest/download/PiTrac-Easy-Connect-linux-x86_64.zip) |
 
 The two Mac builds are not interchangeable. Rosetta translates Intel code to
 run on Apple silicon and never the other way, so an Intel Mac given the Apple
 silicon build cannot start it at all. **Apple menu → About This Mac** says
 which you have: a chip beginning with M, or an Intel processor.
 
-Neither native build carries a code-signing certificate, so both operating
-systems warn the first time:
+The macOS and Windows builds do not carry code-signing certificates, so those
+operating systems warn the first time:
 
 | Platform | What to do |
 |---|---|
 | macOS | Right-click the app and choose **Open** rather than double-clicking |
 | Windows | Choose **More info**, then **Run anyway** |
+
+On Linux, install WebKitGTK 4.1 first. The package is commonly named
+`libwebkit2gtk-4.1-0` on Debian/Ubuntu, `webkit2gtk4.1` on Fedora, and
+`webkit2gtk-4.1` on Arch. Unzip the download and run `PiTrac Easy-Connect`.
+
+If macOS cannot find PiTrac, open **System Settings → Privacy & Security →
+Local Network** and allow PiTrac Easy-Connect, then search again.
+
+The Raspberry Pi's temporary setup page is intentionally browser-based. A new
+enclosure has not joined your network yet, so a phone or computer connects to
+its temporary Wi-Fi and opens `http://10.42.0.1`. This does not apply to the
+installed desktop app, which stays in its own window.
 
 ### Checking a download
 
@@ -155,9 +172,10 @@ the first-time setup, but you can reopen it with **Advanced → Run setup again*
 
 ## Build the app from source (optional)
 
-Building from source requires Python 3.9 or newer. PyInstaller bundles the
-interpreter for the platform on which it runs, so Windows executables must be
-built on Windows and macOS apps on macOS. Cross-compiling is not supported.
+Building from source requires Python 3.10 or newer for the desktop dependencies.
+PyInstaller bundles the interpreter for the platform on which it runs, so each
+artifact must be built on its own operating system. Cross-compiling is not
+supported. Linux also needs the WebKitGTK development package while building.
 
 ```bash
 git clone https://github.com/TylerPardun/pitrac-easy-connect
@@ -165,16 +183,11 @@ cd pitrac-easy-connect
 ./packaging/build-app.sh
 ```
 
-The build is written to `dist/` as `PiTrac Easy-Connect.app` on macOS or
-`PiTrac Easy-Connect.exe` on Windows. If PyInstaller or pywebview is missing,
-the build script installs it. PyInstaller is only used while building;
-pywebview is bundled into the app and draws its window, so it ships with it.
-
-| Flag | Description |
-|---|---|
-| *(none)* | Native app — `.app` on macOS, `.exe` on Windows |
-| `--pyz` | Portable single file, runs anywhere Python 3.9+ is installed |
-| `--all` | Both |
+The build is written to `dist/` as `PiTrac Easy-Connect.app` on macOS,
+`PiTrac Easy-Connect.exe` on Windows, or `PiTrac Easy-Connect` on Linux. The
+script installs the pinned build dependencies. To launch from source instead,
+run `python3 -m pip install -e ".[desktop]"` and then `pitrac-easy-connect`.
+Use `pitrac-easy-connect --headless` only for CI, API tests, or service use.
 
 ---
 

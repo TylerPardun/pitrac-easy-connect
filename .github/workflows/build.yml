@@ -51,6 +51,7 @@ jobs:
       # so CI and a contributor's machine cannot drift apart.
       - run: python -m pip install ".[test]"
       - run: python -m pytest -q
+      - run: python packaging/check-native-only.py
 
   build:
     needs: test
@@ -70,6 +71,9 @@ jobs:
           - os: macos-15-intel
             artifact: PiTrac-macos-intel
             path: dist/PiTrac-Easy-Connect-macos-intel.zip
+          - os: ubuntu-latest
+            artifact: PiTrac-linux-x86_64
+            path: dist/PiTrac-Easy-Connect-linux-x86_64.zip
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -79,6 +83,13 @@ jobs:
       # Pinned. Unpinned, the packaged app changes between builds and the
       # licences in NOTICE.md stop describing what actually shipped.
       - run: python -m pip install --upgrade pip
+      - name: Install the Linux native-window toolchain
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential pkg-config libcairo2-dev libgirepository-2.0-dev \
+            gir1.2-gtk-3.0 gir1.2-webkit2-4.1 libwebkit2gtk-4.1-dev xvfb
       # pillow is pinned in the file; installing it again unpinned defeated that.
       - run: python -m pip install -r packaging/build-requirements.txt
 
@@ -138,7 +149,7 @@ jobs:
           APP=$(find dist/unpacked -maxdepth 3 -name "*.app" | head -1)
           BIN="$APP/Contents/MacOS/$(basename "$APP" .app)"
           echo "launching $BIN"
-          "$BIN" --window --port 8899 >/tmp/mac-window.log 2>&1 &
+          "$BIN" --port 8899 >/tmp/mac-window.log 2>&1 &
           APP_PID=$!
 
           STATUS=""
@@ -157,13 +168,9 @@ jobs:
             echo "::error::the packaged app never answered /api/status"
             exit 1
           fi
-          echo "$STATUS" | tr ',' '\n' | grep -i "native\|detail" || true
-          if echo "$STATUS" | grep -qE '"native": *false'; then
-            echo "::error::the packaged app fell back to a browser instead of opening a window"
-            exit 1
-          fi
-          if ! echo "$STATUS" | grep -qE '"native": *true'; then
-            echo "::error::the app did not report a window state at all"
+          echo "$STATUS" | tr ',' '\n' | grep -i "state\|detail" || true
+          if ! echo "$STATUS" | grep -qE '"state": *"native"'; then
+            echo "::error::the app did not report a created native window"
             exit 1
           fi
           echo "the packaged app opened its own window"
@@ -179,34 +186,7 @@ jobs:
           Copy-Item THIRD-PARTY-LICENCES.txt dist/payload/
           Compress-Archive -Path dist/payload/* -DestinationPath dist/PiTrac-Easy-Connect-windows.zip -Force
 
-      # Built and never run is not the same as working. The macOS app is
-      # exercised by hand here; this is the only thing that touches Windows.
-      - name: Check the Windows app actually starts
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          $app = Start-Process -FilePath "dist/PiTrac Easy-Connect.exe" `
-            -ArgumentList "--no-browser","--port","8899" -PassThru
-          $ok = $false
-          foreach ($i in 1..30) {
-            Start-Sleep -Seconds 2
-            try {
-              $r = Invoke-WebRequest -Uri "http://127.0.0.1:8899/api/status" `
-                    -Headers @{"X-PiTrac-App"="1"} -UseBasicParsing -TimeoutSec 5
-              if ($r.StatusCode -eq 200) {
-                Write-Host "started:" ($r.Content | ConvertFrom-Json).version
-                $ok = $true; break
-              }
-            } catch { }
-          }
-          Stop-Process -Id $app.Id -Force -ErrorAction SilentlyContinue
-          if (-not $ok) { Write-Error "the Windows app did not start"; exit 1 }
-
-      # The check above proves the packaged backend runs. It says nothing
-      # about the part Windows users actually see, because --no-browser never
-      # reaches pywebview or WebView2. This one unpacks the zip that gets
-      # published and opens the real window.
-      #
+      # Unpack the exact zip that gets published and use its normal launch path.
       # What it asserts is that WebView2 started: the runtime runs as msedge
       # child processes of the app, so their presence means pywebview loaded
       # the runtime and handed it the page. A window handle would be a nicer
@@ -225,7 +205,7 @@ jobs:
           Write-Host "launching $($exe.FullName)"
 
           $app = Start-Process -FilePath $exe.FullName `
-            -ArgumentList "--window","--port","8898" -PassThru
+            -ArgumentList "--port","8898" -PassThru
 
           $serving = $false
           foreach ($i in 1..30) {
@@ -279,8 +259,8 @@ jobs:
             }
             if ($tree | Where-Object { $_.Name -eq "msedge.exe" }) { $browser = $true }
           }
-          if ($browser -and -not $webview) {
-            Write-Host "Edge started as a browser, not as an embedded window."
+          if ($browser) {
+            Write-Host "Edge started as an ordinary browser under the app."
           }
           if (-not $webview) {
             Write-Host "processes under the app when giving up:"
@@ -289,13 +269,13 @@ jobs:
 
           # And the app's own account of it, which does not rely on guessing
           # from process names at all.
-          $native = "unknown"
+          $windowState = "unknown"
           try {
             $s = Invoke-WebRequest -Uri "http://127.0.0.1:8898/api/status" `
                   -Headers @{"X-PiTrac-App"="1"} -UseBasicParsing -TimeoutSec 5
             $w = ($s.Content | ConvertFrom-Json).window
-            $native = $w.native
-            Write-Host "the app reports: native=$($w.native) detail=$($w.detail)"
+            $windowState = $w.state
+            Write-Host "the app reports: state=$($w.state) detail=$($w.detail)"
           } catch { Write-Host "could not read the window state back" }
           $app.Refresh()
           if (-not $app.HasExited -and $app.MainWindowHandle -ne 0) {
@@ -309,8 +289,8 @@ jobs:
 
           if ($exited)       { Write-Error "the app exited on its own"; exit 1 }
           if (-not $serving) { Write-Error "the app never answered /api/status"; exit 1 }
-          if ($native -eq $false) {
-            Write-Error "the app fell back to a browser instead of opening a window"
+          if ($windowState -ne "native") {
+            Write-Error "the app did not report a created native window"
             exit 1
           }
           if (-not $webview) {
@@ -318,7 +298,40 @@ jobs:
                          "the window it is supposed to draw in never existed")
             exit 1
           }
+          if ($browser) {
+            Write-Error "the app launched ordinary Edge in addition to its embedded window"
+            exit 1
+          }
           Write-Host "the packaged app started its native window"
+
+      - name: Package the Linux app
+        if: runner.os == 'Linux'
+        run: |
+          mkdir -p dist/payload
+          cp "dist/PiTrac Easy-Connect" dist/payload/
+          cp LICENSE NOTICE.md THIRD-PARTY-LICENCES.txt dist/payload/
+          chmod +x "dist/payload/PiTrac Easy-Connect"
+          (cd dist/payload && zip -r ../PiTrac-Easy-Connect-linux-x86_64.zip .)
+
+      - name: Check the Linux release opens a WebKitGTK window
+        if: runner.os == 'Linux'
+        run: |
+          mkdir -p dist/unpacked-linux
+          unzip -q dist/PiTrac-Easy-Connect-linux-x86_64.zip -d dist/unpacked-linux
+          xvfb-run -a "dist/unpacked-linux/PiTrac Easy-Connect" --port 8899 >linux-window.log 2>&1 &
+          APP_PID=$!
+          STATUS=""
+          for _ in $(seq 1 30); do
+            sleep 2
+            STATUS=$(curl -fsS -m 3 -H "X-PiTrac-App: 1" http://127.0.0.1:8899/api/status || true)
+            echo "$STATUS" | grep -qE '"state": *"native"' && break
+          done
+          kill $APP_PID 2>/dev/null || true
+          cat linux-window.log || true
+          echo "$STATUS" | grep -qE '"state": *"native"' || {
+            echo "::error::the Linux artifact did not create a native WebKitGTK window"
+            exit 1
+          }
 
       - name: Check NOTICE.md credits everything the build bundles
         run: python packaging/bundled-licences.py --check
@@ -333,46 +346,9 @@ jobs:
           # the default ninety days is ninety days of storing them twice.
           retention-days: 7
 
-  portable:
-    needs: test
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
-        with:
-          python-version: "3.13"
-      # The portable build is plain Python, so it is the same file everywhere.
-      - run: ./packaging/build-app.sh --pyz
-
-      # This file is the Linux download, and nothing else in the matrix proves
-      # the app itself starts on Linux — the tests exercise the library, not
-      # the packaged artifact. So start it and ask it how it is.
-      - name: Check the portable build runs on Linux
-        run: |
-          python3 dist/*.pyz --no-browser --port 8899 &
-          for _ in $(seq 1 20); do
-            sleep 1
-            if curl -fsS -m 3 http://127.0.0.1:8899/api/status -o status.json; then
-              break
-            fi
-          done
-          python3 -c "
-          import json, sys
-          status = json.load(open('status.json'))
-          print('started, version', status['version'])
-          sys.exit(0 if status['version'] else 1)
-          "
-
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
-        with:
-          name: PiTrac-portable
-          path: dist/*.pyz
-          if-no-files-found: error
-          retention-days: 7
-
   release:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [build, portable]
+    needs: [build]
     runs-on: ubuntu-latest
     permissions:
       # The only job that writes anything back to the repository.
@@ -402,7 +378,7 @@ jobs:
       - name: Gather what is being released
         run: |
           mkdir -p release
-          find artifacts -type f \( -name '*.zip' -o -name '*.pyz' \) -exec cp {} release/ \;
+          find artifacts -type f -name '*.zip' -exec cp {} release/ \;
           ls -l release
 
       - name: Write the checksums
@@ -421,7 +397,6 @@ jobs:
         with:
           subject-path: |
             release/*.zip
-            release/*.pyz
 
       - name: Publish the release
         uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228  # v3.0.2
@@ -442,8 +417,9 @@ jobs:
             two are not interchangeable. Unzip, then right-click the app and
             choose **Open** the first time.
 
-            **Linux** — the `.pyz` runs on any computer with Python 3.9 or
-            newer, without installation.
+            **Linux x86-64** — `PiTrac-Easy-Connect-linux-x86_64.zip`. Install
+            WebKitGTK 4.1 from your distribution, unzip it, and run
+            `PiTrac Easy-Connect`.
 
             ### Checking what you downloaded
 

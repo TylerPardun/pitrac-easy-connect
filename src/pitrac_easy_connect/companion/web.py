@@ -80,12 +80,9 @@ class CompanionHandler(BaseHTTPRequestHandler):
         service = self.server.service
         path = urlparse(self.path).path
         routes: Dict[str, Callable[[Dict[str, Any]], Any]] = {
-            # The reason travels with the result: a page showing an empty list
-            # can then say whether nothing answered or nothing was asked.
-            "/api/search": lambda body: {
-                "enclosures": service.search(),
-                "problem": service.search_problem(),
-            },
+            # Enclosures and the reason a search failed come from the same
+            # operation, so concurrent searches cannot cross their answers.
+            "/api/search": lambda body: service.search_payload(),
             "/api/pair": lambda body: service.pair(str(body.get("deviceId", ""))),
             "/api/range-clear": lambda body: service.clear_range(),
             "/api/range-conditions": lambda body: service.set_range_conditions(body),

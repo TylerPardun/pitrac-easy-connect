@@ -1,15 +1,9 @@
 """Finding the enclosure without ever asking a person for an IP address.
 
-Two mechanisms, because neither is reliable everywhere:
-
-**mDNS.** The Pi publishes ``_pitrac._tcp`` through the avahi daemon that is
-already running. This is what makes ``pitrac-<id>.local`` work and is the
-mechanism printed on the owner card as the fallback address.
-
-**A UDP beacon.** The Companion broadcasts a short probe and every enclosure
-that hears it answers. This exists because mDNS is blocked or unreliable on a
-surprising number of consumer routers, and because it works unchanged on the
-enclosure's own hotspot, where there is no router at all.
+Automatic discovery uses a UDP beacon. The Pi also publishes its ordinary
+``pitrac-<id>.local`` hostname through mDNS, but the desktop does not browse a
+Bonjour service catalogue. That hostname is a connection fallback for a paired
+enclosure whose DHCP address changed; it is not a second discovery mechanism.
 
 The beacon answers with identity and state only. It carries no secret, so
 anything on the network learning that a PiTrac exists is the extent of the
@@ -18,26 +12,22 @@ enclosure still requires a pairing.
 """
 
 import json
+import errno
+import ipaddress
 import socket
 import threading
 import time
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, Iterator, List, Optional, Sequence
 
 DISCOVERY_PORT = 39876
 PROBE = b"PITRAC-DISCOVER-V1"
 MAX_REPLY_BYTES = 8192
+# The Pi publishes this service for ordinary `.local` hostname resolution and
+# other Bonjour-aware tools. The desktop's automatic search remains UDP-only.
 SERVICE_TYPE = "_pitrac._tcp"
-
 #: How often the responder checks whether it has been asked to stop.
 RESPONDER_POLL_SECONDS = 0.2
-
-#: Why the last search could not look, rather than what it did not find. None
-#: when the probe went out normally. A search that finds nothing because the
-#: machine would not let it send is not the same as a search that finds
-#: nothing because nothing is there, and the difference is the whole answer to
-#: "it cannot see my PiTrac".
-last_problem: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -79,6 +69,48 @@ class FoundEnclosure:
             "lastSeen": self.last_seen,
             "reportedAddress": self.reported_address,
         }
+
+
+@dataclass(frozen=True)
+class DiscoveryProblem:
+    """Why a search could not complete normally."""
+
+    kind: str
+    message: str
+    next_step: str
+
+    def as_dict(self) -> Dict[str, str]:
+        return {
+            "kind": self.kind,
+            "message": self.message,
+            "nextStep": self.next_step,
+        }
+
+
+@dataclass(frozen=True)
+class DiscoveryResult:
+    """One atomic search result, safe to pass between concurrent callers."""
+
+    enclosures: List[FoundEnclosure]
+    problem: Optional[DiscoveryProblem] = None
+
+    # Iteration keeps callers interested only in enclosures simple while the
+    # error remains attached to the same result instead of living in a global.
+    def __iter__(self) -> Iterator[FoundEnclosure]:
+        return iter(self.enclosures)
+
+    def __len__(self) -> int:
+        return len(self.enclosures)
+
+    def __getitem__(self, index):
+        return self.enclosures[index]
+
+    def __eq__(self, other: object) -> bool:
+        if isinstance(other, list):
+            return self.enclosures == other
+        if isinstance(other, DiscoveryResult):
+            return self.enclosures == other.enclosures and self.problem == other.problem
+        return NotImplemented
 
 
 class DiscoveryResponder:
@@ -154,41 +186,58 @@ class DiscoveryResponder:
 
 def discover(
     timeout: float = 2.0, port: int = DISCOVERY_PORT, broadcast_to: Optional[List[str]] = None
-) -> List[FoundEnclosure]:
-    """Runs on the Companion. Returns every enclosure that answered."""
+) -> DiscoveryResult:
+    """Runs on the desktop and returns enclosures plus any search failure.
 
-    global last_problem
+    ``broadcast_to`` is an explicit test/service override. Production calls
+    leave it unset and probe every active IPv4 broadcast plus the limited
+    broadcast address. Loopback is kept as a local simulator probe, but never
+    counts as proof that real network traffic was sent.
+    """
 
-    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-    sock.settimeout(0.3)
     try:
-        sock.bind(("", 0))
-        targets = broadcast_to or ["255.255.255.255", "127.0.0.1"]
-        sent, failures = 0, []
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+        sock.settimeout(0.3)
+    except OSError as exc:
+        return DiscoveryResult([], _socket_problem("send", exc))
+    try:
+        try:
+            sock.bind(("", 0))
+        except OSError as exc:
+            return DiscoveryResult([], _socket_problem("send", exc))
+
+        explicit_targets = broadcast_to is not None
+        targets = _dedupe(broadcast_to or [*_network_broadcasts(), "127.0.0.1"])
+        network_attempts = 0
+        network_sent = 0
+        failures = []
         for target in targets:
+            is_local = _is_loopback(target)
+            if not is_local:
+                network_attempts += 1
             try:
                 sock.sendto(PROBE, (target, port))
-                sent += 1
+                if not is_local:
+                    network_sent += 1
             except OSError as exc:
-                failures.append("{}: {}".format(target, exc))
+                if not is_local:
+                    failures.append((target, exc))
                 continue
 
-        if sent == 0:
-            # Nothing left the machine, so an empty result says nothing about
-            # what is on the network. On macOS this is what a refused Local
-            # Network permission looks like from in here, and it used to be
-            # indistinguishable from an enclosure that is switched off.
-            last_problem = (
-                "This computer could not send anything to the network"
-                + (" ({})".format(failures[0]) if failures else "")
-                + ". On macOS, check System Settings \u2192 Privacy & Security \u2192"
-                  " Local Network and allow PiTrac Easy-Connect; on Windows, check"
-                  " that it is allowed through the firewall."
+        # A loopback success is useful to tests, but says nothing about whether
+        # the computer was allowed to ask the LAN. Explicit loopback-only calls
+        # are the exception because they deliberately do not test the LAN.
+        problem = None
+        if network_attempts and network_sent == 0:
+            problem = _socket_problem("send", failures[0][1] if failures else None)
+        elif not explicit_targets and network_attempts == 0:
+            problem = DiscoveryProblem(
+                "network",
+                "This computer has no active IPv4 interface that can send discovery traffic.",
+                "Connect this computer to the same network as PiTrac, then search again.",
             )
-            return []
-        last_problem = None
 
         found: Dict[str, FoundEnclosure] = {}
         deadline = time.monotonic() + timeout
@@ -197,16 +246,98 @@ def discover(
                 data, sender = sock.recvfrom(MAX_REPLY_BYTES)
             except socket.timeout:
                 continue
-            except OSError:
+            except OSError as exc:
+                problem = _socket_problem("receive", exc)
                 break
             enclosure = _parse(data, sender[0])
             if enclosure is not None:
                 found[enclosure.device_id] = enclosure
         # Sorted by name so two enclosures are always listed in the same order
         # rather than in whichever order they happened to answer.
-        return sorted(found.values(), key=lambda item: (item.display_name, item.device_id))
+        ordered = sorted(found.values(), key=lambda item: (item.display_name, item.device_id))
+        return DiscoveryResult(ordered, problem)
     finally:
         sock.close()
+
+
+def _socket_problem(stage: str, exc: Optional[OSError]) -> DiscoveryProblem:
+    detail = ": {}".format(exc) if exc else ""
+    denied = bool(exc and getattr(exc, "errno", None) in (errno.EACCES, errno.EPERM))
+    if stage == "receive":
+        return DiscoveryProblem(
+            "receive",
+            "A networking error occurred while waiting for PiTrac replies{}".format(detail),
+            "Check the network connection and firewall, then search again.",
+        )
+    if denied or sys_platform_is_macos():
+        return DiscoveryProblem(
+            "permission",
+            "This computer could not send discovery traffic{}. Local Network permission may be denied.".format(detail),
+            "On macOS, open System Settings → Privacy & Security → Local Network and allow "
+            "PiTrac Easy-Connect. On Windows or Linux, allow it through the firewall.",
+        )
+    return DiscoveryProblem(
+        "network",
+        "This computer could not send discovery traffic{}".format(detail),
+        "Connect to the same network as PiTrac, check the firewall, then search again.",
+    )
+
+
+def sys_platform_is_macos() -> bool:
+    import sys
+
+    return sys.platform == "darwin"
+
+
+def _is_loopback(address: str) -> bool:
+    try:
+        return ipaddress.ip_address(address).is_loopback
+    except ValueError:
+        return False
+
+
+def _dedupe(values: Sequence[str]) -> List[str]:
+    return list(dict.fromkeys(value for value in values if value))
+
+
+def _network_broadcasts() -> List[str]:
+    """Broadcast targets for every active, broadcast-capable IPv4 adapter."""
+
+    targets = ["255.255.255.255"]
+    try:
+        import psutil
+    except Exception:
+        return targets
+
+    try:
+        addresses = psutil.net_if_addrs()
+        stats = psutil.net_if_stats()
+    except Exception:
+        return targets
+
+    for name, entries in addresses.items():
+        state = stats.get(name)
+        if state is not None and not state.isup:
+            continue
+        for entry in entries:
+            if entry.family != socket.AF_INET or _is_loopback(entry.address):
+                continue
+            broadcast = entry.broadcast
+            if not broadcast and entry.netmask:
+                try:
+                    broadcast = str(
+                        ipaddress.IPv4Network(
+                            "{}/{}".format(entry.address, entry.netmask), strict=False
+                        ).broadcast_address
+                    )
+                except (ipaddress.AddressValueError, ipaddress.NetmaskValueError):
+                    continue
+            # Point-to-point VPNs commonly expose a /32 address. Its computed
+            # "broadcast" is the adapter's own address and must not be treated
+            # as a LAN broadcast target.
+            if broadcast and broadcast != entry.address:
+                targets.append(broadcast)
+    return _dedupe(targets)
 
 
 def _port(value: Any, default: int = 0) -> Optional[int]:

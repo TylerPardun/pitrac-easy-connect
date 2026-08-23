@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Report what a packaged build actually redistributes.
 
-NOTICE.md lists other people's code that ships inside the macOS and Windows
-apps. That list is an attribution obligation, not a description, so it has to
+NOTICE.md lists other people's code that ships inside the native desktop apps.
+That list is an attribution obligation, not a description, so it has to
 match what the build really contains rather than what anyone remembers adding.
 
 This reads PyInstaller's own manifest from the last build and prints the
@@ -49,6 +49,18 @@ CREDITED_AS = {
     "libexpat": "libexpat", "libffi": "libffi",
     "typing_extensions": "typing-extensions",
     "proxy_tools": "proxy-tools",
+    "psutil": "psutil",
+    "gi": "PyGObject",
+    "cairo": "pycairo",
+    "libgio": "GLib",
+    "libglib": "GLib",
+    "libgmodule": "GLib",
+    "libgobject": "GLib",
+    "libgirepository": "GLib",
+    "libblkid": "util-linux",
+    "libmount": "util-linux",
+    "libpcre2": "PCRE2",
+    "libselinux": "libselinux",
 }
 
 

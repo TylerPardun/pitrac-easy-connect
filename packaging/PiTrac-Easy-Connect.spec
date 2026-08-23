@@ -1,6 +1,7 @@
 # PyInstaller specification for the PiTrac app.
 #
-# Builds for whichever platform it runs on: a .exe on Windows, a .app on macOS.
+# Builds for whichever platform it runs on: a .exe on Windows, a .app on macOS,
+# and a native ELF executable using WebKitGTK on Linux.
 # PyInstaller bundles the interpreter of the machine it runs on, so a Windows
 # build needs a Windows machine — there is no cross-compiling this.
 #
@@ -11,6 +12,7 @@ import sys
 
 WINDOWS = sys.platform == "win32"
 MACOS = sys.platform == "darwin"
+LINUX = sys.platform.startswith("linux")
 
 # SPECPATH is injected by PyInstaller and is the directory holding this file.
 # Paths are derived from it so the build works from any working directory.
@@ -37,7 +39,9 @@ def _require_licences():
             "Run: python3 packaging/collect-licences.py"
         )
     return path
-ICON = os.path.join(SPECPATH, "icon", "PiTrac.ico" if WINDOWS else "PiTrac.icns")
+ICON = os.path.join(
+    SPECPATH, "icon", "PiTrac.ico" if WINDOWS else ("PiTrac.icns" if MACOS else "icon.png")
+)
 
 # pywebview draws the window with the platform's own browser engine — WKWebView
 # on macOS, WebView2 on Windows — which is what makes this a real app rather
@@ -48,6 +52,8 @@ if MACOS:
     WINDOW_IMPORTS += ["webview.platforms.cocoa"]
 elif WINDOWS:
     WINDOW_IMPORTS += ["webview.platforms.edgechromium", "clr_loader", "pythonnet"]
+elif LINUX:
+    WINDOW_IMPORTS += ["webview.platforms.gtk", "gi", "gi.repository.Gtk", "gi.repository.WebKit2"]
 
 analysis = Analysis(
     [os.path.join(SPECPATH, "app_entry.py")],
@@ -84,8 +90,6 @@ analysis = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    # Nothing here draws with a GUI toolkit; the interface is a web page in an
-    # application window. Excluding these keeps the download small.
     # Nothing here draws with a GUI toolkit, and the window loads a URL from
     # our own loopback server rather than using pywebview's built-in one. That
     # optional server drags in a web framework, a template engine, an event
@@ -100,12 +104,8 @@ analysis = Analysis(
         "tkinter", "unittest", "pydoc", "test", "PIL", "numpy",
         "readline", "curses", "_curses",
         "cryptography", "OpenSSL",
-        # NOT bottle. Excluding it was wrong in a way that was invisible from
-        # here: pywebview's __init__ imports webview.http unconditionally and
-        # that module imports bottle at the top, so leaving it out did not
-        # merely remove an unused server, it made `import webview` raise. The
-        # app then fell back to a browser on every packaged build, which is
-        # exactly the thing the native window exists to avoid.
+        # NOT bottle: pywebview imports it while loading even though this app
+        # supplies its own loopback server.
         "tornado", "jinja2", "markupsafe",
         "uvloop", "colorama",
         # distutils is NOT excluded: PyInstaller's own pre-safe-import hook

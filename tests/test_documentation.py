@@ -208,8 +208,45 @@ def test_the_packaged_entry_point_opens_a_window():
     """Double-clicking a packaged build must not open a browser tab."""
 
     entry = read(Path(__file__).resolve().parent.parent / "packaging" / "app_entry.py")
-    assert "frozen" in entry
-    assert '"--window"' in entry
+    assert "companion.app import main" in entry
+    assert "--window" not in entry
+    assert "--no-browser" not in entry
+
+
+def test_product_commands_name_the_desktop_and_pi_roles_unambiguously():
+    project = read(Path(__file__).resolve().parent.parent / "pyproject.toml")
+    assert 'pitrac-easy-connect = "pitrac_easy_connect.companion.app:main"' in project
+    assert 'pitrac-easy-connect-pi = "pitrac_easy_connect.pi.app:main"' in project
+    assert "pitrac-demo" not in project
+    assert "pitrac-easy-connect-app" not in project
+
+
+def test_public_downloads_are_the_four_direct_release_assets():
+    root = Path(__file__).resolve().parent.parent
+    public = read(README) + read(root / "site" / "index.html")
+    assets = (
+        "PiTrac-Easy-Connect-macos-apple-silicon.zip",
+        "PiTrac-Easy-Connect-macos-intel.zip",
+        "PiTrac-Easy-Connect-windows.zip",
+        "PiTrac-Easy-Connect-linux-x86_64.zip",
+    )
+    for asset in assets:
+        assert "releases/latest/download/{}".format(asset) in public
+    assert "Apple silicon (M1 or later)" in public
+
+
+def test_ci_smokes_the_normal_native_path_for_every_release_platform():
+    workflow = read(
+        Path(__file__).resolve().parent.parent / ".github" / "workflows" / "build.yml"
+    )
+    assert "PiTrac-Easy-Connect-linux-x86_64.zip" in workflow
+    assert "xvfb-run" in workflow and '"state": *"native"' in workflow
+    assert "msedgewebview2.exe" in workflow
+    assert "packaging/check-native-only.py" in workflow
+    # Headless is tested at API level, never used to make an artifact smoke
+    # test pass without creating the window users receive.
+    build_job = workflow.split("  build:\n", 1)[1].split("  release:\n", 1)[0]
+    assert "--headless" not in build_job
 
 
 def test_the_release_notes_warn_about_the_unsigned_builds():
@@ -296,6 +333,17 @@ def test_every_error_code_is_in_the_reference():
     text = read(guide)
     missing = [code for code in sorted(catalogue()) if "`{}`".format(code) not in text]
     assert not missing, "not in the operator guide: {}".format(missing)
+
+
+def test_error_codes_are_unique_and_duplicate_registration_fails():
+    from pitrac_easy_connect.common import errors
+
+    definitions = [
+        value.code for value in vars(errors).values() if isinstance(value, errors.ErrorInfo)
+    ]
+    assert len(definitions) == len(set(definitions))
+    with pytest.raises(ValueError, match="duplicate"):
+        errors._define("PT-CFG-001", "x", "y", "z")
 
 
 def test_the_two_beginner_guides_cover_the_same_steps():

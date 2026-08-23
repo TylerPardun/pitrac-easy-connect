@@ -47,6 +47,8 @@ _CATALOGUE: Dict[str, ErrorInfo] = {}
 
 
 def _define(code: str, failed: str, still_safe: str, next_step: str) -> ErrorInfo:
+    if code in _CATALOGUE:
+        raise ValueError("duplicate Easy-Connect error code: {}".format(code))
     info = ErrorInfo(code, failed, still_safe, next_step)
     _CATALOGUE[code] = info
     return info
@@ -159,7 +161,7 @@ BACKUP_NEEDS_A_COMPUTER = _define(
     "Save it from PiTrac Easy-Connect on a computer that is already paired.",
 )
 OWNER_CARD_NEEDS_A_COMPUTER = _define(
-    "PT-CFG-006",
+    "PT-CFG-007",
     "The owner card is not shown over your home network.",
     "Nothing was changed.",
     "Open it from PiTrac Easy-Connect on a paired computer, or from PiTrac's "

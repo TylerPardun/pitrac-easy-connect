@@ -28,6 +28,9 @@ BUNDLED = {
     "pyobjc-framework-Quartz": ["Quartz"],
     "proxy_tools": ["proxy_tools"],
     "typing_extensions": ["typing_extensions"],
+    "psutil": ["psutil"],
+    "PyGObject": ["gi"],
+    "pycairo": ["cairo"],
     "pythonnet": ["clr"],
     "clr_loader": ["clr_loader"],
     # Pulled in beneath pythonnet on Windows, and bundled with it.
@@ -132,6 +135,73 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.""",
 }
 
+# Native libraries do not have importlib distribution metadata. Keep their
+# upstream licence text here so the generated file that travels beside each
+# app still covers them. The attribution scanner decides whether a particular
+# platform bundled the library; carrying the text on the others is harmless.
+NATIVE_LICENCES = {
+    "libmpdec 4.0.0": """Copyright (c) 2008-2024 Stefan Krah. All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions
+are met:
+
+1. Redistributions of source code must retain the above copyright
+   notice, this list of conditions and the following disclaimer.
+2. Redistributions in binary form must reproduce the above copyright
+   notice, this list of conditions and the following disclaimer in the
+   documentation and/or other materials provided with the distribution.
+
+THIS SOFTWARE IS PROVIDED BY THE AUTHOR AND CONTRIBUTORS ``AS IS'' AND
+ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE
+FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+SUCH DAMAGE.""",
+}
+
+# Meson-built pycairo wheels omit the licence files that are present in the
+# source archive. Debian and Ubuntu install the same standard texts centrally;
+# use both because pycairo is dual-licensed. If another Linux builder does not
+# provide them, collection still fails closed below.
+SYSTEM_LICENCES = {
+    "pycairo": (
+        Path("/usr/share/common-licenses/LGPL-2.1"),
+        Path("/usr/share/common-licenses/MPL-1.1"),
+    ),
+}
+
+# PyInstaller copies these shared libraries into the Linux executable. They
+# are Debian/Ubuntu packages rather than Python distributions, so their
+# complete upstream notices and licence grants come from the package copyright
+# files. Presence of PyGObject means this is the Linux build: in that case all
+# of these files are mandatory and collection fails closed if one is absent.
+LINUX_NATIVE_COPYRIGHTS = {
+    # Ubuntu 24.04 uses the t64 GLib package name; 22.04 does not.
+    "GLib": (
+        Path("/usr/share/doc/libglib2.0-0t64/copyright"),
+        Path("/usr/share/doc/libglib2.0-0/copyright"),
+    ),
+    "util-linux": (Path("/usr/share/doc/libblkid1/copyright"),),
+    "PCRE2": (Path("/usr/share/doc/libpcre2-8-0/copyright"),),
+    "libselinux": (Path("/usr/share/doc/libselinux1/copyright"),),
+}
+
+
+def system_licence_text(name):
+    paths = SYSTEM_LICENCES.get(name)
+    if not paths or not all(path.is_file() for path in paths):
+        return None
+    return "\n\n".join(
+        "{}\n{}\n\n{}".format(path.name, "=" * len(path.name), path.read_text().strip())
+        for path in paths
+    )
+
 
 def declared_holder(dist):
     """The copyright holder the distribution names for itself.
@@ -181,8 +251,8 @@ def build() -> tuple:
     sections.append(
         "Third-party licences bundled in PiTrac Easy-Connect\n"
         + ("=" * 52) + "\n\n"
-        "The Raspberry Pi service and running from source use only the Python\n"
-        "standard library. The packaged macOS and Windows applications bundle\n"
+        "The Raspberry Pi service uses only the Python standard library. The\n"
+        "packaged macOS, Windows, and Linux applications bundle\n"
         "the components below, and their licence texts follow in full.\n"
     )
 
@@ -191,7 +261,7 @@ def build() -> tuple:
         dist = distributions.get(key)
         if dist is None:
             continue                       # not installed on this platform
-        text = licence_text(dist) or reconstructed_text(dist)
+        text = licence_text(dist) or reconstructed_text(dist) or system_licence_text(name)
         version = dist.metadata["Version"]
         if not text:
             missing.append("{} {}".format(name, version))
@@ -199,6 +269,21 @@ def build() -> tuple:
         sections.append(
             "\n" + "-" * 72 + "\n{} {}\n".format(name, version) + "-" * 72 + "\n\n" + text.strip() + "\n"
         )
+    for name, text in sorted(NATIVE_LICENCES.items()):
+        sections.append(
+            "\n" + "-" * 72 + "\n{}\n".format(name) + "-" * 72 + "\n\n"
+            + text.strip() + "\n"
+        )
+    if "pygobject" in distributions:
+        for name, candidates in sorted(LINUX_NATIVE_COPYRIGHTS.items()):
+            path = next((one for one in candidates if one.is_file()), None)
+            if path is None:
+                missing.append("{} ({})".format(name, " or ".join(map(str, candidates))))
+                continue
+            sections.append(
+                "\n" + "-" * 72 + "\n{} (Linux system library)\n".format(name)
+                + "-" * 72 + "\n\n" + path.read_text(errors="replace").strip() + "\n"
+            )
     return "\n".join(sections), missing
 
 

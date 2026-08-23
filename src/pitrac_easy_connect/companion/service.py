@@ -79,13 +79,11 @@ class CompanionService:
         #: seconds cannot be exercised three hundred times.
         self.search_seconds = search_seconds
         self.research_seconds = research_seconds
-        #: None while the interface is in its own window, which is what the
-        #: packaged builds are for. Set to the reason when it had to fall back
-        #: to a browser, so the state is visible rather than merely apparent.
-        self._window_fallback: Optional[str] = None
-        #: Set when a search could not send anything, rather than sent and
-        #: heard nothing back.
-        self._search_problem: Optional[str] = None
+        #: The app starts the HTTP service before pywebview creates the OS
+        #: window. Do not call that interval native: build checks query this
+        #: field specifically to catch a backend that never opened.
+        self._window_lifecycle = "starting"
+        self._window_detail: Optional[str] = None
         self.computer_name = computer_name or default_computer_name()
         # Always hold a port for every simulator. A caller that overrides only
         # one must not leave the other unmapped, or switching to it later fails
@@ -167,39 +165,49 @@ class CompanionService:
         self.connect_simulator()
         return self.status()
 
-    def note_window_fallback(self, reason: Optional[str]) -> None:
-        """Record that the interface opened in a browser, and why."""
-
+    def set_window_state(self, state: str, detail: Optional[str] = None) -> None:
+        if state not in {"starting", "native", "headless", "failed"}:
+            raise ValueError("unknown window lifecycle state: {}".format(state))
         with self._lock:
-            self._window_fallback = reason or "no native window on this machine"
-
-    def search_problem(self) -> Optional[str]:
-        """Why the last search could not look, if it could not."""
-
-        with self._lock:
-            return self._search_problem
+            self._window_lifecycle = state
+            self._window_detail = detail
 
     def window_state(self) -> Dict[str, Any]:
         with self._lock:
-            fallback = self._window_fallback
-        return {"native": fallback is None, "detail": fallback}
+            state = self._window_lifecycle
+            detail = self._window_detail
+        return {"state": state, "detail": detail}
 
     # --- Finding an enclosure --------------------------------------------
 
-    def search(self, timeout: Optional[float] = None) -> List[Dict[str, Any]]:
+    def _search(self, timeout: Optional[float] = None) -> discovery.DiscoveryResult:
         if timeout is None:
             timeout = self.search_seconds
-        found = discovery.discover(timeout=timeout, port=self.discovery_port)
-        # Kept so the page can say why nothing was found when the reason is
-        # this computer rather than the network.
-        self._search_problem = discovery.last_problem
+        result = discovery.discover(timeout=timeout, port=self.discovery_port)
         with self._lock:
-            self._found = found
-            known = self.store.get("enclosures") or {}
+            self._found = list(result.enclosures)
+        return result
+
+    def search(self, timeout: Optional[float] = None) -> List[Dict[str, Any]]:
+        """Compatibility wrapper for callers that only need enclosures."""
+
+        result = self._search(timeout)
+        known = self.store.get("enclosures") or {}
         return [
             {**enclosure.as_dict(), "paired": enclosure.device_id in known}
-            for enclosure in found
+            for enclosure in result.enclosures
         ]
+
+    def search_payload(self, timeout: Optional[float] = None) -> Dict[str, Any]:
+        result = self._search(timeout)
+        known = self.store.get("enclosures") or {}
+        return {
+            "enclosures": [
+                {**enclosure.as_dict(), "paired": enclosure.device_id in known}
+                for enclosure in result.enclosures
+            ],
+            "problem": result.problem.as_dict() if result.problem else None,
+        }
 
     def _found_by_id(self, device_id: str) -> Optional[discovery.FoundEnclosure]:
         with self._lock:
@@ -261,6 +269,7 @@ class CompanionService:
                 "secret": secret,
                 "displayName": enclosure.display_name,
                 "address": enclosure.address,
+                "hostname": enclosure.hostname,
                 "linkPort": enclosure.link_port,
                 "pairedAt": time.time(),
             }
@@ -412,6 +421,18 @@ class CompanionService:
         if not host:
             raise EasyConnectError(LINK_NOT_FOUND, "no address is known for that PiTrac")
 
+        hostname = (enclosure.hostname if enclosure else "") or record.get("hostname", "")
+        candidates = [host]
+        if hostname:
+            candidates.append(hostname)
+            if "." not in hostname:
+                candidates.append(hostname + ".local")
+        else:
+            # Records written before hostname persistence still have a stable
+            # device id from which every enclosure hostname is derived.
+            candidates.append("pitrac-{}.local".format(device_id.lower()))
+        candidates = list(dict.fromkeys(candidate for candidate in candidates if candidate))
+
         self.disconnect()
         client = CompanionLinkClient(
             host,
@@ -423,6 +444,7 @@ class CompanionService:
             on_shot=self._forward_shot,
             on_state=self._on_link_state,
             on_enclosure_status=self._on_enclosure_status,
+            fallback_hosts=candidates[1:],
         )
         with self._lock:
             self._link = client
@@ -852,9 +874,8 @@ class CompanionService:
         return {
             "version": self.version,
             "computerName": self.computer_name,
-            # Whether this is the application window or a browser standing in
-            # for it. A build that quietly degrades to a browser is a bug, and
-            # this is how anyone -- support, or the build itself -- can tell.
+            # Explicit lifecycle, so "server started" cannot be mistaken for
+            # "the operating-system window exists".
             "window": self.window_state(),
             "state": state.value,
             "headline": state.headline,

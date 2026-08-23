@@ -285,7 +285,7 @@ PAGE = r"""<!doctype html>
       </div>
 
       <h3>PiTrac</h3>
-      <a class="linkbtn quiet" id="setupLink" href="#" target="_blank" rel="noopener">Open the PiTrac setup page</a>
+      <button class="quiet" id="setupLink">Open the PiTrac setup page</button>
       <button class="quiet" id="testShot">Send a test shot</button>
       <button class="quiet" id="restart">Restart PiTrac</button>
       <button class="quiet danger" id="shutdown">Shut down PiTrac safely</button>
@@ -600,8 +600,6 @@ function render(data){
     b.classList.toggle("primary", b.dataset.sim===data.simulator);
     b.classList.toggle("quiet", b.dataset.sim!==data.simulator);
   });
-  $("setupLink").href = data.link && data.link.address
-    ? "http://"+data.link.address.split(":")[0] : "#";
   renderDetails(data);
 }
 
@@ -669,8 +667,27 @@ function renderUpdate(update){
   }));
   const get=$("getUpdate");
   if(get) get.addEventListener("click",()=>{
-    if(update.downloadUrl) window.open(update.downloadUrl,"_blank","noopener");
+    if(!update.downloadUrl) return;
+    host.innerHTML='<div class="update"><span>Copy this release address and open it when ready:<br>'+
+      '<code>'+esc(update.downloadUrl)+'</code></span>'+
+      '<button class="quiet" id="copyUpdate">Copy address</button></div>';
+    $("copyUpdate").addEventListener("click",async e=>{
+      const copied=await copyText(update.downloadUrl);
+      e.target.textContent=copied?"Copied":"Copy failed";
+    });
   });
+}
+
+async function copyText(value){
+  try{
+    if(navigator.clipboard && navigator.clipboard.writeText){
+      await navigator.clipboard.writeText(value); return true;
+    }
+    const box=document.createElement("textarea");
+    box.value=value; box.style.position="fixed"; box.style.opacity="0";
+    document.body.appendChild(box); box.select();
+    const copied=document.execCommand("copy"); box.remove(); return copied;
+  }catch(_error){ return false; }
 }
 
 function renderDetails(data){
@@ -697,7 +714,22 @@ async function findDevices(){
   try{
     const data=await api("/api/search",{});
     const known=status?status.pairedEnclosures.map(e=>e.deviceId):[];
-    if(!data.enclosures.length){ host.classList.add("hidden"); return; }
+    if(data.problem){
+      const problem=data.problem;
+      const failure=new Error(problem.message||"Discovery could not run.");
+      failure.info={failed:problem.message, nextStep:problem.nextStep};
+      showError(failure);
+    }
+    if(!data.enclosures.length){
+      host.classList.add("hidden");
+      if(!data.problem){
+        const missing=new Error("No PiTrac was found.");
+        missing.info={failed:"No PiTrac was found.",
+          nextStep:"Check that PiTrac has power and is on this same network, then search again."};
+        showError(missing);
+      }
+      return;
+    }
     if(data.enclosures.length===1 && known.includes(data.enclosures[0].deviceId)){
       host.classList.add("hidden");
       await api("/api/connect",{deviceId:data.enclosures[0].deviceId});
@@ -800,6 +832,7 @@ $("setupAgain").addEventListener("click",e=>run(e.target, async()=>{
 document.querySelectorAll("[data-sim]").forEach(button=>button.addEventListener("click",
   e=>run(e.currentTarget, ()=>api("/api/simulator",{simulator:e.currentTarget.dataset.sim}))));
 $("testShot").addEventListener("click",e=>doAction("test",e.target));
+$("setupLink").addEventListener("click",()=>showPane("setup"));
 $("restart").addEventListener("click",e=>run(e.target, async()=>{
   await api("/api/enclosure",{command:"restartPitrac"});
   $("note").innerHTML='<div class="note good">PiTrac was restarted.</div>';
@@ -1799,9 +1832,9 @@ function renderImages(enclosure){
   host.className="shotgrid";
   host.innerHTML=images.map(image=>{
     const url=base+image.url;
-    return `<a href="${esc(url)}" target="_blank" rel="noopener" title="${esc(image.name)}">
+    return `<div title="${esc(image.name)}">
       <img src="${esc(url)}" alt="${esc(image.name)}" decoding="async">
-      <small>${esc(image.name)}</small></a>`;
+      <small>${esc(image.name)}</small></div>`;
   }).join("");
 }
 

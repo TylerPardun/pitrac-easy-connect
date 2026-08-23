@@ -23,7 +23,7 @@ from .service import DEFAULT_STATE_DIR, PiService, ServicePaths
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="pitrac-easy-connect",
+        prog="pitrac-easy-connect-pi",
         description="The PiTrac Easy-Connect service that runs on the enclosure",
     )
     parser.add_argument(

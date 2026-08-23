@@ -2,9 +2,7 @@
 #
 # Build the PiTrac Easy-Connect app for whichever platform this runs on.
 #
-#   ./packaging/build-app.sh          native app (.app on macOS, .exe on Windows)
-#   ./packaging/build-app.sh --pyz    the portable single file instead
-#   ./packaging/build-app.sh --all    both
+#   ./packaging/build-app.sh          native app for this operating system
 #
 # PyInstaller bundles the interpreter of the machine it runs on, so a Windows
 # .exe needs a Windows machine. There is no cross-compiling this: build it on
@@ -21,44 +19,21 @@ export PITRAC_VERSION="$VERSION"
 say()  { printf '  %s\n' "$*"; }
 step() { printf '\n\033[1m%s\033[0m\n' "$*"; }
 
-WANT_PYZ=no
-WANT_APP=yes
 case "${1:-}" in
-    --pyz) WANT_PYZ=yes; WANT_APP=no ;;
-    --all) WANT_PYZ=yes ;;
     "")    ;;
     *)     printf 'Unknown option: %s\n' "$1" >&2; exit 1 ;;
 esac
 
 printf '\nPiTrac %s\n' "$VERSION"
 mkdir -p "$OUT"
+# Only known application outputs are removed. This prevents a stale artifact
+# from a different platform or version being packaged as the current build.
+rm -rf "$HERE/build/PiTrac-Easy-Connect" \
+    "$OUT/PiTrac Easy-Connect" "$OUT/PiTrac Easy-Connect.app" \
+    "$OUT/PiTrac Easy-Connect.exe" "$OUT/payload"
+rm -f "$OUT"/PiTrac-Easy-Connect-*.zip
 
-if [ "$WANT_PYZ" = yes ]; then
-    step "Portable single file"
-    STAGE="$(mktemp -d)"
-    trap 'rm -rf "$STAGE"' EXIT
-    cp -r src/pitrac_easy_connect "$STAGE/"
-    # The licence travels with the code, not just beside the download.
-    python3 packaging/collect-licences.py >/dev/null
-    cp LICENSE NOTICE.md THIRD-PARTY-LICENCES.txt "$STAGE/"
-    find "$STAGE" -name '__pycache__' -type d -prune -exec rm -rf {} + 2>/dev/null || true
-    # Development tools do not ship to people who downloaded a golf app.
-    for tool in demo.py ballmachine.py mock_simulators.py pi/simulated.py; do
-        rm -f "$STAGE/pitrac_easy_connect/$tool"
-    done
-    cat > "$STAGE/__main__.py" <<'PY'
-from pitrac_easy_connect.companion.app import main
-
-raise SystemExit(main())
-PY
-    PYZ="$OUT/PiTrac-Easy-Connect-$VERSION.pyz"
-    python3 -m zipapp "$STAGE" -o "$PYZ" -p "/usr/bin/env python3"
-    chmod +x "$PYZ"
-    say "$PYZ ($(du -h "$PYZ" | cut -f1)) — needs Python 3.9+ on the machine"
-fi
-
-if [ "$WANT_APP" = yes ]; then
-    step "Native app"
+step "Native app"
     # Pinned, so two builds of the same commit contain the same code and the
     # licences in NOTICE.md keep matching what actually shipped.
     # Installed every time, not only when missing. Accepting whatever version
@@ -83,7 +58,7 @@ if [ "$WANT_APP" = yes ]; then
     python3 -m PyInstaller --noconfirm --clean \
         --distpath "$OUT" --workpath "$HERE/build" packaging/PiTrac-Easy-Connect.spec
 
-    case "$(uname -s 2>/dev/null || echo Windows)" in
+case "$(uname -s 2>/dev/null || echo Windows)" in
         Darwin)
             say "$OUT/PiTrac Easy-Connect.app ($(du -sh "$OUT/PiTrac Easy-Connect.app" | cut -f1))"
             printf '\n  \033[1mUnsigned.\033[0m macOS will refuse to open it after download until it is\n'
@@ -96,10 +71,10 @@ if [ "$WANT_APP" = yes ]; then
             printf '  Users click More info, then Run anyway.\n'
             ;;
         *)
-            say "Built for $(uname -s). Windows and macOS are the supported targets."
+            say "$OUT/PiTrac Easy-Connect ($(du -h "$OUT/PiTrac Easy-Connect" | cut -f1))"
+            printf '\n  Requires WebKitGTK 4.1 at runtime (for example libwebkit2gtk-4.1-0 on Ubuntu).\n'
             ;;
-    esac
-fi
+esac
 
 printf '\nTo put a build on an enclosure so its owner can download it:\n'
 printf '  scp dist/<file> pitracuser@pitrac.local:/tmp/\n'

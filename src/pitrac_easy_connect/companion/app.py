@@ -1,9 +1,8 @@
-"""Entry point for the Easy Connect Companion on the simulator PC."""
+"""Entry point for the native PiTrac Easy-Connect desktop application."""
 
 import argparse
 import sys
 import threading
-import webbrowser
 from pathlib import Path
 
 from .. import __version__
@@ -15,7 +14,7 @@ from .web import CompanionHTTPServer
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="pitrac-companion", description="PiTrac Easy-Connect for your simulator PC"
+        prog="pitrac-easy-connect", description="PiTrac Easy-Connect desktop application"
     )
     parser.add_argument("--port", type=int, default=8787, help="local interface port")
     parser.add_argument(
@@ -26,14 +25,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--discovery-port", type=int, default=discovery.DISCOVERY_PORT)
     parser.add_argument("--config", type=Path, default=None, help="settings file location")
     parser.add_argument("--computer-name", default=None, help="name shown on the enclosure")
-    parser.add_argument("--no-browser", action="store_true", help="do not open a browser")
     parser.add_argument(
-        "--hidden", action="store_true",
-        help="start without opening a window; use the shortcut before a golf session",
-    )
-    parser.add_argument(
-        "--window", action="store_true",
-        help="open as an application window rather than a browser tab",
+        "--headless", action="store_true",
+        help="run the local API without a window (CI, automated tests, or service use only)",
     )
     parser.add_argument("--version", action="version", version=__version__)
     return parser
@@ -48,9 +42,6 @@ def main(argv=None) -> int:
         discovery_port=args.discovery_port,
         computer_name=args.computer_name,
     )
-
-    # Loopback only. The Companion holds pairing secrets and must not be
-    # reachable from the residence network.
     try:
         server = CompanionHTTPServer(("127.0.0.1", args.port), service)
     except OSError as exc:
@@ -61,42 +52,20 @@ def main(argv=None) -> int:
 def _run(args, service, server) -> int:
     url = "http://127.0.0.1:{}".format(server.server_port)
     print("PiTrac Easy-Connect {} is running at {}".format(__version__, url))
-
     if service.store.get("activeDeviceId"):
-        # Reconnect to the enclosure this PC used last, without being asked.
         threading.Thread(target=_reconnect, args=(service,), daemon=True).start()
 
-    wants_window = args.window and not args.no_browser and not args.hidden
     try:
-        if wants_window:
-            from . import window as window_module
-            from .window import native_available, open_in_browser, run_native
-
-            # A native window has to own the main thread on both macOS and
-            # Windows, so the web server moves to a background thread.
-            threading.Thread(target=server.serve_forever, daemon=True).start()
-
-            if native_available() and run_native(url):
-                return 0  # the user closed the window
-
-            # Falling back to a browser is a real degradation -- the whole
-            # point of the packaged builds is a window of their own -- so say
-            # what stopped it rather than only that it was stopped.
-            service.note_window_fallback(window_module.last_failure)
-            print("Opening in your browser instead: {}".format(
-                window_module.last_failure or "no native window on this machine"))
-            open_in_browser(url)
-            _wait_for_stop(server)
+        if args.headless:
+            service.set_window_state("headless")
+            print("Headless mode is active. Press Control-C to stop it.")
+            server.serve_forever()
             return 0
 
-        print("Press Control-C to stop it.")
-        if not args.no_browser and not args.hidden:
-            threading.Timer(0.4, lambda: webbrowser.open(url)).start()
-        if args.hidden:
-            print("Running in the background. Open {} to see it.".format(url))
-        server.serve_forever()
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        return _show_native(service, url)
     except KeyboardInterrupt:
-        pass
+        return 0
     finally:
         try:
             server.shutdown()
@@ -104,57 +73,56 @@ def _run(args, service, server) -> int:
             pass
         server.server_close()
         service.close()
+
+
+def _show_native(service: CompanionService, url: str) -> int:
+    from .window import NativeWindowError, run_native
+
+    service.set_window_state("starting")
+    try:
+        run_native(url, on_created=lambda: service.set_window_state("native"))
+    except NativeWindowError as exc:
+        reason = str(exc)
+        service.set_window_state("failed", reason)
+        _say_it_failed(
+            "PiTrac Easy-Connect could not open its application window.\n\n{}".format(reason)
+        )
+        return 1
     return 0
 
 
 def _handle_busy_port(args, service, failure: OSError) -> int:
-    """Decide what to do when the usual port will not open.
-
-    The packaged Windows app has no console, so an exception here is invisible:
-    double-clicking the icon appears to do nothing at all. Every path out of
-    this either shows the running copy, starts anyway somewhere else, or says
-    what went wrong somewhere the user can actually see it.
-    """
+    """Handle a bind failure without leaving a windowless desktop process."""
 
     import errno
 
     if failure.errno not in (errno.EADDRINUSE, errno.EACCES):
+        service.set_window_state("failed", str(failure))
         service.close()
-        _say_it_failed(
-            "PiTrac Easy-Connect could not start.\n\n{}".format(failure)
-        )
+        _say_it_failed("PiTrac Easy-Connect could not start.\n\n{}".format(failure))
         return 1
 
-    running = _already_running(args.port)
-    if running:
-        # A second double-click on the icon. Show the copy that is already
-        # there rather than starting a rival that cannot hold the port.
+    if _already_running(args.port):
+        if args.headless:
+            service.close()
+            return 0
+        code = _show_native(service, "http://127.0.0.1:{}".format(args.port))
         service.close()
-        url = "http://127.0.0.1:{}".format(args.port)
-        print("PiTrac Easy-Connect is already running; opening {}".format(url))
-        _show(args, url)
-        return 0
+        return code
 
-    # Something that is not Easy-Connect holds the port. Take any free one:
-    # nothing else on this machine needs to find us at a fixed number.
     try:
         server = CompanionHTTPServer(("127.0.0.1", 0), service)
     except OSError as exc:
+        service.set_window_state("failed", str(exc))
         service.close()
         _say_it_failed("PiTrac Easy-Connect could not start.\n\n{}".format(exc))
         return 1
-    print(
-        "Port {} is in use by something else; using {} instead.".format(
-            args.port, server.server_port
-        )
-    )
+    print("Port {} is in use; using {} instead.".format(args.port, server.server_port))
     return _run(args, service, server)
 
 
 def _already_running(port: int) -> bool:
-    """Whether the thing holding the port is another copy of this program."""
-
-    import json as _json
+    import json
     import urllib.error
     import urllib.request
 
@@ -164,72 +132,55 @@ def _already_running(port: int) -> bool:
             headers={"X-PiTrac-App": "1"},
         )
         with urllib.request.urlopen(request, timeout=2) as response:
-            body = _json.loads(response.read().decode("utf-8"))
+            body = json.loads(response.read().decode("utf-8"))
     except (urllib.error.URLError, OSError, ValueError):
         return False
-    # computerName is ours; a different program answering 200 on this port
-    # will not have it.
     return "computerName" in body and "state" in body
 
 
-def _show(args, url: str) -> None:
-    """Put the interface in front of the user, however this build does that."""
-
-    if args.no_browser or args.hidden:
-        return
-    if args.window:
-        try:
-            from . import window as window_module
-            from .window import native_available, open_in_browser, run_native
-
-            if native_available() and run_native(url):
-                return
-            print("Opening in your browser instead: {}".format(
-                window_module.last_failure or "no native window on this machine"))
-            open_in_browser(url)
-            return
-        except Exception:
-            pass
-    webbrowser.open(url)
-
-
 def _say_it_failed(message: str) -> None:
-    """Report a startup failure where a user without a console will see it."""
+    """Show the actual startup reason in an operating-system dialog."""
 
-    print(message)
+    print(message, file=sys.stderr)
     try:
         if sys.platform == "win32":
             import ctypes
 
-            # 0x10 is MB_ICONERROR.
             ctypes.windll.user32.MessageBoxW(None, message, "PiTrac Easy-Connect", 0x10)
-        elif sys.platform == "darwin":
+            return
+        if sys.platform == "darwin":
             import subprocess
 
             subprocess.run(
-                ["osascript", "-e",
-                 'display alert "PiTrac Easy-Connect" message {}'.format(
-                     _applescript_string(message))],
+                ["osascript", "-e", 'display alert "PiTrac Easy-Connect" message {}'.format(
+                    _applescript_string(message)
+                )],
                 check=False, timeout=30,
             )
-    except Exception:
-        # A dialog that will not open must not become the failure the user
-        # sees instead of the one that actually happened.
-        pass
+            return
+        _linux_error_dialog(message)
+    except Exception as dialog_error:
+        print("The error dialog also failed: {}".format(dialog_error), file=sys.stderr)
+
+
+def _linux_error_dialog(message: str) -> None:
+    import shutil
+    import subprocess
+
+    commands = (
+        ("zenity", ["zenity", "--error", "--title=PiTrac Easy-Connect", "--text", message]),
+        ("kdialog", ["kdialog", "--error", message, "--title", "PiTrac Easy-Connect"]),
+        ("xmessage", ["xmessage", "-center", message]),
+    )
+    for executable, command in commands:
+        if shutil.which(executable):
+            subprocess.run(command, check=False, timeout=30)
+            return
+    raise RuntimeError("no desktop error-dialog provider is installed")
 
 
 def _applescript_string(text: str) -> str:
     return '"{}"'.format(text.replace("\\", "\\\\").replace('"', '\\"').replace("\n", " "))
-
-
-def _wait_for_stop(server) -> None:
-    """Keep running until the page asks the program to stop, or Control-C."""
-
-    try:
-        while not server.stopped.wait(0.5):
-            pass
-    except KeyboardInterrupt:
-        pass
 
 
 def _reconnect(service: CompanionService) -> None:
@@ -237,7 +188,6 @@ def _reconnect(service: CompanionService) -> None:
         service.search()
         service.connect()
     except Exception:
-        # Failing to reconnect is reported through the interface, not a crash.
         pass
 
 
