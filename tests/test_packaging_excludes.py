@@ -58,6 +58,17 @@ def test_the_window_backend_is_named_for_both_platforms():
     assert "webview.platforms.edgechromium" in source
 
 
+def test_linux_freezes_the_glib_override_used_by_pywebview():
+    """Raw GLib expects priority first; pywebview uses the override API."""
+
+    source = SPEC.read_text()
+    assert '"webview.platforms.gtk"' in source
+    assert '"gi.repository.GLib"' in source
+    assert '"gi.overrides.GLib"' in source
+    assert '"gi.repository.Gtk"' in source
+    assert '"gi.repository.WebKit2"' in source
+
+
 def test_macos_uses_the_supported_onedir_bundle_shape():
     source = SPEC.read_text()
     mac = source.split("if MACOS:", 1)[1].split("else:", 1)[0]

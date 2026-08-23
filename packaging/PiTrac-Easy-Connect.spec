@@ -53,7 +53,19 @@ if MACOS:
 elif WINDOWS:
     WINDOW_IMPORTS += ["webview.platforms.edgechromium", "clr_loader", "pythonnet"]
 elif LINUX:
-    WINDOW_IMPORTS += ["webview.platforms.gtk", "gi", "gi.repository.Gtk", "gi.repository.WebKit2"]
+    WINDOW_IMPORTS += [
+        "webview.platforms.gtk",
+        "gi",
+        # PyGObject 3.56 exposes the raw GLib introspection call separately
+        # from its backward-compatible Python override. pywebview uses the
+        # override's callback-first idle_add API, so a frozen app must carry
+        # both explicitly; otherwise every queued GTK operation receives its
+        # callback where raw GLib expects a numeric priority.
+        "gi.repository.GLib",
+        "gi.overrides.GLib",
+        "gi.repository.Gtk",
+        "gi.repository.WebKit2",
+    ]
 
 analysis = Analysis(
     [os.path.join(SPECPATH, "app_entry.py")],
