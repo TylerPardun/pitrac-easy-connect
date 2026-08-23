@@ -240,7 +240,7 @@ def test_ci_smokes_the_normal_native_path_for_every_release_platform():
         Path(__file__).resolve().parent.parent / ".github" / "workflows" / "build.yml"
     )
     assert "PiTrac-Easy-Connect-linux-x86_64.zip" in workflow
-    assert "xvfb-run" in workflow and '"state": *"native"' in workflow
+    assert "Xvfb" in workflow and '"state": *"native"' in workflow
     assert "msedgewebview2.exe" in workflow
     assert "packaging/check-native-only.py" in workflow
     assert "--smoke-test" in workflow

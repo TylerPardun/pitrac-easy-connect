@@ -430,7 +430,19 @@ jobs:
           test -x "$BIN" || { echo "::error::the Linux executable bit was lost"; exit 1; }
           EXPECTED=$(PYTHONPATH=src python -c 'import pitrac_easy_connect; print(pitrac_easy_connect.__version__)')
           BROWSERS_BEFORE=$(pgrep -x 'firefox|chromium|google-chrome' 2>/dev/null | sort || true)
-          xvfb-run -a "$BIN" --port 8899 --smoke-test --config /tmp/pitrac-linux-smoke.json >linux-window.log 2>&1 &
+          # Both launches must share one desktop session. Wrapping only the
+          # first process in xvfb-run leaves the second with no DISPLAY, so it
+          # cannot execute the focus request the test is meant to verify.
+          export DISPLAY=:99
+          Xvfb "$DISPLAY" -screen 0 1280x1024x24 >xvfb.log 2>&1 &
+          XVFB_PID=$!
+          trap 'cat linux-window.log linux-second.log xvfb.log 2>/dev/null || true; kill $XVFB_PID 2>/dev/null || true' EXIT
+          for _ in $(seq 1 20); do
+            if [ -S /tmp/.X11-unix/X99 ]; then break; fi
+            sleep 0.25
+          done
+          test -S /tmp/.X11-unix/X99 || { echo "::error::Xvfb did not start"; exit 1; }
+          "$BIN" --port 8899 --smoke-test --config /tmp/pitrac-linux-smoke.json >linux-window.log 2>&1 &
           APP_PID=$!
           STATUS=""
           PAGE_CHECK=""
@@ -466,7 +478,10 @@ jobs:
           if kill -0 $SECOND_PID 2>/dev/null; then
             echo "::error::a second Linux app process remained running"; exit 1
           fi
-          wait $SECOND_PID
+          if ! wait $SECOND_PID; then
+            cat linux-second.log || true
+            echo "::error::the second Linux launch exited with a failure"; exit 1
+          fi
           kill -0 $APP_PID
           PAGE_CHECK=$(curl -fsS -m 5 -H "X-PiTrac-App: 1" http://127.0.0.1:8899/api/page-check)
           echo "$PAGE_CHECK" | grep -q 'POST /api/activate' || {
@@ -486,7 +501,10 @@ jobs:
             echo "::error::the Linux app did not exit cleanly"; exit 1
           fi
           wait $APP_PID
-          cat linux-window.log linux-second.log || true
+          trap - EXIT
+          kill $XVFB_PID 2>/dev/null || true
+          wait $XVFB_PID 2>/dev/null || true
+          cat linux-window.log linux-second.log xvfb.log || true
 
       - name: Check NOTICE.md credits everything the build bundles
         run: python packaging/bundled-licences.py --check
