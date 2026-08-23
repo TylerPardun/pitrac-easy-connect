@@ -73,6 +73,19 @@ def run_native(
 def _bring_to_front(native_window) -> None:
     """Restore and activate the one window without opening a browser."""
 
+    import sys
+
+    if sys.platform.startswith("linux"):
+        # pywebview's public Window methods wait on its ``shown`` event before
+        # forwarding to GTK.  When they are called by our loopback HTTP worker
+        # that wait can stall the activation response even though the GTK
+        # window is already visible.  The GTK backend entry points are exactly
+        # the thread-safe queue used by those methods (both dispatch through
+        # GLib.idle_add), without the redundant cross-thread wait.
+        native_window.gui.restore(native_window.uid)
+        native_window.gui.show(native_window.uid)
+        return
+
     # ``restore`` handles a minimized window and ``show`` handles a hidden
     # one. Calling both is harmless for an already visible window and keeps the
     # implementation on pywebview's native backends on all three platforms.
@@ -83,8 +96,6 @@ def _bring_to_front(native_window) -> None:
     # restored. pywebview already bundles PyObjC for WKWebView, so activate the
     # current application directly rather than shelling out to ``open`` (which
     # could create another application process).
-    import sys
-
     if sys.platform == "darwin":
         from AppKit import NSApplication
 

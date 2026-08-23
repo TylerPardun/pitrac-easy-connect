@@ -77,6 +77,32 @@ def test_pywebview_is_configured_never_to_open_external_links():
     assert 'settings["OPEN_EXTERNAL_LINKS_IN_BROWSER"] = False' in source
 
 
+def test_linux_activation_queues_directly_on_gtk(monkeypatch):
+    calls = []
+
+    class Gui:
+        def restore(self, uid):
+            calls.append(("restore", uid))
+
+        def show(self, uid):
+            calls.append(("show", uid))
+
+    class Native:
+        uid = "main-window"
+        gui = Gui()
+
+        def restore(self):
+            raise AssertionError("the blocking pywebview wrapper was used")
+
+        def show(self):
+            raise AssertionError("the blocking pywebview wrapper was used")
+
+    monkeypatch.setattr("sys.platform", "linux")
+    window._bring_to_front(Native())
+
+    assert calls == [("restore", "main-window"), ("show", "main-window")]
+
+
 def test_removed_browser_options_are_rejected():
     parser = app.build_parser()
     with pytest.raises(SystemExit):
