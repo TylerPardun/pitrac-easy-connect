@@ -612,3 +612,40 @@ def test_unpairing_still_works_when_the_enclosure_cannot_be_reached(rig):
 
     rig.companion.forget(rig.pi.identity.device_id)
     assert not rig.companion.paired_enclosures
+
+
+# --- A search that could not look is not a search that found nothing -------
+
+
+def test_a_search_that_cannot_send_says_so(rig, monkeypatch):
+    """On macOS this is what a refused Local Network permission looks like.
+
+    Before, every send failing produced an empty list, exactly like an
+    enclosure that is switched off, and the owner was told their PiTrac could
+    not be found rather than that their computer had not asked.
+    """
+
+    import socket as socket_module
+
+    from pitrac_easy_connect.common import discovery
+
+    real_socket = socket_module.socket
+
+    class Blocked(real_socket):
+        def sendto(self, *args, **kwargs):
+            raise OSError(65, "No route to host")
+
+    monkeypatch.setattr(socket_module, "socket", Blocked)
+    found = rig.companion.search(timeout=0.2)
+
+    assert found == []
+    problem = rig.companion.search_problem()
+    assert problem, "an empty result with no reason is the bug"
+    assert "Local Network" in problem, problem
+
+
+def test_a_search_that_sends_and_hears_nothing_reports_no_problem(rig):
+    """Nothing there is a normal answer, not a fault."""
+
+    found = rig.companion.search(timeout=0.2)
+    assert rig.companion.search_problem() is None

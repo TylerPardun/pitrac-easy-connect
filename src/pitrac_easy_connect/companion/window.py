@@ -21,15 +21,32 @@ depend on it, and a computer without it should degrade rather than fail.
 """
 
 import webbrowser
+from typing import Optional
+
+#: Why the last attempt at a native window did not happen. Read by the caller
+#: so the fallback can say what went wrong instead of only that it went wrong.
+#:
+#: This exists because the silence hid a real bug for a whole release: the
+#: packaged builds excluded a module pywebview imports, `import webview`
+#: raised, every exception here was swallowed, and every packaged app quietly
+#: opened a browser. Nothing anywhere said why.
+last_failure: Optional[str] = None
+
+
+def _describe(exc: BaseException) -> str:
+    return "{}: {}".format(type(exc).__name__, exc)
 
 
 def native_available() -> bool:
     """Whether a real application window can be drawn on this machine."""
 
+    global last_failure
     try:
         import webview  # noqa: F401
-    except Exception:
+    except Exception as exc:
+        last_failure = "the window backend could not be loaded ({})".format(_describe(exc))
         return False
+    last_failure = None
     return True
 
 
@@ -39,19 +56,24 @@ def run_native(url: str, title: str = "PiTrac Easy-Connect",
 
     Must be called on the main thread: the macOS and Windows toolkits both
     require it. Returns False if no native backend could be started, so the
-    caller can fall back rather than leaving the user with nothing.
+    caller can fall back rather than leaving the user with nothing -- and sets
+    ``last_failure`` to the reason, so the fallback is explicable.
     """
 
+    global last_failure
     try:
         import webview
-    except Exception:
+    except Exception as exc:
+        last_failure = "the window backend could not be loaded ({})".format(_describe(exc))
         return False
     try:
         webview.create_window(title, url, width=width, height=height,
                               min_size=(380, 560))
         webview.start()
+        last_failure = None
         return True
-    except Exception:
+    except Exception as exc:
+        last_failure = "the window would not open ({})".format(_describe(exc))
         return False
 
 

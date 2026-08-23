@@ -32,6 +32,13 @@ SERVICE_TYPE = "_pitrac._tcp"
 #: How often the responder checks whether it has been asked to stop.
 RESPONDER_POLL_SECONDS = 0.2
 
+#: Why the last search could not look, rather than what it did not find. None
+#: when the probe went out normally. A search that finds nothing because the
+#: machine would not let it send is not the same as a search that finds
+#: nothing because nothing is there, and the difference is the whole answer to
+#: "it cannot see my PiTrac".
+last_problem: Optional[str] = None
+
 
 @dataclass(frozen=True)
 class FoundEnclosure:
@@ -150,6 +157,8 @@ def discover(
 ) -> List[FoundEnclosure]:
     """Runs on the Companion. Returns every enclosure that answered."""
 
+    global last_problem
+
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
@@ -157,11 +166,29 @@ def discover(
     try:
         sock.bind(("", 0))
         targets = broadcast_to or ["255.255.255.255", "127.0.0.1"]
+        sent, failures = 0, []
         for target in targets:
             try:
                 sock.sendto(PROBE, (target, port))
-            except OSError:
+                sent += 1
+            except OSError as exc:
+                failures.append("{}: {}".format(target, exc))
                 continue
+
+        if sent == 0:
+            # Nothing left the machine, so an empty result says nothing about
+            # what is on the network. On macOS this is what a refused Local
+            # Network permission looks like from in here, and it used to be
+            # indistinguishable from an enclosure that is switched off.
+            last_problem = (
+                "This computer could not send anything to the network"
+                + (" ({})".format(failures[0]) if failures else "")
+                + ". On macOS, check System Settings \u2192 Privacy & Security \u2192"
+                  " Local Network and allow PiTrac Easy-Connect; on Windows, check"
+                  " that it is allowed through the firewall."
+            )
+            return []
+        last_problem = None
 
         found: Dict[str, FoundEnclosure] = {}
         deadline = time.monotonic() + timeout

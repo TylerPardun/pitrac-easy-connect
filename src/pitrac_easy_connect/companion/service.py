@@ -79,6 +79,13 @@ class CompanionService:
         #: seconds cannot be exercised three hundred times.
         self.search_seconds = search_seconds
         self.research_seconds = research_seconds
+        #: None while the interface is in its own window, which is what the
+        #: packaged builds are for. Set to the reason when it had to fall back
+        #: to a browser, so the state is visible rather than merely apparent.
+        self._window_fallback: Optional[str] = None
+        #: Set when a search could not send anything, rather than sent and
+        #: heard nothing back.
+        self._search_problem: Optional[str] = None
         self.computer_name = computer_name or default_computer_name()
         # Always hold a port for every simulator. A caller that overrides only
         # one must not leave the other unmapped, or switching to it later fails
@@ -160,12 +167,32 @@ class CompanionService:
         self.connect_simulator()
         return self.status()
 
+    def note_window_fallback(self, reason: Optional[str]) -> None:
+        """Record that the interface opened in a browser, and why."""
+
+        with self._lock:
+            self._window_fallback = reason or "no native window on this machine"
+
+    def search_problem(self) -> Optional[str]:
+        """Why the last search could not look, if it could not."""
+
+        with self._lock:
+            return self._search_problem
+
+    def window_state(self) -> Dict[str, Any]:
+        with self._lock:
+            fallback = self._window_fallback
+        return {"native": fallback is None, "detail": fallback}
+
     # --- Finding an enclosure --------------------------------------------
 
     def search(self, timeout: Optional[float] = None) -> List[Dict[str, Any]]:
         if timeout is None:
             timeout = self.search_seconds
         found = discovery.discover(timeout=timeout, port=self.discovery_port)
+        # Kept so the page can say why nothing was found when the reason is
+        # this computer rather than the network.
+        self._search_problem = discovery.last_problem
         with self._lock:
             self._found = found
             known = self.store.get("enclosures") or {}
@@ -825,6 +852,10 @@ class CompanionService:
         return {
             "version": self.version,
             "computerName": self.computer_name,
+            # Whether this is the application window or a browser standing in
+            # for it. A build that quietly degrades to a browser is a bug, and
+            # this is how anyone -- support, or the build itself -- can tell.
+            "window": self.window_state(),
             "state": state.value,
             "headline": state.headline,
             "detail": state.detail,

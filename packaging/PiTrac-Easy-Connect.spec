@@ -100,7 +100,13 @@ analysis = Analysis(
         "tkinter", "unittest", "pydoc", "test", "PIL", "numpy",
         "readline", "curses", "_curses",
         "cryptography", "OpenSSL",
-        "bottle", "tornado", "jinja2", "markupsafe",
+        # NOT bottle. Excluding it was wrong in a way that was invisible from
+        # here: pywebview's __init__ imports webview.http unconditionally and
+        # that module imports bottle at the top, so leaving it out did not
+        # merely remove an unused server, it made `import webview` raise. The
+        # app then fell back to a browser on every packaged build, which is
+        # exactly the thing the native window exists to avoid.
+        "tornado", "jinja2", "markupsafe",
         "uvloop", "colorama",
         # distutils is NOT excluded: PyInstaller's own pre-safe-import hook
         # raises if it has been, which broke every Windows build.

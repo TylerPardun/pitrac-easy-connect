@@ -126,6 +126,48 @@ jobs:
             exit 1
           fi
 
+      # There was no check like this for macOS at all, which is how a build
+      # that opened a browser instead of a window reached people. The runner
+      # has no desktop, so this does not assert that a window appeared -- it
+      # asks the app whether it managed to open one, which is the thing that
+      # was quietly false.
+      - name: Check the macOS app opens its own window
+        if: runner.os == 'macOS'
+        run: |
+          ditto -x -k "${{ matrix.path }}" dist/unpacked
+          APP=$(find dist/unpacked -maxdepth 3 -name "*.app" | head -1)
+          BIN="$APP/Contents/MacOS/$(basename "$APP" .app)"
+          echo "launching $BIN"
+          "$BIN" --window --port 8899 >/tmp/mac-window.log 2>&1 &
+          APP_PID=$!
+
+          STATUS=""
+          for i in $(seq 1 30); do
+            sleep 2
+            STATUS=$(curl -fsS -m 3 -H "X-PiTrac-App: 1" http://127.0.0.1:8899/api/status || true)
+            [ -n "$STATUS" ] && break
+          done
+          # The window is opened after the server starts answering.
+          sleep 8
+          STATUS=$(curl -fsS -m 5 -H "X-PiTrac-App: 1" http://127.0.0.1:8899/api/status || echo "$STATUS")
+          kill $APP_PID 2>/dev/null || true
+          cat /tmp/mac-window.log || true
+
+          if [ -z "$STATUS" ]; then
+            echo "::error::the packaged app never answered /api/status"
+            exit 1
+          fi
+          echo "$STATUS" | tr ',' '\n' | grep -i "native\|detail" || true
+          if echo "$STATUS" | grep -qE '"native": *false'; then
+            echo "::error::the packaged app fell back to a browser instead of opening a window"
+            exit 1
+          fi
+          if ! echo "$STATUS" | grep -qE '"native": *true'; then
+            echo "::error::the app did not report a window state at all"
+            exit 1
+          fi
+          echo "the packaged app opened its own window"
+
       # A bare .exe cannot carry a licence file, so it travels in a zip with one.
       - name: Package the Windows app
         if: runner.os == 'Windows'
@@ -216,15 +258,21 @@ jobs:
                                   [int]$_.ProcessId -ne $rootId }
           }
 
+          # msedge.exe alone proves nothing. When the native window fails, the
+          # app opens the default browser, which on this image is Edge, so the
+          # process name is identical either way -- and that is exactly how a
+          # release went out with every packaged build opening a browser while
+          # this step reported a window. WebView2 processes carry
+          # --embedded-browser-webview=1; a browser opened as a browser does not.
           $webview = $false
           foreach ($i in 1..20) {
             Start-Sleep -Seconds 2
             $app.Refresh()
             if ($app.HasExited) { break }
-            $tree = Get-Descendants $app.Id
-            $edge = $tree | Where-Object { $_.Name -eq "msedge.exe" }
-            if ($edge) {
-              Write-Host "WebView2 running as $(@($edge).Count) process(es) under the app"
+            $edge = Get-Descendants $app.Id | Where-Object { $_.Name -eq "msedge.exe" }
+            $embedded = $edge | Where-Object { $_.CommandLine -like "*--embedded-browser-webview=1*" }
+            if ($embedded) {
+              Write-Host "WebView2 running as $(@($embedded).Count) embedded process(es)"
               $webview = $true; break
             }
           }
@@ -232,6 +280,17 @@ jobs:
             Write-Host "processes under the app when giving up:"
             Get-Descendants $app.Id | ForEach-Object { Write-Host "  $($_.Name) ($($_.ProcessId))" }
           }
+
+          # And the app's own account of it, which does not rely on guessing
+          # from process names at all.
+          $native = "unknown"
+          try {
+            $s = Invoke-WebRequest -Uri "http://127.0.0.1:8898/api/status" `
+                  -Headers @{"X-PiTrac-App"="1"} -UseBasicParsing -TimeoutSec 5
+            $w = ($s.Content | ConvertFrom-Json).window
+            $native = $w.native
+            Write-Host "the app reports: native=$($w.native) detail=$($w.detail)"
+          } catch { Write-Host "could not read the window state back" }
           $app.Refresh()
           if (-not $app.HasExited -and $app.MainWindowHandle -ne 0) {
             Write-Host "window title: '$($app.MainWindowTitle)'"
@@ -244,9 +303,13 @@ jobs:
 
           if ($exited)       { Write-Error "the app exited on its own"; exit 1 }
           if (-not $serving) { Write-Error "the app never answered /api/status"; exit 1 }
+          if ($native -eq $false) {
+            Write-Error "the app fell back to a browser instead of opening a window"
+            exit 1
+          }
           if (-not $webview) {
-            Write-Error ("the app served but never started WebView2, so the window " +
-                         "it is supposed to draw in never existed")
+            Write-Error ("the app served but never started an embedded WebView2, so " +
+                         "the window it is supposed to draw in never existed")
             exit 1
           }
           Write-Host "the packaged app started its native window"

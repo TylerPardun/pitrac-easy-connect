@@ -69,6 +69,7 @@ def _run(args, service, server) -> int:
     wants_window = args.window and not args.no_browser and not args.hidden
     try:
         if wants_window:
+            from . import window as window_module
             from .window import native_available, open_in_browser, run_native
 
             # A native window has to own the main thread on both macOS and
@@ -78,9 +79,12 @@ def _run(args, service, server) -> int:
             if native_available() and run_native(url):
                 return 0  # the user closed the window
 
-            # No native backend on this machine: fall back to an
-            # browser and wait as before.
-            print("No native window on this machine; opening it in your browser.")
+            # Falling back to a browser is a real degradation -- the whole
+            # point of the packaged builds is a window of their own -- so say
+            # what stopped it rather than only that it was stopped.
+            service.note_window_fallback(window_module.last_failure)
+            print("Opening in your browser instead: {}".format(
+                window_module.last_failure or "no native window on this machine"))
             open_in_browser(url)
             _wait_for_stop(server)
             return 0
@@ -175,10 +179,13 @@ def _show(args, url: str) -> None:
         return
     if args.window:
         try:
+            from . import window as window_module
             from .window import native_available, open_in_browser, run_native
 
             if native_available() and run_native(url):
                 return
+            print("Opening in your browser instead: {}".format(
+                window_module.last_failure or "no native window on this machine"))
             open_in_browser(url)
             return
         except Exception:
