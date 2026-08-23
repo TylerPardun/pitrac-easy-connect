@@ -61,6 +61,11 @@ MAX_TRUSTED_COMPUTERS = 10
 #: A refused attempt is not a wrong guess any more, so this is only here to stop
 #: something hammering the enclosure.
 SECRET_BYTES = 32
+#: How long a token proving "an already-trusted computer vouched for showing
+#: this page" stays good for. Long enough to cover a normal setup-page
+#: session (a Wi-Fi scan and join, reviewing trusted computers), short enough
+#: that a token is not worth much once the session that requested it is over.
+OWNER_TOKEN_SECONDS = 1800.0
 
 
 @dataclass(frozen=True)
@@ -102,6 +107,7 @@ class PairingManager:
         self._link_failures: Dict[str, List[float]] = {}
         self._exchange_failures: Dict[str, List[float]] = {}
         self._exchanges: Dict[str, Dict[str, Any]] = {}
+        self._owner_tokens: Dict[str, float] = {}
 
     # --- Deciding whether anyone may pair right now -----------------------
 
@@ -289,6 +295,37 @@ class PairingManager:
             "maskedSecret": exchange.mask_secret(key, pairing.secret),
             "serverProof": exchange.proof(key, session["public"], client_public, "server"),
         }
+
+    # --- Vouching for the setup page, from an already-authenticated link --
+
+    def issue_owner_token(self) -> str:
+        """A short-lived proof that an authenticated computer is showing the
+        enclosure's own setup page on the owner's behalf.
+
+        Reaching this method at all requires a live, authenticated link
+        session (it is only ever called from a link command handler), so
+        issuing the token is itself the owner-authorization check -- the
+        token just carries that proof forward into the setup page's own,
+        separately-authenticated HTTP requests, which otherwise have no way
+        to show they came from a computer the enclosure already trusts.
+        """
+
+        with self._lock:
+            now = self.clock()
+            self._owner_tokens = {
+                token: expires_at for token, expires_at in self._owner_tokens.items()
+                if expires_at > now
+            }
+            token = secrets.token_hex(16)
+            self._owner_tokens[token] = now + OWNER_TOKEN_SECONDS
+            return token
+
+    def check_owner_token(self, token: str) -> bool:
+        if not token:
+            return False
+        with self._lock:
+            expires_at = self._owner_tokens.get(token)
+            return expires_at is not None and expires_at > self.clock()
 
     # --- Proving identity on every connection ----------------------------
 

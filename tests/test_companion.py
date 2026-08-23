@@ -531,6 +531,20 @@ def test_an_authenticated_computer_can_open_pairing_for_a_second_one(rig):
     assert rig.pi.pairings.status()["accepting"] is True
 
 
+def test_an_authenticated_computer_can_obtain_an_owner_token(rig):
+    """The token this hands back is what lets the enclosure's own setup
+    page, shown embedded in the desktop, act with this computer's
+    already-proven trust instead of asking someone to type the owner-card
+    password into an iframe."""
+
+    rig.pair()
+    assert rig.wait_linked() is True
+
+    result = rig.companion.command("issueOwnerToken")
+    assert rig.pi.pairings.check_owner_token(result["token"]) is True
+    assert rig.pi.pairings.check_owner_token("not-a-real-token") is False
+
+
 def test_commands_fail_clearly_when_not_connected(rig):
     with pytest.raises(EasyConnectError) as caught:
         rig.companion.command("ownerCard")

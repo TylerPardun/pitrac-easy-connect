@@ -515,6 +515,11 @@ class PiService:
             # enclosure's own trusted computers -- exactly the owner
             # authorization opening a second computer's pairing window needs.
             "openPairing": lambda a: self._open_pairing_window(),
+            # Same reasoning as openPairing: reaching this at all requires an
+            # authenticated link session, so the token this hands back is
+            # exactly the proof the setup page needs to act as this same
+            # trusted computer when it is shown embedded in the desktop.
+            "issueOwnerToken": lambda a: {"token": self.pairings.issue_owner_token()},
             "resetNetwork": lambda a: self._reset_network(),
             "modelLicence": lambda a: ml_models.licence_text(),
             "installModels": lambda a: self._install_models(a),

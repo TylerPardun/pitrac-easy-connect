@@ -1998,6 +1998,42 @@ $("clearShots").addEventListener("click",e=>run(e.target, async()=>{
   await api("/api/shots/clear",{});
 }));
 
+//: A token proving to the enclosure's own setup page that this computer is
+//: already trusted, obtained over this computer's authenticated link (see
+//: PairingManager.issue_owner_token). Without it, the page's own sensitive
+//: buttons (remove a computer, reset Wi-Fi, shut down) would need someone to
+//: type the owner-card password by hand every time, once anything is paired.
+let ownerToken="", ownerTokenAt=0, ownerTokenDeviceId="";
+const OWNER_TOKEN_CACHE_MS=25*60*1000;
+
+async function ensureOwnerToken(){
+  if(ownerTokenDeviceId!==status.activeDeviceId){ ownerToken=""; ownerTokenDeviceId=status.activeDeviceId; }
+  if(ownerToken && Date.now()-ownerTokenAt<OWNER_TOKEN_CACHE_MS) return ownerToken;
+  try{
+    const result=await api("/api/enclosure",{command:"issueOwnerToken"});
+    ownerToken=result.token||"";
+    ownerTokenAt=Date.now();
+  }catch(error){
+    // Not linked, or the enclosure refused. The embedded page still loads;
+    // its own sensitive actions will ask for the owner-card password if the
+    // enclosure needs more than the setup network or first-setup allows.
+  }
+  return ownerToken;
+}
+
+async function openSetupFrame(){
+  const address=status.link && status.link.address ? status.link.address.split(":")[0] : "";
+  const port=(status.link && status.link.device && status.link.device.portalPort) || 80;
+  if(!address){
+    frameInto("setupFrame","setupHint","","Connect to PiTrac to change its settings.");
+    return;
+  }
+  const token=await ensureOwnerToken();
+  const base="http://"+address+(port===80?"":":"+port);
+  frameInto("setupFrame","setupHint", token?base+"?ownerToken="+encodeURIComponent(token):base,
+    "Connect to PiTrac to change its settings.");
+}
+
 function loadFrames(){
   if(!status) return;
   // Load a frame the first time its tab is opened, so the enclosure is not
@@ -2008,12 +2044,7 @@ function loadFrames(){
     frameInto("pitracFrame","pitracHint",url,
       "Connect to PiTrac to see shot data.");
   }
-  if(pane==="setup"){
-    const address=status.link && status.link.address ? status.link.address.split(":")[0] : "";
-    const port=(status.link && status.link.device && status.link.device.portalPort) || 80;
-    frameInto("setupFrame","setupHint", address?("http://"+address+(port===80?"":":"+port)):"",
-      "Connect to PiTrac to change its settings.");
-  }
+  if(pane==="setup") openSetupFrame();
 }
 
 function frameInto(frameId, hintId, url, emptyText){

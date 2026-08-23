@@ -34,23 +34,42 @@ from ..common.errors import (
     EasyConnectError,
 )
 
-#: Routes that change trust, networking, ownership, or persistent
-#: configuration. The header/Origin/Host guard applied to every POST route
-#: only stops a browser page from forging the request cross-origin -- it does
-#: nothing against another program on the same Wi-Fi, which can set the same
-#: header itself. These need real proof of ownership once the enclosure has
-#: something worth protecting.
-SENSITIVE_ROUTES = frozenset(
-    {
-        "/api/pair-open",
-        "/api/pair-remove",
-        "/api/reset-network",
-        "/api/new-owner",
-        "/api/shutdown",
-        "/api/reboot",
-        "/api/backup/restore",
-    }
-)
+#: How each state-changing route is authorized once the enclosure has
+#: something worth protecting. The header/Origin/Host guard applied to every
+#: POST route only stops a browser page from forging the request
+#: cross-origin -- it proves nothing about another program on the same
+#: Wi-Fi, which can set the same custom header itself.
+#:
+#: ``FIRST_SETUP_OR_OWNER``: also allowed while nothing is paired yet (an
+#: enclosure nobody has set up is not protecting anything from anyone) or
+#: from the enclosure's own setup network (being connected there already
+#: means being in the room). These are the operations onboarding itself
+#: needs -- joining a network, setting the country, installing models,
+#: restarting the measurement service, opening a pairing window, or
+#: resetting saved networks to try again.
+#:
+#: ``OWNER_ONLY``: never allowed merely because nothing happens to be paired
+#: right now. Removing a trusted computer, changing ownership, restoring a
+#: backup, or powering the enclosure off/down must always come from the
+#: setup network or from real owner proof -- an empty trusted list is not,
+#: by itself, permission to do any of these.
+FIRST_SETUP_OR_OWNER = "first_setup_or_owner"
+OWNER_ONLY = "owner_only"
+
+ROUTE_AUTHORIZATION: Dict[str, str] = {
+    "/api/country": FIRST_SETUP_OR_OWNER,
+    "/api/join": FIRST_SETUP_OR_OWNER,
+    "/api/direct-mode": FIRST_SETUP_OR_OWNER,
+    "/api/pair-open": FIRST_SETUP_OR_OWNER,
+    "/api/reset-network": FIRST_SETUP_OR_OWNER,
+    "/api/install-models": FIRST_SETUP_OR_OWNER,
+    "/api/restart-pitrac": FIRST_SETUP_OR_OWNER,
+    "/api/pair-remove": OWNER_ONLY,
+    "/api/new-owner": OWNER_ONLY,
+    "/api/shutdown": OWNER_ONLY,
+    "/api/reboot": OWNER_ONLY,
+    "/api/backup/restore": OWNER_ONLY,
+}
 from .downloads import CompanionDownloads
 from .portal_page import PAGE, downloads_page
 
@@ -205,8 +224,8 @@ class PortalHandler(BaseHTTPRequestHandler):
         except ValueError as exc:
             self._json(HTTPStatus.BAD_REQUEST, {"error": {"failed": str(exc)}})
             return
-        if path in SENSITIVE_ROUTES:
-            self._guarded(lambda: self._authorize_sensitive(body) or handler(body))
+        if path in ROUTE_AUTHORIZATION:
+            self._guarded(lambda: self._authorize_sensitive(path, body) or handler(body))
             return
         self._guarded(lambda: handler(body))
 
@@ -244,23 +263,30 @@ class PortalHandler(BaseHTTPRequestHandler):
                 return False
         return True
 
-    def _authorize_sensitive(self, body: Dict[str, Any]) -> None:
+    def _authorize_sensitive(self, path: str, body: Dict[str, Any]) -> None:
         """Require real proof of ownership for a trust/network/ownership change.
 
-        Three things count as proof, in order of how it is actually reached:
-        nothing is trusted yet, so this is first setup; the request is
-        arriving over the enclosure's own setup network, where being
-        connected already means being in the room; or the caller typed the
-        password from the physical owner card, which -- like the setup
-        network -- is only available to someone who has the enclosure or the
-        card in front of them, not merely a device on the same residence
-        Wi-Fi.
+        Four things can count as proof, depending on the route's tier
+        (``ROUTE_AUTHORIZATION``): nothing is trusted yet and this is one of
+        the operations onboarding needs, so this is first setup; the request
+        is arriving over the enclosure's own setup network, where being
+        connected already means being in the room; the caller carries a
+        short-lived token an already-authenticated computer obtained over
+        its own link (see ``PairingManager.issue_owner_token``), which is
+        how the enclosure's own setup page authorizes itself when the
+        desktop app shows it embedded; or the caller typed the password from
+        the physical owner card, which -- like the setup network -- is only
+        available to someone who has the enclosure or the card in front of
+        them, not merely a device on the same residence Wi-Fi.
         """
 
         service = self._service()
-        if service.pairings.count == 0:
+        tier = ROUTE_AUTHORIZATION.get(path)
+        if tier == FIRST_SETUP_OR_OWNER and service.pairings.count == 0:
             return
         if service.provisioner.on_setup_hotspot:
+            return
+        if service.pairings.check_owner_token(str(body.get("ownerToken", ""))):
             return
         provided = str(body.get("ownerCardPassword", ""))
         expected = service.identity.setup_password

@@ -189,9 +189,21 @@ let status=null, busy=false, view=null, chosen=null, downloads=[];
 // throwing the list away and scanning again.
 let networks=null, scanning=false;
 
+// Set only when the desktop app is showing this page embedded, for a
+// computer it has already authenticated over its own link -- see
+// PairingManager.issue_owner_token. Sent on every POST so the sensitive
+// actions on this page (removing a computer, resetting Wi-Fi, shutting
+// down) can tell "an already-trusted computer" from "anything else on this
+// Wi-Fi that can reach this page," which the custom header alone cannot.
+const OWNER_TOKEN=new URLSearchParams(window.location.search).get("ownerToken")||"";
+
 async function api(path, body){
   const options={method: body?"POST":"GET", headers:{"X-PiTrac-Portal":"1"}};
-  if(body){options.headers["Content-Type"]="application/json";options.body=JSON.stringify(body);}
+  if(body){
+    const withToken=OWNER_TOKEN?{...body, ownerToken:OWNER_TOKEN}:body;
+    options.headers["Content-Type"]="application/json";
+    options.body=JSON.stringify(withToken);
+  }
   const response=await fetch(path, options);
   const data=await response.json().catch(()=>({}));
   if(!response.ok){const e=new Error((data.error&&data.error.failed)||"That did not work");e.info=data.error;throw e;}

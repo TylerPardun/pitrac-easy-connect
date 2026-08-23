@@ -642,20 +642,37 @@ jobs:
             Raspberry Pi service-update payload used by Easy-Connect. It is
             not a desktop application or a Linux desktop download.
 
-            ### v0.4.4 hotfix
+            ### v0.4.5
 
-            - Fixes the packaged desktop page being rejected by its own guarded API.
-            - Restores search and pairing from the real packaged UI.
-            - Replaces the invalid macOS onefile-in-app layout that registered two applications.
-            - Makes a second launch activate the existing native window and exit.
+            - A wiped or replaced Pi reachable at a previously-saved address
+              is no longer mistaken for the enclosure that address used to
+              belong to. The desktop checks the device it is talking to
+              before sending saved pairing credentials, and stops retrying
+              automatically once it is clear those credentials cannot work
+              here.
+            - Link authentication failures and new-pairing attempts are
+              rate-limited separately, so a stale saved pairing retrying in
+              the background can no longer lock a new computer out of
+              pairing with its own enclosure.
+            - Opening a pairing window for a second computer, removing a
+              trusted computer, resetting Wi-Fi, restoring a backup, and
+              powering the enclosure off or down now require real proof of
+              ownership — the enclosure's own setup network, an
+              already-authenticated computer's link, or the owner-card
+              password — rather than only the header a browser preflight
+              would refuse.
+            - The desktop shows distinct states for "not paired," "this
+              computer's access was revoked," "PiTrac appears to have been
+              reset or replaced," and "another computer is connected,"
+              instead of a single generic setup-required message.
 
             Existing users must replace and restart the desktop app first.
-            Let that 0.4.4 desktop app update the enclosure afterward; it pins
+            Let that desktop app update the enclosure afterward; it pins
             both halves of the update to this exact release.
 
             Hardware readiness is separate. Missing cameras, calibration,
             models, or measurement operation still report `RECOVERY REQUIRED`;
-            this hotfix does not claim those components are operational.
+            this release does not claim those components are operational.
 
             ### Checking what you downloaded
 

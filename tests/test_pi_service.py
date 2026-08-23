@@ -486,6 +486,96 @@ def test_a_sensitive_action_is_allowed_for_first_setup_off_the_hotspot(portal, s
     assert status == 200
 
 
+@pytest.mark.parametrize(
+    "path,body",
+    [
+        ("/api/pair-remove", {"pairingId": "does-not-matter"}),
+        ("/api/new-owner", {}),
+        ("/api/shutdown", {}),
+        ("/api/reboot", {}),
+        ("/api/backup/restore", {"backup": {}}),
+    ],
+)
+def test_owner_only_actions_are_never_allowed_by_first_setup_alone(portal, service, path, body):
+    """Nothing being paired yet is not, by itself, permission to remove a
+    computer, change ownership, restore a backup, or power the enclosure
+    off/down -- those need the setup network or real owner proof regardless
+    of how many computers currently happen to be trusted."""
+
+    _server, base = portal
+    service.provisioner.join("Ferndale", "GoodPassword1")  # off the hotspot, zero pairings
+    assert service.pairings.count == 0
+    status, data = request(base + path, body)
+    assert status == 400, path
+    assert data["error"]["code"] == "PT-CFG-008", path
+
+
+@pytest.mark.parametrize(
+    "path,body",
+    [
+        ("/api/country", {"country": "US"}),
+        ("/api/join", {"ssid": "Ferndale", "password": "GoodPassword1"}),
+        ("/api/direct-mode", {"enabled": False}),
+        ("/api/install-models", {"accepted": False}),
+        ("/api/restart-pitrac", {}),
+    ],
+)
+def test_previously_unprotected_routes_now_require_authorization(portal, service, path, body):
+    """Network joining, direct mode, country, model installation, and
+    PiTrac restart used to be reachable from the residence network with
+    nothing but the CSRF header. They must now go through the same
+    authorization policy as every other persistent operation."""
+
+    _server, base = portal
+    _leave_the_hotspot_with_a_pairing(service)
+    status, data = request(base + path, body)
+    assert status == 400, path
+    assert data["error"]["code"] == "PT-CFG-008", path
+
+    # And authorization itself no longer blocks it once real proof is
+    # supplied -- whatever the route's own business logic then decides
+    # (installing models needs a real network fetch this harness does not
+    # have, for instance) is not what this test is about.
+    status, data = request(
+        base + path, {**body, "ownerCardPassword": service.identity.setup_password}
+    )
+    assert not (status == 400 and data.get("error", {}).get("code") == "PT-CFG-008"), path
+
+
+def test_previously_unprotected_first_setup_routes_still_work_before_any_pairing(portal, service):
+    """The newly-covered routes must not become unreachable during the very
+    first setup, before the setup network is necessarily in play."""
+
+    _server, base = portal
+    service.provisioner.join("Ferndale", "GoodPassword1")  # zero pairings still
+    for path, body in (
+        ("/api/country", {"country": "US"}),
+        ("/api/direct-mode", {"enabled": False}),
+    ):
+        status, _data = request(base + path, body)
+        assert status == 200, path
+
+
+def test_an_owner_token_from_the_authenticated_link_authorizes_the_setup_page(portal, service):
+    """The setup page has no owner-card password to type in on the desktop's
+    behalf, so an already-authenticated computer proves itself with a token
+    issued over its own link instead -- issuing the token at all requires
+    that authenticated session, which is the actual proof of ownership."""
+
+    _server, base = portal
+    _leave_the_hotspot_with_a_pairing(service)
+    token = service.pairings.issue_owner_token()
+
+    status, data = request(base + "/api/pair-open", {"ownerToken": token})
+    assert status == 200
+    assert data["accepting"] is True
+
+    # An unrecognised token is no better than none at all.
+    status, data = request(base + "/api/pair-open", {"ownerToken": "made-up-token"})
+    assert status == 400
+    assert data["error"]["code"] == "PT-CFG-008"
+
+
 # --- Repeated restarts -----------------------------------------------------
 
 

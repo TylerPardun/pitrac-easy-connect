@@ -172,6 +172,22 @@ def test_discovery_success_clears_a_stale_no_pitrac_found_message():
     assert "showError(null)" in after
 
 
+def test_the_setup_frame_is_given_an_owner_token():
+    """Without this, the enclosure's own setup page has no way to prove it is
+    being shown for an already-trusted computer, and its sensitive buttons
+    would need someone to type the owner-card password by hand."""
+
+    opener = COMPANION.split("async function openSetupFrame()")[1].split("\nfunction loadFrames")[0]
+    assert "ensureOwnerToken()" in opener
+    assert "ownerToken=" in opener
+
+
+def test_the_portal_page_sends_its_owner_token_on_every_post():
+    api = PORTAL.split("async function api(path, body)")[1].split("\nfunction esc")[0]
+    assert "OWNER_TOKEN" in api
+    assert "ownerToken:OWNER_TOKEN" in api
+
+
 def test_discovery_problem_is_shown_in_the_desktop_ui():
     search = COMPANION.split("async function findDevices()")[1].split("\n}")[0]
     assert "data.problem" in search
