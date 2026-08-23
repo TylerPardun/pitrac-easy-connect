@@ -18,11 +18,31 @@ import time
 from typing import Any, Callable, Dict, List, Optional
 
 from ..common import link
-from ..common.errors import LINK_LOST, LINK_VERSION_MISMATCH
+from ..common.errors import (
+    LINK_BUSY,
+    LINK_DEVICE_MISMATCH,
+    LINK_LOST,
+    LINK_VERSION_MISMATCH,
+    PAIR_NOT_PAIRED,
+    PAIR_RATE_LIMITED,
+    PAIR_REVOKED,
+)
 
 RECONNECT_SECONDS = 3.0
 CONNECT_TIMEOUT = 5.0
 HANDSHAKE_TIMEOUT = 10.0
+
+#: Codes a Pi-reported handshake refusal can carry that no amount of retrying
+#: with the same credentials will fix. Stop the reconnect loop rather than
+#: hammering the enclosure (and its rate limiter) every few seconds with the
+#: same rejected pairing id.
+TERMINAL_CODES = {
+    PAIR_RATE_LIMITED.code,
+    PAIR_NOT_PAIRED.code,
+    PAIR_REVOKED.code,
+    LINK_VERSION_MISMATCH.code,
+    LINK_BUSY.code,
+}
 
 
 class CompanionLinkClient:
@@ -39,6 +59,7 @@ class CompanionLinkClient:
         on_enclosure_status: Optional[Callable[[Dict[str, Any]], None]] = None,
         reconnect_seconds: float = RECONNECT_SECONDS,
         fallback_hosts: Optional[List[str]] = None,
+        expected_device_id: str = "",
     ):
         self.host = host
         self.port = port
@@ -46,6 +67,7 @@ class CompanionLinkClient:
         self.secret = secret
         self.version = version
         self.computer_name = computer_name
+        self.expected_device_id = expected_device_id
         self.on_shot = on_shot
         self.on_state = on_state
         self.on_enclosure_status = on_enclosure_status
@@ -94,6 +116,12 @@ class CompanionLinkClient:
 
     def _run(self) -> None:
         while not self._stop.is_set():
+            # A structured error learned from one candidate this cycle (the
+            # Pi actually answered and refused) must survive a later, less
+            # informative failure from a lower-priority fallback candidate
+            # (typically a DNS lookup that fails for an mDNS hostname).
+            structured_this_cycle: Optional[Dict[str, Any]] = None
+            terminal = False
             for candidate in self._hosts:
                 if self._stop.is_set():
                     return
@@ -102,14 +130,20 @@ class CompanionLinkClient:
                 connected_here = False
                 try:
                     self._connect_once()
-                except Exception as exc:  # every failure here is a retry, not a crash
+                except link.TerminalLinkError as exc:
                     # Snapshot this before finally marks the client down. A
                     # socket that completed its handshake and later dropped is
                     # not a failed address lookup. Trying every stale fallback
                     # after that made an ordinary reconnect take longer than
                     # all of their DNS/connect timeouts combined.
                     connected_here = self.connected
-                    self._set_error(_as_error(exc))
+                    structured_this_cycle = exc.info
+                    self._set_error(exc.info)
+                    terminal = True
+                except Exception as exc:  # every other failure here is a retry, not a crash
+                    connected_here = self.connected
+                    if structured_this_cycle is None:
+                        self._set_error(_as_error(exc))
                 finally:
                     self._mark_disconnected()
                 if connected_here:
@@ -119,6 +153,14 @@ class CompanionLinkClient:
                     self._hosts.remove(candidate)
                     self._hosts.insert(0, candidate)
                     break
+                if terminal:
+                    break
+            if terminal:
+                # These credentials cannot succeed against whatever answered.
+                # Stop the thread rather than retrying every few seconds; a
+                # fresh CompanionLinkClient is what resumes trying, once the
+                # user has acted (removed the stale pairing, paired again).
+                return
             if self._stop.wait(self.reconnect_seconds):
                 return
 
@@ -145,10 +187,23 @@ class CompanionLinkClient:
         outdated = link.check_protocol(hello)
         if outdated is not None:
             side = "PiTrac" if outdated == "them" else "this computer"
-            self._set_error(
-                LINK_VERSION_MISMATCH.as_dict("{} needs to be updated".format(side))
+            info = LINK_VERSION_MISMATCH.as_dict("{} needs to be updated".format(side))
+            self._set_error(info)
+            raise link.TerminalLinkError(info)
+
+        device = hello.get("device") or {}
+        reported_id = str(device.get("deviceId", ""))
+        if self.expected_device_id and reported_id and reported_id != self.expected_device_id:
+            # Whatever answered at this host/port is not the PiTrac this
+            # pairing id and secret were issued for. Refuse to present them —
+            # sending stale credentials to an unrelated (or wiped/replaced)
+            # enclosure teaches it nothing useful and only costs it a failed
+            # attempt against its own rate limiter.
+            info = LINK_DEVICE_MISMATCH.as_dict(
+                "expected {}, found {}".format(self.expected_device_id, reported_id)
             )
-            raise link.LinkError("protocol mismatch")
+            self._set_error(info)
+            raise link.TerminalLinkError(info)
 
         challenge = str(hello.get("challenge", ""))
         from ..pi.pairing import PairingManager  # shared HMAC construction
@@ -165,6 +220,8 @@ class CompanionLinkClient:
         if reply.get("type") == "error":
             info = reply.get("error") or {}
             self._set_error(info)
+            if str(info.get("code", "")) in TERMINAL_CODES:
+                raise link.TerminalLinkError(info)
             raise link.LinkError(info.get("failed", "PiTrac refused the connection"))
         if reply.get("type") != "authOk":
             raise link.LinkError("PiTrac sent an unexpected reply")

@@ -1,5 +1,11 @@
 # PiTrac Easy-Connect
 
+> **Not affiliated with PiTrac.** Easy-Connect is an independent project. It is
+> not made, reviewed, endorsed, or supported by the PiTrac project or the people
+> who maintain it, and it contains none of their code. The name indicates which
+> hardware this software is for, nothing more. PiTrac itself can be found at
+> [PiTracLM/PiTrac](https://github.com/PiTracLM/PiTrac)
+
 **Connect your PiTrac enclosure to Wi-Fi and send shots to GSPro or E6 Connect from one desktop app.**
 
 PiTrac Easy-Connect makes a PiTrac launch monitor easier to set up and use. It
@@ -20,6 +26,7 @@ A five-step guide walks you through the first setup. If you move the enclosure t
 *Each shot follows a path based on its measured launch data, with the shot pattern for each club shown below.*
 
 ---
+
 
 ## What Easy-Connect Does
 

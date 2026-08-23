@@ -24,8 +24,14 @@ from ..common import discovery, link
 from ..common import pairing_exchange as exchange
 from ..common.configstore import ConfigStore
 from ..common.errors import (
+    LINK_BUSY,
+    LINK_DEVICE_MISMATCH,
+    LINK_DEVICE_REPLACED,
     LINK_NOT_FOUND,
     PAIR_EXCHANGE_LOST,
+    PAIR_NOT_PAIRED,
+    PAIR_RATE_LIMITED,
+    PAIR_REVOKED,
     SIM_NOT_RUNNING,
     EasyConnectError,
     lookup,
@@ -51,11 +57,29 @@ def default_config_path() -> Path:
     return base / "pitrac-easy-connect" / "companion.json"
 
 
+#: Which specific link/pairing failure code maps to which distinct state, so
+#: the headline names the actual problem instead of a generic "setup
+#: required" that tells the user to go check Wi-Fi provisioning that was
+#: never the issue.
+_CODE_STATES: Dict[str, State] = {
+    PAIR_NOT_PAIRED.code: State.PAIRING_REQUIRED,
+    PAIR_REVOKED.code: State.PAIRING_REVOKED,
+    LINK_DEVICE_MISMATCH.code: State.SAVED_PI_RESET,
+    LINK_DEVICE_REPLACED.code: State.SAVED_PI_RESET,
+    LINK_BUSY.code: State.ANOTHER_COMPUTER_CONNECTED,
+    PAIR_RATE_LIMITED.code: State.RATE_LIMITED,
+}
+
+
+def _state_for_code(code: Optional[str]) -> State:
+    return _CODE_STATES.get(code or "", State.SETUP_REQUIRED)
+
+
 def default_computer_name() -> str:
     try:
-        return platform.node() or "Windows PC"
+        return platform.node() or "This computer"
     except Exception:
-        return "Windows PC"
+        return "This computer"
 
 
 class CompanionService:
@@ -124,6 +148,17 @@ class CompanionService:
         self._link: Optional[CompanionLinkClient] = None
         self._session: Optional[SimulatorSession] = None
         self._found: List[discovery.FoundEnclosure] = []
+        # A search that started earlier but finishes later than a more recent
+        # one must not win the race and overwrite the fresher result.
+        self._search_generation = 0
+        self._search_in_progress = False
+        # Set when connect() fails before a CompanionLinkClient could even be
+        # built (for example LINK_DEVICE_REPLACED, discovered before opening
+        # a socket). Auto-reconnect at startup runs on a background thread
+        # and swallows exceptions so it cannot crash the app, so without this
+        # the failure would otherwise vanish with nothing to show for it.
+        self._last_connect_error: Optional[Dict[str, str]] = None
+        self._last_connect_error_device_id: str = ""
         self._test_shot_accepted = False
         self._last_simulator_error: Optional[Dict[str, str]] = None
         self._last_shot_at: Optional[float] = None
@@ -277,14 +312,27 @@ class CompanionService:
     def _search(self, timeout: Optional[float] = None) -> discovery.DiscoveryResult:
         if timeout is None:
             timeout = self.search_seconds
-        result = discovery.discover(
-            timeout=timeout,
-            port=self.discovery_port,
-            broadcast_to=self.discovery_targets,
-        )
         with self._lock:
-            self._found = list(result.enclosures)
-        return result
+            self._search_generation += 1
+            generation = self._search_generation
+            self._search_in_progress = True
+        try:
+            result = discovery.discover(
+                timeout=timeout,
+                port=self.discovery_port,
+                broadcast_to=self.discovery_targets,
+            )
+            with self._lock:
+                # A slower, earlier-started search finishing after a faster,
+                # later one must not clobber the fresher result with a stale
+                # one.
+                if generation == self._search_generation:
+                    self._found = list(result.enclosures)
+            return result
+        finally:
+            with self._lock:
+                if generation == self._search_generation:
+                    self._search_in_progress = False
 
     def search(self, timeout: Optional[float] = None) -> List[Dict[str, Any]]:
         """Compatibility wrapper for callers that only need enclosures."""
@@ -305,12 +353,22 @@ class CompanionService:
                 for enclosure in result.enclosures
             ],
             "problem": result.problem.as_dict() if result.problem else None,
+            "searchInProgress": self._search_in_progress,
         }
 
     def _found_by_id(self, device_id: str) -> Optional[discovery.FoundEnclosure]:
         with self._lock:
             for enclosure in self._found:
                 if enclosure.device_id == device_id:
+                    return enclosure
+        return None
+
+    def _found_at_address(self, address: str) -> Optional[discovery.FoundEnclosure]:
+        if not address:
+            return None
+        with self._lock:
+            for enclosure in self._found:
+                if enclosure.address == address:
                     return enclosure
         return None
 
@@ -493,6 +551,36 @@ class CompanionService:
                 }
             )
         self.disconnect()
+        self._last_connect_error = None
+        self._last_connect_error_device_id = ""
+        return self.status()
+
+    def remove_local(self, device_id: str) -> Dict[str, Any]:
+        """Remove a saved pairing from this computer only.
+
+        Unlike ``forget``, this never assumes the enclosure is reachable and
+        never attempts to revoke anything remotely — it exists for exactly
+        the case ``forget`` cannot handle: a saved pairing for a PiTrac that
+        was wiped, replaced, or is simply not answering right now. The
+        enclosure keeps its own record of this computer, if it still exists,
+        until its owner removes it from the setup page.
+        """
+
+        with self._lock:
+            enclosures = dict(self.store.get("enclosures") or {})
+            enclosures.pop(device_id, None)
+            active = self.store.get("activeDeviceId")
+            self.store.update(
+                {
+                    "enclosures": enclosures,
+                    "activeDeviceId": "" if active == device_id else active,
+                }
+            )
+            was_active = active == device_id
+        if was_active:
+            self.disconnect()
+            self._last_connect_error = None
+            self._last_connect_error_device_id = ""
         return self.status()
 
     @property
@@ -502,11 +590,19 @@ class CompanionService:
     # --- Connecting -------------------------------------------------------
 
     def connect(self, device_id: str = "") -> Dict[str, Any]:
+        # A fresh attempt supersedes whatever a previous one recorded here.
+        # Kept separate from client.last_error because these raise before a
+        # CompanionLinkClient exists to hold one.
+        self._last_connect_error = None
+        self._last_connect_error_device_id = ""
         with self._lock:
             device_id = device_id or self.store.get("activeDeviceId") or ""
             record = (self.store.get("enclosures") or {}).get(device_id)
         if record is None:
-            raise EasyConnectError(LINK_NOT_FOUND, "this computer is not paired with that PiTrac")
+            error = EasyConnectError(LINK_NOT_FOUND, "this computer is not paired with that PiTrac")
+            self._last_connect_error = error.as_dict()
+            self._last_connect_error_device_id = device_id
+            raise error
 
         # Discovery is authoritative for the address; the stored one is only a
         # fallback for when the beacon is blocked.
@@ -514,10 +610,32 @@ class CompanionService:
         if enclosure is None:
             self.search(timeout=self.research_seconds)
             enclosure = self._found_by_id(device_id)
+        if enclosure is None:
+            # Discovery did not vouch for this device id. If it instead found
+            # a *different* device id sitting at the saved address, that is
+            # authoritative evidence the saved address no longer belongs to
+            # this PiTrac (wiped, reset, or replaced) — do not fall back to
+            # it. A saved address remains a usable fallback only when nothing
+            # contradicts it.
+            saved_address = record.get("address", "")
+            collision = self._found_at_address(saved_address)
+            if collision is not None and collision.device_id != device_id:
+                error = EasyConnectError(
+                    LINK_DEVICE_REPLACED,
+                    "expected {}, found {} at {}".format(
+                        device_id, collision.device_id, saved_address
+                    ),
+                )
+                self._last_connect_error = error.as_dict()
+                self._last_connect_error_device_id = device_id
+                raise error
         host = enclosure.address if enclosure else record.get("address", "")
         port = (enclosure.link_port if enclosure else 0) or record.get("linkPort") or link.LINK_PORT
         if not host:
-            raise EasyConnectError(LINK_NOT_FOUND, "no address is known for that PiTrac")
+            error = EasyConnectError(LINK_NOT_FOUND, "no address is known for that PiTrac")
+            self._last_connect_error = error.as_dict()
+            self._last_connect_error_device_id = device_id
+            raise error
 
         hostname = (enclosure.hostname if enclosure else "") or record.get("hostname", "")
         candidates = [host]
@@ -543,6 +661,7 @@ class CompanionService:
             on_state=self._on_link_state,
             on_enclosure_status=self._on_enclosure_status,
             fallback_hosts=candidates[1:],
+            expected_device_id=device_id,
         )
         with self._lock:
             self._link = client
@@ -898,9 +1017,13 @@ class CompanionService:
 
         client = self._link
         if client is None:
+            if self._last_connect_error is not None:
+                return _state_for_code(self._last_connect_error.get("code"))
             return State.SETUP_REQUIRED
         if not client.connected:
-            return State.CONNECTING if client.last_error is None else State.SETUP_REQUIRED
+            if client.last_error is None:
+                return State.CONNECTING
+            return _state_for_code(client.last_error.get("code"))
 
         steps = {step["key"]: step["ok"] for step in self.chain()}
         if all(steps.values()):
@@ -984,7 +1107,11 @@ class CompanionService:
             "simulatorStatus": self.simulator_status(),
             "chain": chain,
             "nextStep": blocking["title"] if blocking else "",
-            "link": client.status() if client else {"connected": False},
+            "link": client.status() if client else {
+                "connected": False,
+                "lastError": dict(self._last_connect_error) if self._last_connect_error else None,
+                "lastErrorDeviceId": self._last_connect_error_device_id,
+            },
             "enclosure": pi_status,
             "pairedEnclosures": [
                 {"deviceId": key, "displayName": value.get("displayName", "PiTrac")}

@@ -145,7 +145,7 @@ PAGE = r"""<!doctype html>
       <button class="quiet" id="changeNetwork">Change Wi-Fi network</button>
       <button class="quiet" id="directMode">Play without a router</button>
 
-      <h3>Computers</h3>
+      <h3>Known computers</h3>
       <div class="pcs" id="pcs"></div>
       <button class="quiet" id="pairAnother">Pair another computer</button>
 
@@ -467,11 +467,16 @@ function renderComputers(list){
   if(!host) return;
   const computers=list||[];
   const mine=status&&status.pairedComputer?status.pairedComputer.pairingId:"";
+  // "Known" and "connected" are not the same thing: every computer this
+  // PiTrac trusts belongs here, whether or not it happens to be online right
+  // now, so a family member's laptop that is off is still shown, still
+  // named, and still removable.
   host.innerHTML = computers.length ? computers.map(c=>`
     <div class="pc"><span>${esc(c.name)}${c.pairingId===mine?
-      "<small>connected now</small>":""}</span>
+      "<small>connected now</small>":
+      (c.lastConnected?`<small>last connected ${esc(new Date(c.lastConnected*1000).toLocaleString())}</small>`:"")}</span>
     <button class="quiet danger" data-forget="${esc(c.pairingId)}">Remove</button></div>`).join("")
-    : '<div class="why">No computers are connected to this PiTrac.</div>';
+    : '<div class="why">No computers are known to this PiTrac yet.</div>';
   host.querySelectorAll("[data-forget]").forEach(button=>
     button.addEventListener("click",()=>run(button, ()=>
       api("/api/pair-remove",{pairingId:button.dataset.forget}))));

@@ -375,6 +375,117 @@ def test_a_protocol_mismatch_names_the_side_that_must_be_updated(tmp_path):
         chain.close()
 
 
+# --- A stale computer must not hammer a new or reset enclosure ------------
+
+
+def _idle_shot_handler(*_args):
+    return {"accepted": False, "message": "not used in this test"}
+
+
+def test_a_device_id_mismatch_is_detected_before_authenticating_and_does_not_retry(tmp_path):
+    """A wiped/replaced Pi answering at the saved address must never be sent
+    the old pairing's credentials, and the desktop must stop trying instead
+    of hammering the new enclosure every few seconds."""
+
+    chain = Chain(tmp_path, pair=False)
+    try:
+        stale = CompanionLinkClient(
+            "127.0.0.1", chain.link_port,
+            "old-pairing-id", "old-secret",
+            VERSION, "Stale Desktop",
+            on_shot=_idle_shot_handler,
+            reconnect_seconds=0.05,
+            expected_device_id="OLD-DEVICE-ID",
+        )
+        stale.start()
+        try:
+            _wait_for(lambda: stale.last_error is not None, "the mismatch was never detected")
+            assert stale.last_error["code"] == "PT-LINK-007"
+            assert stale.connected is False
+
+            # The reconnect thread must have stopped on its own, not merely be
+            # between two of its usual attempts.
+            _wait_for(lambda: not stale._thread.is_alive(), "the client kept retrying")
+
+            # Nothing was ever sent to the real Pi's rate limiter: the check
+            # happens before the auth frame is built, let alone sent.
+            assert chain.pairings._link_failures == {}
+            assert chain.pairings._exchange_failures == {}
+        finally:
+            stale.stop()
+
+        # A legitimate computer can still pair normally afterwards.
+        chain.pair_companion()
+        assert chain.client.connected is True
+    finally:
+        chain.close()
+
+
+def test_a_revoked_pairing_stops_retries_and_keeps_the_real_error(chain):
+    chain.pairings.revoke(chain.pairing.pairing_id)
+    stale = CompanionLinkClient(
+        "127.0.0.1", chain.link_port,
+        chain.pairing.pairing_id, chain.pairing.secret,
+        VERSION, "Sim Room PC",
+        on_shot=_idle_shot_handler,
+        reconnect_seconds=0.05,
+    )
+    stale.start()
+    try:
+        _wait_for(lambda: stale.last_error is not None, "the revocation was never reported")
+        assert stale.last_error["code"] == "PT-PAIR-005"
+        _wait_for(lambda: not stale._thread.is_alive(), "the client kept retrying a revoked pairing")
+        # Waiting past several reconnect intervals must not downgrade the
+        # specific refusal to a generic "connection lost."
+        time.sleep(0.3)
+        assert stale.last_error["code"] == "PT-PAIR-005"
+    finally:
+        stale.stop()
+
+
+def test_an_unknown_pairing_stops_retries_and_keeps_the_real_error(tmp_path):
+    chain = Chain(tmp_path, pair=False)
+    try:
+        stale = CompanionLinkClient(
+            "127.0.0.1", chain.link_port,
+            "never-heard-of-this-id", "0" * 64,
+            VERSION, "Stranger",
+            on_shot=_idle_shot_handler,
+            reconnect_seconds=0.05,
+        )
+        stale.start()
+        try:
+            _wait_for(lambda: stale.last_error is not None, "the refusal was never reported")
+            assert stale.last_error["code"] == "PT-PAIR-004"
+            _wait_for(lambda: not stale._thread.is_alive(), "the client kept retrying an unknown pairing")
+        finally:
+            stale.stop()
+    finally:
+        chain.close()
+
+
+def test_a_busy_enclosure_is_reported_without_being_hammered(chain):
+    """chain.client already holds the one session; a second, validly paired
+    computer trying at the same time must be told plainly and must not be
+    retried in a tight loop against an enclosure that is not actually free."""
+
+    second = chain.pairings.create_pairing("Kitchen laptop")
+    contender = CompanionLinkClient(
+        "127.0.0.1", chain.link_port,
+        second.pairing_id, second.secret,
+        VERSION, "Kitchen laptop",
+        on_shot=_idle_shot_handler,
+        reconnect_seconds=0.05,
+    )
+    contender.start()
+    try:
+        _wait_for(lambda: contender.last_error is not None, "busy was never reported")
+        assert contender.last_error["code"] == "PT-LINK-004"
+        _wait_for(lambda: not contender._thread.is_alive(), "the client kept hammering a busy enclosure")
+    finally:
+        contender.stop()
+
+
 # --- Reconnection ---------------------------------------------------------
 
 

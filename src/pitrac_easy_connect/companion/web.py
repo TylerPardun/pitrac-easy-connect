@@ -137,6 +137,7 @@ class CompanionHandler(BaseHTTPRequestHandler):
             ),
             "/api/connect": lambda body: service.connect(str(body.get("deviceId", ""))),
             "/api/forget": lambda body: service.forget(str(body.get("deviceId", ""))),
+            "/api/forget-local": lambda body: service.remove_local(str(body.get("deviceId", ""))),
             "/api/simulator": lambda body: service.select_simulator(str(body.get("simulator", ""))),
             "/api/check": lambda body: service.check_simulator(),
             "/api/test-shot": lambda body: service.send_test_shot(),

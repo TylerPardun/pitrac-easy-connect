@@ -19,6 +19,18 @@ class State(str, Enum):
     UPDATING = "UPDATING"
     RECOVERY_REQUIRED = "RECOVERY REQUIRED"
     SHUTTING_DOWN = "SHUTTING DOWN"
+    # Companion-side link states. These exist because a failed link to the
+    # enclosure is not one thing — "never paired," "paired but kicked out,"
+    # "this isn't the Pi we paired with anymore," "someone else is using it
+    # right now," and "PiTrac itself could not join Wi-Fi" each need a
+    # different next step, and collapsing them all into SETUP_REQUIRED (whose
+    # own detail text is specifically about Wi-Fi provisioning) told the user
+    # the wrong thing to go fix.
+    PAIRING_REQUIRED = "PAIRING REQUIRED"
+    PAIRING_REVOKED = "PAIRING REVOKED"
+    SAVED_PI_RESET = "SAVED PI RESET"
+    ANOTHER_COMPUTER_CONNECTED = "ANOTHER COMPUTER CONNECTED"
+    RATE_LIMITED = "RATE LIMITED"
 
     @property
     def headline(self) -> str:
@@ -43,6 +55,11 @@ _HEADLINES = {
     State.UPDATING: "Installing an update",
     State.RECOVERY_REQUIRED: "Recovery required",
     State.SHUTTING_DOWN: "Shutting down",
+    State.PAIRING_REQUIRED: "This computer is not paired",
+    State.PAIRING_REVOKED: "This computer's access was removed",
+    State.SAVED_PI_RESET: "PiTrac appears to have been reset or replaced",
+    State.ANOTHER_COMPUTER_CONNECTED: "Another computer is connected",
+    State.RATE_LIMITED: "Too many attempts — waiting",
 }
 
 _DETAILS = {
@@ -55,4 +72,11 @@ _DETAILS = {
     State.UPDATING: "An update is being installed. Leave the power connected until this finishes.",
     State.RECOVERY_REQUIRED: "PiTrac could not fix a problem on its own and needs you to choose a recovery action.",
     State.SHUTTING_DOWN: "Settings have been saved. Wait for the safe-to-unplug message before removing power.",
+    State.PAIRING_REQUIRED: "PiTrac does not recognise this computer. Search and pair with it again.",
+    State.PAIRING_REVOKED: "The owner removed this computer's access. Ask them to open Pair another computer.",
+    State.SAVED_PI_RESET: "A different PiTrac now answers at this computer's saved address. Remove the old "
+    "pairing, then pair with the PiTrac that's here now.",
+    State.ANOTHER_COMPUTER_CONNECTED: "Only one computer can be connected at a time. Close Easy-Connect on "
+    "the other computer, or remove it from the trusted list.",
+    State.RATE_LIMITED: "Too many connection attempts were refused. Wait, then try again.",
 }

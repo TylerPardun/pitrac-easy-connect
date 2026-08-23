@@ -431,6 +431,61 @@ def test_there_is_no_route_that_runs_a_command(portal):
         assert status == 404, path
 
 
+# --- Authorization on the residence network for sensitive actions ---------
+
+#: The header/Origin/Host checks above stop a browser page from forging a
+#: cross-origin request. They prove nothing about another program on the
+#: same Wi-Fi, which can set the same header itself -- these tests are about
+#: the extra proof sensitive actions need once the enclosure has something
+#: worth protecting.
+
+
+def _leave_the_hotspot_with_a_pairing(service):
+    service.provisioner.join("Ferndale", "GoodPassword1")
+    service.pairings.create_pairing("Owner PC")
+
+
+def test_a_sensitive_action_from_the_residence_network_is_refused_without_proof(portal, service):
+    _server, base = portal
+    _leave_the_hotspot_with_a_pairing(service)
+    status, data = request(base + "/api/pair-open", {})
+    assert status == 400
+    assert data["error"]["code"] == "PT-CFG-008"
+    assert service.pairings.status()["accepting"] is False
+
+
+def test_a_sensitive_action_succeeds_with_the_owner_card_password(portal, service):
+    _server, base = portal
+    _leave_the_hotspot_with_a_pairing(service)
+    status, data = request(
+        base + "/api/pair-open", {"ownerCardPassword": service.identity.setup_password}
+    )
+    assert status == 200
+    assert data["accepting"] is True
+
+
+def test_a_wrong_owner_card_password_is_refused(portal, service):
+    _server, base = portal
+    _leave_the_hotspot_with_a_pairing(service)
+    status, data = request(base + "/api/pair-open", {"ownerCardPassword": "not-the-password"})
+    assert status == 400
+    assert data["error"]["code"] == "PT-CFG-008"
+
+
+def test_a_sensitive_action_is_allowed_on_the_setup_hotspot_even_with_a_pairing(portal, service):
+    _server, base = portal
+    service.pairings.create_pairing("Owner PC")  # already on the default setup hotspot
+    status, _data = request(base + "/api/pair-open", {})
+    assert status == 200
+
+
+def test_a_sensitive_action_is_allowed_for_first_setup_off_the_hotspot(portal, service):
+    _server, base = portal
+    service.provisioner.join("Ferndale", "GoodPassword1")  # zero pairings still
+    status, _data = request(base + "/api/reset-network", {})
+    assert status == 200
+
+
 # --- Repeated restarts -----------------------------------------------------
 
 

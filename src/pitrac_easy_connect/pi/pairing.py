@@ -54,6 +54,10 @@ EXCHANGE_LIFETIME_SECONDS = 120.0
 MAX_OPEN_EXCHANGES = 8
 MAX_FAILURES = 5
 FAILURE_WINDOW_SECONDS = 600.0
+#: A generous ceiling for a household: enough for every family member's
+#: computer and a couple of simulator-room PCs, without letting a bug or a
+#: runaway script grow the trusted list without bound.
+MAX_TRUSTED_COMPUTERS = 10
 #: A refused attempt is not a wrong guess any more, so this is only here to stop
 #: something hammering the enclosure.
 SECRET_BYTES = 32
@@ -88,7 +92,15 @@ class PairingManager:
             secret=True,
         )
         self._open_until: float = 0.0
-        self._failures: List[float] = []
+        # Kept separate so a stale computer retrying a revoked or unknown
+        # pairing id cannot exhaust the bucket that gates a brand-new
+        # computer's pairing exchange, and vice versa. Link-auth failures are
+        # keyed by the pairing id attempted (each stale computer always
+        # retries the same id, so this isolates it from every other caller);
+        # exchange failures are keyed by source address, since a pairing id
+        # does not exist yet at that point.
+        self._link_failures: Dict[str, List[float]] = {}
+        self._exchange_failures: Dict[str, List[float]] = {}
         self._exchanges: Dict[str, Dict[str, Any]] = {}
 
     # --- Deciding whether anyone may pair right now -----------------------
@@ -128,15 +140,30 @@ class PairingManager:
                 "firstSetup": self.count == 0,
             }
 
-    def _check_rate_limit(self) -> None:
+    def _check_rate_limit(self, bucket: Dict[str, List[float]], key: str) -> None:
+        """Check and prune one bucket's failure history for one key.
+
+        Callers use two separate buckets (link authentication, pairing
+        exchange), each keyed by the caller (pairing id, or source address
+        when no pairing id exists yet). This is what stops one stale or
+        malicious caller from exhausting the attempts available to everyone
+        else, on either the same or the other bucket.
+        """
+
         now = self.clock()
-        self._failures = [at for at in self._failures if now - at < FAILURE_WINDOW_SECONDS]
-        if len(self._failures) >= MAX_FAILURES:
+        attempts = [at for at in bucket.get(key, []) if now - at < FAILURE_WINDOW_SECONDS]
+        if attempts:
+            bucket[key] = attempts
+        else:
+            bucket.pop(key, None)
+        if len(attempts) >= MAX_FAILURES:
+            retry_after = FAILURE_WINDOW_SECONDS - (now - min(attempts))
             raise EasyConnectError(
                 PAIR_RATE_LIMITED,
                 "{} refused attempts within {:.0f} minutes".format(
-                    len(self._failures), FAILURE_WINDOW_SECONDS / 60
+                    len(attempts), FAILURE_WINDOW_SECONDS / 60
                 ),
+                retry_after=retry_after,
             )
 
     def create_pairing(self, computer_name: str = "") -> NewPairing:
@@ -151,7 +178,13 @@ class PairingManager:
             # A window is for one computer. Close it so a second cannot follow
             # through the same opening.
             self._open_until = 0.0
-            self._failures = []
+
+            existing = self._store.get("pairings") or {}
+            if len(existing) >= MAX_TRUSTED_COMPUTERS:
+                raise EasyConnectError(
+                    PAIR_NOT_ACCEPTING,
+                    "this enclosure already trusts {} computers".format(MAX_TRUSTED_COMPUTERS),
+                )
 
             pairing_id = secrets.token_hex(8)
             secret = secrets.token_hex(SECRET_BYTES)
@@ -200,6 +233,7 @@ class PairingManager:
         session_id: str,
         client_public: str,
         computer_name: str = "",
+        source: str = "",
     ) -> Dict[str, str]:
         """Finish the exchange and hand back the pairing secret, masked.
 
@@ -207,28 +241,34 @@ class PairingManager:
         this enclosure and that computer can derive, so anything listening on
         the network learns nothing it could reuse. What the exchange does not do
         is decide *whether* to pair — ``accepting`` does that, above.
+
+        ``source`` (the caller's address) keys this attempt's place in the
+        pairing-exchange rate limit, kept separate from link-authentication
+        failures so a stale computer retrying an old link pairing id can
+        never lock out a legitimate new pairing exchange, from any source.
         """
 
+        rate_key = source or "unknown"
         with self._lock:
-            self._check_rate_limit()
+            self._check_rate_limit(self._exchange_failures, rate_key)
             now = self.clock()
             session = getattr(self, "_exchanges", {}).get(session_id)
             if session is None or session["expiresAt"] <= now:
-                self._failures.append(now)
+                self._exchange_failures.setdefault(rate_key, []).append(now)
                 raise EasyConnectError(PAIR_EXCHANGE_LOST, "the pairing exchange expired")
 
             try:
                 key = exchange.shared_key(client_public, session["private"])
             except ValueError as exc:
                 self._exchanges.pop(session_id, None)
-                self._failures.append(now)
+                self._exchange_failures.setdefault(rate_key, []).append(now)
                 raise EasyConnectError(PAIR_EXCHANGE_LOST, str(exc)) from exc
 
             if not self.accepting():
                 # Checked here rather than at the start, so an enclosure that is
                 # not accepting still costs an attempt against the rate limit.
                 self._exchanges.pop(session_id, None)
-                self._failures.append(now)
+                self._exchange_failures.setdefault(rate_key, []).append(now)
                 raise EasyConnectError(
                     PAIR_NOT_ACCEPTING, "this enclosure is not accepting new computers"
                 )
@@ -240,6 +280,7 @@ class PairingManager:
             # would be admitted -- which is exactly what the window exists to
             # prevent.
             pairing = self.create_pairing(computer_name)
+            self._exchange_failures.pop(rate_key, None)
 
 
         return {
@@ -280,17 +321,18 @@ class PairingManager:
         return self._tag(self._secret_for(pairing_id), challenge, "server")
 
     def verify(self, pairing_id: str, challenge: str, proof: str) -> None:
+        rate_key = pairing_id or "unknown"
         with self._lock:
-            self._check_rate_limit()
+            self._check_rate_limit(self._link_failures, rate_key)
             try:
                 expected = self.expected_client_proof(pairing_id, challenge)
             except EasyConnectError:
-                self._failures.append(self.clock())
+                self._link_failures.setdefault(rate_key, []).append(self.clock())
                 raise
             if not hmac.compare_digest(expected, str(proof or "")):
-                self._failures.append(self.clock())
+                self._link_failures.setdefault(rate_key, []).append(self.clock())
                 raise EasyConnectError(PAIR_NOT_PAIRED, "the computer could not prove its pairing")
-            self._failures = []
+            self._link_failures.pop(rate_key, None)
             self.touch(pairing_id)
 
     @staticmethod
@@ -320,9 +362,10 @@ class PairingManager:
         listed = [
             {
                 "pairingId": pairing_id,
-                "name": record.get("name", "Windows PC"),
+                "name": record.get("name", "This computer"),
                 "pairedAt": record.get("createdAt"),
                 "lastSeen": record.get("lastSeen"),
+                "lastConnected": record.get("lastSeen"),
             }
             for pairing_id, record in pairings.items()
         ]

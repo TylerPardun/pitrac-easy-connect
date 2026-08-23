@@ -510,6 +510,11 @@ class PiService:
             "trustedComputers": lambda a: {"computers": self.pairings.trusted_computers()},
             "renameComputer": lambda a: self._rename_computer(a),
             "revokeComputer": lambda a: self._revoke_computer(a),
+            # Reaching this at all requires an authenticated link session, so
+            # a computer that gets here has already proved it is one of this
+            # enclosure's own trusted computers -- exactly the owner
+            # authorization opening a second computer's pairing window needs.
+            "openPairing": lambda a: self._open_pairing_window(),
             "resetNetwork": lambda a: self._reset_network(),
             "modelLicence": lambda a: ml_models.licence_text(),
             "installModels": lambda a: self._install_models(a),
@@ -555,6 +560,10 @@ class PiService:
     def _rename_computer(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
         self.pairings.rename(str(arguments.get("pairingId", "")), str(arguments.get("name", "")))
         return {"computers": self.pairings.trusted_computers()}
+
+    def _open_pairing_window(self) -> Dict[str, Any]:
+        self.pairings.open_window()
+        return self.pairings.status()
 
     def _revoke_computer(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
         pairing_id = str(arguments.get("pairingId", ""))

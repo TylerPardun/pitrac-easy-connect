@@ -194,7 +194,7 @@ class CompanionLinkServer:
 
         session.pairing_id = pairing_id
         session.companion_version = str(frame.get("version", ""))
-        session.computer_name = str(frame.get("computerName", "")) or "Windows PC"
+        session.computer_name = str(frame.get("computerName", "")) or "This computer"
         return challenge
 
     def _pump(self, session: "CompanionSession") -> None:

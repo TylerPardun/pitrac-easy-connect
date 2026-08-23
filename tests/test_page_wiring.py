@@ -138,6 +138,40 @@ def test_losing_the_link_brings_the_window_back_to_something_usable():
     assert COMPANION.index("let pane=") < COMPANION.index("function render(")
 
 
+def test_only_pair_not_accepting_opens_the_pairing_panel():
+    """Rate limiting, an expired exchange, a device-id mismatch, a network
+    problem -- none of them mean "go press Pair another computer on the Pi."
+    Only PAIR_NOT_ACCEPTING (PT-PAIR-001) does; every other failure gets the
+    generic error panel and its own next step instead."""
+
+    from pitrac_easy_connect.common.errors import PAIR_NOT_ACCEPTING
+    from pitrac_easy_connect.companion.page import PAGE as RESOLVED
+
+    handler = RESOLVED.split('host.querySelectorAll(".device")')[1].split("\n    }));")[0]
+    catch = handler.split("catch(error){", 1)[1]
+    assert "showAsk(" in catch
+    assert catch.count("showAsk(") == 1
+    # showAsk is reached only through a check against this exact code, not
+    # unconditionally in the catch block.
+    before_call = catch.split("showAsk(")[0]
+    assert 'code==="{}"'.format(PAIR_NOT_ACCEPTING.code) in before_call
+    assert before_call.rstrip().endswith(")")
+
+
+def test_discovery_success_clears_a_stale_no_pitrac_found_message():
+    """The result and the error must come from the same completed search --
+    finding a Pi this time must not leave an earlier "No PiTrac was found"
+    sitting next to the device it just found."""
+
+    search = COMPANION.split("async function findDevices()")[1].split("\nfunction renderKnownPis")[0]
+    # showError(null) must appear after the not-found branch's own `return`,
+    # so it only runs when this search actually found something.
+    not_found = search.split("if(!data.enclosures.length){")[1].split("\n    }")[0]
+    after = search.split("if(!data.enclosures.length){")[1].split("\n    }", 1)[1]
+    assert "return" in not_found
+    assert "showError(null)" in after
+
+
 def test_discovery_problem_is_shown_in_the_desktop_ui():
     search = COMPANION.split("async function findDevices()")[1].split("\n}")[0]
     assert "data.problem" in search

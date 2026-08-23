@@ -151,6 +151,93 @@ def test_a_successful_pairing_clears_earlier_refusals(tmp_path):
     assert ask_to_pair(manager, "Third PC")
 
 
+def test_a_stale_link_pairing_cannot_lock_out_a_new_pairing_exchange(tmp_path):
+    """Link authentication failures and pairing-exchange failures must be
+    counted separately, so a stale computer hammering a revoked or unknown
+    link pairing id can never deny the owner's own new-computer pairing."""
+
+    manager, _ = build(tmp_path)
+    ask_to_pair(manager, "Owner PC")  # nothing is accepting any more
+
+    for _ in range(MAX_FAILURES + 2):
+        with pytest.raises(EasyConnectError) as caught:
+            manager.verify("stale-old-pairing-id", manager.new_challenge(), "0" * 64)
+        assert caught.value.info.code in ("PT-PAIR-004", "PT-PAIR-003")
+
+    # The link bucket for that one pairing id is now exhausted, but a fresh
+    # pairing exchange (a different bucket entirely) is untouched by it.
+    manager.open_window()
+    assert ask_to_pair(manager, "Legitimate second PC")
+
+
+def test_a_stale_exchange_source_cannot_lock_out_link_authentication(tmp_path):
+    manager, _ = build(tmp_path)
+    pairing = pair_one(manager, "Owner PC")
+
+    for _ in range(MAX_FAILURES + 2):
+        with pytest.raises(EasyConnectError):
+            manager.complete_exchange("no-such-session", "not-a-real-key", "Stranger", source="10.0.0.9")
+
+    # complete_exchange's own failures (a different bucket, keyed by source)
+    # must not have touched the already-paired computer's ability to verify.
+    challenge = manager.new_challenge()
+    manager.verify(
+        pairing.pairing_id, challenge, PairingManager.client_proof(pairing.secret, challenge)
+    )
+
+
+def test_two_exchange_sources_do_not_share_a_bucket(tmp_path):
+    manager, _ = build(tmp_path)
+    ask_to_pair(manager, "Owner PC")  # closes the door
+
+    for _ in range(MAX_FAILURES + 2):
+        with pytest.raises(EasyConnectError):
+            manager.complete_exchange("no-such-session", "junk", "Attacker", source="10.0.0.66")
+
+    # A different source is refused for the real reason (not accepting), not
+    # rate-limited by another address's failures.
+    manager.open_window()
+    with pytest.raises(EasyConnectError) as caught:
+        manager.complete_exchange("no-such-session", "junk", "Someone else", source="10.0.0.77")
+    assert caught.value.info.code == "PT-PAIR-002"
+
+
+def test_rate_limit_errors_carry_a_usable_retry_countdown(tmp_path):
+    manager, clock = build(tmp_path)
+    ask_to_pair(manager, "Owner PC")
+
+    for _ in range(MAX_FAILURES):
+        with pytest.raises(EasyConnectError):
+            ask_to_pair(manager, "Stranger")
+
+    clock.advance(120)
+    with pytest.raises(EasyConnectError) as caught:
+        ask_to_pair(manager, "Stranger")
+    assert caught.value.info.code == "PT-PAIR-003"
+    body = caught.value.as_dict()
+    assert 0 < body["retryAfterSeconds"] <= FAILURE_WINDOW_SECONDS
+
+    clock.advance(body["retryAfterSeconds"])
+    manager.open_window()
+    assert ask_to_pair(manager, "Owner's second PC")
+
+
+def test_the_trusted_computer_list_has_a_documented_ceiling(tmp_path):
+    from pitrac_easy_connect.pi.pairing import MAX_TRUSTED_COMPUTERS
+
+    manager, _ = build(tmp_path)
+    ask_to_pair(manager, "First PC")
+    for index in range(MAX_TRUSTED_COMPUTERS - 1):
+        manager.open_window()
+        ask_to_pair(manager, "PC {}".format(index))
+    assert manager.count == MAX_TRUSTED_COMPUTERS
+
+    manager.open_window()
+    with pytest.raises(EasyConnectError):
+        ask_to_pair(manager, "One too many")
+    assert manager.count == MAX_TRUSTED_COMPUTERS
+
+
 # --- Secrets --------------------------------------------------------------
 
 

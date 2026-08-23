@@ -34,13 +34,17 @@ class ErrorInfo:
 class EasyConnectError(Exception):
     """An error that carries a catalogue entry a user can act on."""
 
-    def __init__(self, info: ErrorInfo, detail: str = ""):
+    def __init__(self, info: ErrorInfo, detail: str = "", retry_after: Optional[float] = None):
         super().__init__("{}: {}".format(info.code, detail or info.failed))
         self.info = info
         self.detail = detail
+        self.retry_after = retry_after
 
-    def as_dict(self) -> Dict[str, str]:
-        return self.info.as_dict(self.detail)
+    def as_dict(self) -> Dict[str, object]:
+        value: Dict[str, object] = dict(self.info.as_dict(self.detail))
+        if self.retry_after is not None:
+            value["retryAfterSeconds"] = max(0, round(self.retry_after))
+        return value
 
 
 _CATALOGUE: Dict[str, ErrorInfo] = {}
@@ -166,6 +170,13 @@ OWNER_CARD_NEEDS_A_COMPUTER = _define(
     "Nothing was changed.",
     "Open it from PiTrac Easy-Connect on a paired computer, or from PiTrac's "
     "own setup network where being connected means being in the room.",
+)
+OWNER_ACTION_NEEDS_AUTHORIZATION = _define(
+    "PT-CFG-008",
+    "This action needs more than being on the same Wi-Fi.",
+    "Nothing was changed.",
+    "Do this from PiTrac Easy-Connect on a paired computer, from PiTrac's own "
+    "setup network, or by entering the password from the owner card.",
 )
 PAIR_NOT_ACCEPTING = _define(
     "PT-PAIR-001",
@@ -306,7 +317,7 @@ LINK_NO_COMPUTER = _define(
     "PT-LINK-005",
     "No paired computer is connected to PiTrac yet.",
     "Everything on the enclosure is working and nothing was changed.",
-    "Open PiTrac Easy-Connect on your Windows PC. It will find this enclosure and connect.",
+    "Open PiTrac Easy-Connect on your computer. It will find this enclosure and connect.",
 )
 LINK_PORTAL_UNREACHABLE = _define(
     "PT-LINK-006",
@@ -320,6 +331,18 @@ LINK_BUSY = _define(
     "Another computer is already connected to that PiTrac.",
     "Nothing was changed.",
     "Close Easy-Connect on the other computer, or remove it from the trusted list on the maintenance screen.",
+)
+LINK_DEVICE_MISMATCH = _define(
+    "PT-LINK-007",
+    "This isn't the PiTrac these saved details belong to.",
+    "Nothing was sent - no pairing credentials were shared.",
+    "Remove the old pairing from this computer, then pair with the PiTrac that's here now.",
+)
+LINK_DEVICE_REPLACED = _define(
+    "PT-LINK-008",
+    "A different PiTrac now answers at this computer's saved address.",
+    "Nothing was changed. It looks like this PiTrac was reset or replaced.",
+    "Remove the old pairing from this computer, then pair with the PiTrac that's here now.",
 )
 
 # Simulators ----------------------------------------------------------------

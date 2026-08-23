@@ -19,6 +19,7 @@ else is rejected outright.
 under an attacker's control is made to resolve to the enclosure's address.
 """
 
+import hmac
 import json
 import re
 from http import HTTPStatus
@@ -28,8 +29,27 @@ from urllib.parse import urlparse
 
 from ..common.errors import (
     BACKUP_NEEDS_A_COMPUTER,
+    OWNER_ACTION_NEEDS_AUTHORIZATION,
     OWNER_CARD_NEEDS_A_COMPUTER,
     EasyConnectError,
+)
+
+#: Routes that change trust, networking, ownership, or persistent
+#: configuration. The header/Origin/Host guard applied to every POST route
+#: only stops a browser page from forging the request cross-origin -- it does
+#: nothing against another program on the same Wi-Fi, which can set the same
+#: header itself. These need real proof of ownership once the enclosure has
+#: something worth protecting.
+SENSITIVE_ROUTES = frozenset(
+    {
+        "/api/pair-open",
+        "/api/pair-remove",
+        "/api/reset-network",
+        "/api/new-owner",
+        "/api/shutdown",
+        "/api/reboot",
+        "/api/backup/restore",
+    }
 )
 from .downloads import CompanionDownloads
 from .portal_page import PAGE, downloads_page
@@ -162,6 +182,7 @@ class PortalHandler(BaseHTTPRequestHandler):
                 str(body.get("sessionId", "")),
                 str(body.get("clientPublic", "")),
                 str(body.get("computerName", "")),
+                source=self.client_address[0],
             ),
             "/api/backup/inspect": lambda body: self._service().command(
                 "inspectBackup", {"file": body.get("file", "")}
@@ -183,6 +204,9 @@ class PortalHandler(BaseHTTPRequestHandler):
             )
         except ValueError as exc:
             self._json(HTTPStatus.BAD_REQUEST, {"error": {"failed": str(exc)}})
+            return
+        if path in SENSITIVE_ROUTES:
+            self._guarded(lambda: self._authorize_sensitive(body) or handler(body))
             return
         self._guarded(lambda: handler(body))
 
@@ -219,6 +243,33 @@ class PortalHandler(BaseHTTPRequestHandler):
                              "This request came from another website")
                 return False
         return True
+
+    def _authorize_sensitive(self, body: Dict[str, Any]) -> None:
+        """Require real proof of ownership for a trust/network/ownership change.
+
+        Three things count as proof, in order of how it is actually reached:
+        nothing is trusted yet, so this is first setup; the request is
+        arriving over the enclosure's own setup network, where being
+        connected already means being in the room; or the caller typed the
+        password from the physical owner card, which -- like the setup
+        network -- is only available to someone who has the enclosure or the
+        card in front of them, not merely a device on the same residence
+        Wi-Fi.
+        """
+
+        service = self._service()
+        if service.pairings.count == 0:
+            return
+        if service.provisioner.on_setup_hotspot:
+            return
+        provided = str(body.get("ownerCardPassword", ""))
+        expected = service.identity.setup_password
+        if provided and hmac.compare_digest(provided, expected):
+            return
+        raise EasyConnectError(
+            OWNER_ACTION_NEEDS_AUTHORIZATION,
+            "this request came from the residence network without owner proof",
+        )
 
     def _refuse(self, status, message: str) -> None:
         """Answer a refusal the caller can actually read.

@@ -225,9 +225,16 @@ def test_two_computers_discover_pair_persist_and_forget_independently(recovery):
     assert "Pair another computer" in refused.value.info.next_step
 
     owner.disconnect()
+    # Opening a second computer's pairing window over the residence network
+    # is a sensitive action now: the header below is a browser CSRF guard,
+    # not proof of ownership, so it takes the owner-card password too --
+    # exactly the credential printed on the physical card the owner has.
+    body = json.dumps(
+        {"ownerCardPassword": recovery.pi.identity.setup_password}
+    ).encode("utf-8")
     open_request = urllib.request.Request(
         "http://127.0.0.1:{}/api/pair-open".format(recovery.portal.server_port),
-        data=b"{}",
+        data=body,
         headers={"X-PiTrac-Portal": "1", "Content-Type": "application/json"},
         method="POST",
     )

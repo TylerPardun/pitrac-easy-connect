@@ -269,6 +269,12 @@ PAGE = r"""<!doctype html>
 
   <div class="pick hidden" id="pick"></div>
 
+  <!-- This computer's own saved pairings. Reachable regardless of setup or
+       link state, so a pairing for a PiTrac that can never answer again
+       (reset, replaced) can always be found and removed locally, even
+       during first run and even when it is not the device just found. -->
+  <div class="pick hidden" id="knownPis"></div>
+
   <div class="pick hidden" id="askBox">
     <iframe class="askframe" id="askFrame" title="PiTrac setup page"></iframe>
     <div class="asknote" id="askNote"></div>
@@ -287,6 +293,7 @@ PAGE = r"""<!doctype html>
       <h3>PiTrac</h3>
       <button class="quiet" id="setupLink">Open the PiTrac setup page</button>
       <button class="quiet" id="testShot">Send a test shot</button>
+      <button class="quiet" id="pairAnotherComputer">Add another computer</button>
       <button class="quiet" id="restart">Restart PiTrac</button>
       <button class="quiet danger" id="shutdown">Shut down PiTrac safely</button>
 
@@ -387,6 +394,16 @@ PAGE = r"""<!doctype html>
 "use strict";
 const $=id=>document.getElementById(id);
 let status=null, busy=false;
+//: Discovery is a real network broadcast, not a cheap lookup. These stop the
+//: 3-second status-poll render loop from launching a fresh search on every
+//: single render while unlinked, which is what made a few minutes of sitting
+//: on the "find your PiTrac" screen turn into dozens of broadcasts.
+let searchInFlight=false, lastSearchAt=0;
+const SEARCH_CACHE_MS=15000;
+//: Codes whose next step is "remove the old pairing" rather than any of the
+//: existing recovery flows (rate limiting, the normal pairing panel, a
+//: generic dropped connection).
+const STALE_PI_CODES=new Set(__STALE_PI_CODES_JSON__);
 //: Which of the window's tabs is showing. Declared here because present() has
 //: to be able to send the window back to Play when the tabs disappear.
 let pane="play";
@@ -428,14 +445,28 @@ async function apiDownload(path){
 }
 function esc(v){const d=document.createElement("div");d.textContent=v==null?"":String(v);return d.innerHTML;}
 
-function showError(error){
+function showError(error, deviceId){
   // Clearing it while the refusal panel is up would leave that panel with no
   // explanation of why it appeared.
   if(!error){ if(!asking()) $("err").innerHTML=""; return; }
   const info=error.info||{};
+  // A saved pairing that can never succeed again (the enclosure was reset or
+  // replaced) needs its own way out, distinct from every other recovery
+  // flow: removing it is a local, no-confirmation-from-the-Pi action, so it
+  // has to work even though the Pi that issued it may be unreachable.
+  const stale=deviceId && info.code && STALE_PI_CODES.has(info.code);
   $("err").innerHTML=`<div class="err"><h2>${esc(info.failed||error.message)}</h2>
     ${info.nextStep?`<p>${esc(info.nextStep)}</p>`:""}
-    ${info.code?`<div class="code">${esc(info.code)}</div>`:""}</div>`;
+    ${info.code?`<div class="code">${esc(info.code)}</div>`:""}
+    ${stale?'<button class="quiet danger" id="removeStalePairing">Remove old pairing from this computer</button>':""}</div>`;
+  if(stale){
+    $("removeStalePairing").addEventListener("click",()=>run(null, async()=>{
+      if(!confirm("Remove the old pairing for this PiTrac from this computer?\n\n"+
+        "This only removes it here. If the enclosure still has a record of this "+
+        "computer, its owner can remove that separately from the PiTrac setup page.")) return;
+      await api("/api/forget-local",{deviceId});
+    }));
+  }
 }
 
 async function run(button, work){
@@ -583,6 +614,16 @@ function render(data){
   const view=guiding ? wizardView(data) : present(data);
   renderWizard(guiding?view:null);
 
+  // The link client can stop retrying on its own (a device-id mismatch, a
+  // revoked pairing) with nothing else ever telling the user why — no
+  // synchronous API call failed, so nothing else would have shown this.
+  // Surface it here, from status, rather than only from a caught exception.
+  const linkError=data.link&&data.link.lastError;
+  if(linkError&&!busy&&!asking()){
+    showError({info:linkError}, data.link.lastErrorDeviceId||data.activeDeviceId);
+  }
+  renderKnownPis(data);
+
   const help=view.help;
   $("help").classList.toggle("hidden", !help);
   if(help){ $("helpTitle").textContent=help.title; $("helpBody").innerHTML=help.body; }
@@ -601,7 +642,13 @@ function render(data){
       button.addEventListener("click",()=>doAction(action.id,button));
       $("do").appendChild(button);
     });
-    if(view.find) findDevices(); else $("pick").classList.add("hidden");
+    if(view.find){
+      // Rendering must stay free of state-changing side effects: only start
+      // a fresh broadcast when nothing recent is cached and none is already
+      // running. Every render while waiting must not mean another search.
+      const stale=!lastSearchAt||(Date.now()-lastSearchAt)>SEARCH_CACHE_MS;
+      if(!searchInFlight&&stale) findDevices();
+    } else $("pick").classList.add("hidden");
   }
 
   renderUpdate(data.update);
@@ -754,9 +801,12 @@ function renderDetails(data){
 // --- pairing, which happens once ----------------------------------------
 
 async function findDevices(){
+  if(searchInFlight) return;
+  searchInFlight=true;
   const host=$("pick");
   try{
     const data=await api("/api/search",{});
+    lastSearchAt=Date.now();
     const known=status?status.pairedEnclosures.map(e=>e.deviceId):[];
     if(data.problem){
       const problem=data.problem;
@@ -774,6 +824,11 @@ async function findDevices(){
       }
       return;
     }
+    // A Pi was found by this, the latest completed search. Whatever an
+    // earlier search left showing — "No PiTrac was found," a stale
+    // discovery-permission message — no longer describes reality, so it
+    // must not sit next to a device list that contradicts it.
+    if(!data.problem) showError(null);
     if(data.enclosures.length===1 && known.includes(data.enclosures[0].deviceId)){
       host.classList.add("hidden");
       await api("/api/connect",{deviceId:data.enclosures[0].deviceId});
@@ -791,10 +846,40 @@ async function findDevices(){
       // There is nothing to type. Ask, and let the enclosure decide.
       run(button, async()=>{
         try{ await api("/api/pair",{deviceId:id}); }
-        catch(error){ showAsk(data.enclosures.find(e=>e.deviceId===id)); throw error; }
+        catch(error){
+          // The pairing exchange only fails this way — refusing a brand new
+          // computer because one is already trusted — for PT-PAIR-001. Every
+          // other failure (rate limiting, an expired exchange, a network
+          // problem) has its own next step and does not mean "go press Pair
+          // another computer on the Pi."
+          if(error.info&&error.info.code===__PAIR_NOT_ACCEPTING_CODE_JSON__) showAsk(data.enclosures.find(e=>e.deviceId===id));
+          throw error;
+        }
       });
     }));
   }catch(error){ showError(error); host.classList.add("hidden"); }
+  finally{ searchInFlight=false; }
+}
+
+// The desktop's own list of PiTracs it has pairing records for. Distinct
+// from "connected right now": a Pi that is off, on another network, or was
+// reset still belongs here until someone removes it, which is exactly what
+// makes a stale record findable and removable outside the search flow.
+function renderKnownPis(data){
+  const host=$("knownPis");
+  const list=data.pairedEnclosures||[];
+  if(!list.length){ host.classList.add("hidden"); host.innerHTML=""; return; }
+  host.classList.remove("hidden");
+  host.innerHTML='<h3>Known PiTracs</h3>'+list.map(e=>`
+    <div class="row2">
+      <span>${esc(e.displayName)}${e.deviceId===data.activeDeviceId&&data.link&&data.link.connected?" · connected now":""}</span>
+      <button class="quiet danger" data-known-remove="${esc(e.deviceId)}">Remove</button>
+    </div>`).join("");
+  host.querySelectorAll("[data-known-remove]").forEach(button=>button.addEventListener("click",()=>run(button, async()=>{
+    const id=button.dataset.knownRemove;
+    if(!confirm("Remove this PiTrac from this computer?\n\nIf it is reachable, its owner should still remove this computer from its trusted list on the PiTrac setup page.")) return;
+    await api("/api/forget-local",{deviceId:id});
+  })));
 }
 
 // An enclosure that already belongs to a computer will not take another one
@@ -879,6 +964,13 @@ $("setupLink").addEventListener("click",()=>showPane("setup"));
 $("restart").addEventListener("click",e=>run(e.target, async()=>{
   await api("/api/enclosure",{command:"restartPitrac"});
   $("note").innerHTML='<div class="note good">PiTrac was restarted.</div>';
+}));
+$("pairAnotherComputer").addEventListener("click",e=>run(e.target, async()=>{
+  // Goes over this computer's own authenticated link, not PiTrac's
+  // unauthenticated setup-portal endpoint -- getting an answer at all
+  // already proves this copy of Easy-Connect holds a trusted pairing.
+  await api("/api/enclosure",{command:"openPairing"});
+  $("note").innerHTML='<div class="note good">PiTrac will accept one more computer for the next five minutes.</div>';
 }));
 $("shutdown").addEventListener("click",e=>run(e.target, async()=>{
   if(!confirm("Shut PiTrac down safely?\n\nWait for the green light on the Raspberry Pi to stop blinking before unplugging it.")) return;
@@ -1964,3 +2056,21 @@ setInterval(()=>{ if(!busy && pane==="range" && !document.hidden) refreshRange()
 </body>
 </html>
 """
+
+# Filled in from the error catalogue rather than typed as literals in the
+# template above, so a code renumbered or removed in common.errors cannot
+# silently drift out of sync with what the page actually checks for.
+def _fill_error_codes(page: str) -> str:
+    import json
+
+    from ..common.errors import LINK_DEVICE_MISMATCH, LINK_DEVICE_REPLACED, PAIR_NOT_ACCEPTING
+
+    return page.replace(
+        "__STALE_PI_CODES_JSON__",
+        json.dumps([LINK_DEVICE_MISMATCH.code, LINK_DEVICE_REPLACED.code]),
+    ).replace(
+        "__PAIR_NOT_ACCEPTING_CODE_JSON__", json.dumps(PAIR_NOT_ACCEPTING.code)
+    )
+
+
+PAGE = _fill_error_codes(PAGE)

@@ -46,6 +46,19 @@ class LinkClosed(LinkError):
     pass
 
 
+class TerminalLinkError(LinkError):
+    """A link failure that unchanged credentials cannot recover from.
+
+    Raised instead of a bare LinkError so the reconnect loop can stop
+    retrying immediately rather than hammering the enclosure every few
+    seconds with the same rejected pairing id.
+    """
+
+    def __init__(self, info: Dict[str, Any]):
+        super().__init__(info.get("failed", "PiTrac refused the connection"))
+        self.info = dict(info)
+
+
 class FrameStream:
     """Newline-delimited JSON over one socket, safe for one reader and one writer."""
 

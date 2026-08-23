@@ -306,6 +306,97 @@ def test_changed_ip_reconnects_through_the_saved_hostname(rig, monkeypatch):
     assert attempted[:2] == ["192.0.2.99", "localhost"]
 
 
+def test_a_different_device_at_the_saved_address_disables_that_fallback(rig, monkeypatch):
+    """Discovery finding a different device id at the exact address a stale
+    pairing is saved to is authoritative evidence the address now belongs to
+    something else (the Pi was wiped, reset, or replaced) -- it must not be
+    dialled as though it were still the paired enclosure."""
+
+    from pitrac_easy_connect.common import discovery
+    from pitrac_easy_connect.common.errors import LINK_DEVICE_REPLACED
+
+    rig.pair()
+    assert rig.wait_linked()
+    device_id = rig.pi.identity.device_id
+    saved_address = dict(rig.companion.paired_enclosures[device_id])["address"]
+
+    rig.companion.disconnect()
+    # Simulates the enclosure at the saved address having been replaced: a
+    # fresh search would no longer find the original device id there, only
+    # the different one now sitting at that address.
+    monkeypatch.setattr(rig.companion, "search", lambda timeout=None: [])
+    rig.companion._found = [
+        discovery.FoundEnclosure(
+            device_id="A-DIFFERENT-DEVICE",
+            display_name="Some Other PiTrac",
+            address=saved_address,
+            link_port=9999,
+            version="0.4.4",
+            state="CONNECTED",
+        )
+    ]
+
+    with pytest.raises(EasyConnectError) as caught:
+        rig.companion.connect(device_id)
+    assert caught.value.info.code == LINK_DEVICE_REPLACED.code
+    # And the failure is remembered, so status()/state() can explain it even
+    # though no CompanionLinkClient was ever created to hold the error.
+    status = rig.companion.status()
+    assert status["link"]["lastError"]["code"] == LINK_DEVICE_REPLACED.code
+    assert status["state"] == "SAVED PI RESET"
+
+
+def test_the_saved_address_is_still_usable_when_nothing_contradicts_it(rig):
+    """The opposite of the above: discovery finding nothing at all for this
+    device id, and nothing else claiming its address either, must still let
+    the saved address work as a fallback."""
+
+    rig.pair()
+    assert rig.wait_linked()
+    device_id = rig.pi.identity.device_id
+
+    rig.companion.disconnect()
+    rig.companion._found = []  # discovery saw nothing this time
+    rig.companion.connect(device_id)
+    assert rig.wait_linked()
+
+
+def test_an_older_search_cannot_overwrite_a_newer_ones_result(tmp_path, monkeypatch):
+    """The status/error a search reports must come from the latest completed
+    search, even when an earlier, slower one finishes after it."""
+
+    from pitrac_easy_connect.common import discovery
+
+    service = CompanionService(config_path=tmp_path / "c.json", computer_name="PC")
+    calls = []
+
+    def fake_discover(timeout=None, port=0, broadcast_to=None):
+        calls.append(timeout)
+        if len(calls) == 1:
+            # The first (slow) search finishes second, after the fast one.
+            time.sleep(0.2)
+            return discovery.DiscoveryResult(enclosures=[], problem=None)
+        return discovery.DiscoveryResult(
+            enclosures=[
+                discovery.FoundEnclosure(
+                    device_id="NEWFOUND", display_name="Fresh PiTrac",
+                    address="127.0.0.1", link_port=1, version="0.4.4", state="CONNECTED",
+                )
+            ],
+            problem=None,
+        )
+
+    monkeypatch.setattr(discovery, "discover", fake_discover)
+
+    slow = threading.Thread(target=service._search, kwargs={"timeout": 0.01})
+    slow.start()
+    time.sleep(0.02)  # make sure the slow search has started first
+    service._search(timeout=0.01)
+    slow.join(timeout=5)
+
+    assert [enclosure.device_id for enclosure in service._found] == ["NEWFOUND"]
+
+
 def test_a_dropped_working_address_is_retried_before_stale_fallbacks(monkeypatch):
     """A healthy link dropping is not evidence that DNS/IP selection failed."""
 
@@ -423,6 +514,21 @@ def test_the_companion_can_run_enclosure_commands(rig):
     assert rig.wait_linked() is True
     card = rig.companion.command("ownerCard")
     assert rig.pi.identity.setup_ssid in card["text"]
+
+
+def test_an_authenticated_computer_can_open_pairing_for_a_second_one(rig):
+    """Reaching the enclosure at all through the link already proves this
+    copy of Easy-Connect holds one of its trusted pairings -- which is
+    exactly the owner authorization opening a second computer's pairing
+    window needs, with no separate credential and no portal endpoint."""
+
+    rig.pair()
+    assert rig.wait_linked() is True
+    assert rig.pi.pairings.status()["accepting"] is False
+
+    result = rig.companion.command("openPairing")
+    assert result["accepting"] is True
+    assert rig.pi.pairings.status()["accepting"] is True
 
 
 def test_commands_fail_clearly_when_not_connected(rig):
