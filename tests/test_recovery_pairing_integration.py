@@ -197,6 +197,11 @@ def test_recovery_state_still_allows_discovery_setup_pairing_status_and_exact_up
     assert "0.4.4" in plan["detail"]
 
     updater = ExactPiUpdater()
+    # This integration test exercises the release `.pyz` path. In a clean CI
+    # checkout the in-process test service correctly identifies itself as a
+    # source install and refuses automatic replacement, so mark this simulated
+    # instance as the packaged service the scenario is testing.
+    recovery.pi.updates.kind = lambda: PACKAGED
     recovery.pi.enclosure_updates = updater
     applied = owner.apply_pi_update("v0.4.4")
     assert applied["targetVersion"] == "0.4.4"
