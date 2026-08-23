@@ -47,6 +47,7 @@ window. Each component remains licensed by its respective author.
 | [pycairo](https://pycairo.readthedocs.io/) (Linux) | LGPL-2.1-only OR MPL-1.1 | Cairo bindings required by PyGObject |
 | [GLib](https://gitlab.gnome.org/GNOME/glib) (Linux) | LGPL-2.1-or-later | GObject, GIO, module loading, and introspection libraries bundled by the GTK backend |
 | [util-linux](https://github.com/util-linux/util-linux) (`libblkid` and `libmount`, Linux) | LGPL-2.1-or-later | Storage and mount support pulled in by GLib |
+| [libuuid](https://github.com/util-linux/util-linux/tree/master/libuuid) (Linux) | BSD-3-Clause | UUID support pulled in by GLib's storage libraries |
 | [PCRE2](https://www.pcre.org/) (Linux) | BSD-3-Clause | Regular-expression support pulled in by GLib |
 | [libselinux](https://github.com/SELinuxProject/selinux) (Linux) | Public domain with GPL-2.0-only utility code | SELinux support pulled in by GLib |
 | OpenSSL (`libssl` and `libcrypto`) | Apache-2.0 | HTTPS support used by the bundled Python runtime |
