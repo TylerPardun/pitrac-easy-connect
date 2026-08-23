@@ -68,6 +68,17 @@ def test_pairing_asks_for_nothing():
     assert '"/api/pair"' in handler
 
 
+def test_a_rejected_additional_pairing_stays_inside_easy_connect():
+    """The owner's setup action belongs in the app, not an external browser."""
+
+    rejected = COMPANION.split("function showAsk(enclosure){", 1)[1].split(
+        "function closeAsk()", 1
+    )[0]
+    assert 'frame.src=base' in rejected
+    assert '$("askBox").classList.remove("hidden")' in rejected
+    assert "window.open" not in rejected
+
+
 def test_changing_wifi_is_offered_without_opening_advanced():
     """An enclosure already on a network must still look changeable."""
 

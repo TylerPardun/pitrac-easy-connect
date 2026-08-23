@@ -393,13 +393,38 @@ let pane="play";
 //: True while the "PiTrac will not take another computer" panel is up.
 const asking=()=>!$("askBox").classList.contains("hidden");
 
+function apiOptions(body){
+  // This header is the browser boundary for the loopback API. A website open
+  // on the computer cannot attach it cross-origin without a preflight, which
+  // the server refuses. Every request made by the shipped page goes through
+  // this helper, including reads and downloads.
+  const options={method: body===undefined?"GET":"POST", headers:{"X-PiTrac-App":"1"}};
+  if(body!==undefined){options.headers["Content-Type"]="application/json";options.body=JSON.stringify(body);}
+  return options;
+}
+
 async function api(path, body){
-  const options={method: body?"POST":"GET", headers:{}};
-  if(body){options.headers["Content-Type"]="application/json";options.body=JSON.stringify(body);}
+  const options=apiOptions(body);
   const response=await fetch(path, options);
   const data=await response.json().catch(()=>({}));
   if(!response.ok){const e=new Error((data.error&&data.error.failed)||"That did not work");e.info=data.error;throw e;}
   return data;
+}
+
+async function apiDownload(path){
+  const response=await fetch(path, apiOptions());
+  if(!response.ok){
+    const data=await response.json().catch(()=>({}));
+    const e=new Error((data.error&&data.error.failed)||"That download did not work");
+    e.info=data.error; throw e;
+  }
+  const disposition=response.headers.get("Content-Disposition")||"";
+  const match=disposition.match(/filename="([^"]+)"/);
+  const anchor=document.createElement("a");
+  const objectUrl=URL.createObjectURL(await response.blob());
+  anchor.href=objectUrl; anchor.download=match?match[1]:"PiTrac-backup.json";
+  document.body.appendChild(anchor); anchor.click(); anchor.remove();
+  setTimeout(()=>URL.revokeObjectURL(objectUrl), 1000);
 }
 function esc(v){const d=document.createElement("div");d.textContent=v==null?"":String(v);return d.innerHTML;}
 
@@ -872,7 +897,7 @@ $("quit").addEventListener("click",e=>run(e.target, async()=>{
     '<div class="sub">You can close this window.</div></div></div></main>';
 }));
 $("makeBackup").addEventListener("click",e=>run(e.target, async()=>{
-  window.location.href="/api/backup";
+  await apiDownload("/api/backup");
   $("note").innerHTML='<div class="note good">Saved to this computer. This one '+
     'has your calibration and settings, and no secrets.</div>';
 }));
@@ -888,7 +913,7 @@ $("fullBackup").addEventListener("click",e=>run(e.target, async()=>{
       "paired computers use. Keep it somewhere private \u2014 anyone with this "+
       "file can take over the enclosure.\n\n"+
       "It is the only kind of backup that can restore a failed memory card.")) return;
-  window.location.href="/api/backup?identity=1&pairings=1";
+  await apiDownload("/api/backup?identity=1&pairings=1");
   $("note").innerHTML='<div class="note">Saved. Keep it somewhere private: it '+
     'contains your setup password and pairing secrets.</div>';
 }));
@@ -1915,6 +1940,21 @@ async function refresh(){
     $("why").textContent="";
   }
 }
+// Release smoke tests add this query parameter to the exact packaged app.
+// These are ordinary product routes called through the same helper and
+// WKWebView/WebView2/WebKitGTK page that owners use. The server records them,
+// allowing packaging checks to prove the page itself reached guarded GET,
+// search, and state-changing POST routes instead of spoofing the header with
+// curl and declaring the UI healthy.
+async function runPageSmoke(){
+  if(new URLSearchParams(window.location.search).get("pitracSmoke")!=="1") return;
+  try{
+    await api("/api/status");
+    await api("/api/search",{});
+    await api("/api/finish-setup",{done:false});
+  }catch(error){ showError(error); }
+}
+runPageSmoke();
 refresh();
 setInterval(()=>{ if(!busy && !asking()) refresh(); }, 3000);
 // The range polls faster than the rest of the app, because a shot landing

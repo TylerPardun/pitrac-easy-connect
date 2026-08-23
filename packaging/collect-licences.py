@@ -284,7 +284,11 @@ def build() -> tuple:
                 "\n" + "-" * 72 + "\n{} (Linux system library)\n".format(name)
                 + "-" * 72 + "\n\n" + path.read_text(errors="replace").strip() + "\n"
             )
-    return "\n".join(sections), missing
+    # Upstream licence files sometimes carry spaces at line endings. They have
+    # no legal meaning, make the generated repository file fail whitespace
+    # checks, and vary between wheel repacks, so normalize only that whitespace.
+    text = "\n".join(line.rstrip() for line in "\n".join(sections).splitlines()) + "\n"
+    return text, missing
 
 
 def main() -> int:

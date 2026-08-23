@@ -56,3 +56,23 @@ def test_the_window_backend_is_named_for_both_platforms():
     source = SPEC.read_text()
     assert "webview.platforms.cocoa" in source
     assert "webview.platforms.edgechromium" in source
+
+
+def test_macos_uses_the_supported_onedir_bundle_shape():
+    source = SPEC.read_text()
+    mac = source.split("if MACOS:", 1)[1].split("else:", 1)[0]
+    assert "exclude_binaries=True" in mac
+    assert "COLLECT(" in mac
+    assert "BUNDLE(" in mac
+    assert "BUNDLE(\n        collected" in mac
+    assert '"LSMultipleInstancesProhibited": True' in mac
+    assert '"NSLocalNetworkUsageDescription"' in mac
+    assert '"NSAllowsLocalNetworking": True' in mac
+
+
+def test_non_macos_keeps_the_existing_single_executable_layout():
+    source = SPEC.read_text()
+    other = source.split("else:", 1)[1]
+    assert "analysis.binaries" in other
+    assert "analysis.datas" in other
+    assert "exclude_binaries=True" not in other

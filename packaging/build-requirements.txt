@@ -13,6 +13,7 @@ psutil==7.2.2
 # PyInstaller's own dependencies.
 altgraph==0.17.5
 pyinstaller-hooks-contrib==2026.6
+packaging==25.0
 # 83.0.0 is the first release fixing GHSA-h35f-9h28-mq5c, where a Unicode
 # normalisation collision on macOS filesystems let a file excluded by
 # MANIFEST.in into an sdist anyway. This project builds no sdist, so it was
@@ -34,5 +35,7 @@ pyobjc-framework-Quartz==12.2.2 ; sys_platform == "darwin"
 pyobjc-framework-WebKit==12.2.2 ; sys_platform == "darwin"
 pythonnet==3.0.5 ; sys_platform == "win32"
 clr_loader==0.2.7.post0 ; sys_platform == "win32"
+cffi==2.0.0 ; sys_platform == "win32"
+pycparser==2.22 ; sys_platform == "win32"
 pycairo==1.29.0 ; sys_platform == "linux"
 PyGObject==3.56.3 ; sys_platform == "linux"

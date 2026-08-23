@@ -152,6 +152,9 @@ class PiService:
         self._stop = threading.Event()
         self._poller: Optional[threading.Thread] = None
         self._boot_messages: List[str] = []
+        self._hostname_error = ""
+        self._mdns_published = False
+        self._mdns_error = ""
         self.started_at = time.time()
         self.shutting_down = False
 
@@ -250,7 +253,9 @@ class PiService:
             if self.backend.hostname() != self.identity.hostname:
                 self.backend.set_hostname(self.identity.hostname)
                 self._note("Hostname set to {}".format(self.identity.hostname))
+            self._hostname_error = ""
         except BackendError as exc:
+            self._hostname_error = str(exc)
             self._note("Could not set the hostname: {}".format(exc))
 
     def _publish_mdns(self) -> None:
@@ -262,10 +267,46 @@ class PiService:
                     "deviceId": self.identity.device_id,
                     "version": self.version,
                     "hardware": self.identity.hardware_profile,
+                    "hostname": self.identity.hostname,
                 },
             )
+            self._mdns_published = True
+            self._mdns_error = ""
         except BackendError as exc:
+            self._mdns_published = False
+            self._mdns_error = str(exc)
             self._note("Could not advertise on the network: {}".format(exc))
+
+    def _mdns_status(self) -> Dict[str, Any]:
+        """Report publication separately from discovery and hardware health."""
+
+        from ..common.discovery import SERVICE_TYPE
+
+        try:
+            actual = self.backend.hostname()
+        except BackendError as exc:
+            actual = ""
+            hostname_error = str(exc)
+        else:
+            hostname_error = self._hostname_error
+        try:
+            avahi = self.backend.service_status("avahi-daemon.service")
+        except BackendError as exc:
+            avahi = None
+            avahi_error = str(exc)
+        else:
+            avahi_error = "" if avahi.active else avahi.detail
+        return {
+            "hostname": self.identity.hostname,
+            "address": self.identity.hostname + ".local",
+            "systemHostname": actual,
+            "hostnameMatches": actual == self.identity.hostname,
+            "serviceType": SERVICE_TYPE,
+            "published": self._mdns_published,
+            "avahiPresent": bool(avahi and avahi.present),
+            "avahiActive": bool(avahi and avahi.active),
+            "error": self._mdns_error or hostname_error or avahi_error,
+        }
 
     def _note(self, message: str) -> None:
         with self._lock:
@@ -634,6 +675,8 @@ class PiService:
         self.provisioner.setup_ssid = self.identity.setup_ssid
         self.provisioner.setup_password = self.identity.setup_password
         self.settings.load()
+        if self.manage_hostname:
+            self._apply_hostname()
         self._publish_mdns()
         self.refresh()
         return result.as_dict()
@@ -738,6 +781,7 @@ class PiService:
             "dashboardUrl": self.dashboard_url(),
             "setupComplete": bool(self.settings.get("setupCompleted")),
             "network": self.provisioner.status(),
+            "mdns": self._mdns_status(),
             "pairedComputer": session.as_dict() if session else None,
             "trustedComputerCount": self.pairings.count,
             "trustedComputers": self.pairings.trusted_computers(),

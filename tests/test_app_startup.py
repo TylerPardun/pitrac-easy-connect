@@ -34,25 +34,27 @@ def running_copy(tmp_path):
     )
     server = CompanionHTTPServer(("127.0.0.1", 0), service)
     stop = start_serving(server)
-    yield server.server_port
+    yield server.server_port, service
     stop()
     service.close()
 
 
 def test_a_second_launch_shows_the_copy_that_is_already_running(running_copy, tmp_path):
-    shown = []
-    argv = ["--port", str(running_copy), "--config", str(tmp_path / "second.json"),
+    port, first_service = running_copy
+    activated = []
+    first_service.register_window_activator(lambda: activated.append("front"))
+    argv = ["--port", str(port), "--config", str(tmp_path / "second.json"),
             "--discovery-port", "0"]
 
-    def show(service, url):
-        shown.append(url)
-        return 0
-
-    with mock.patch.object(app_module, "_show_native", show):
+    with mock.patch.object(
+        app_module, "_show_native", side_effect=AssertionError("opened a second window")
+    ):
         code = app_module.main(argv)
 
     assert code == 0, "a second launch must not exit as a failure"
-    assert shown == ["http://127.0.0.1:{}".format(running_copy)]
+    assert activated == ["front"]
+    assert first_service.window_activation_requests == 1
+    assert app_module._already_running(port) is True, "the original server must remain active"
 
 
 def test_a_port_held_by_something_else_does_not_stop_the_app(tmp_path):
@@ -125,7 +127,27 @@ def test_something_else_answering_on_the_port_is_not_mistaken_for_us(tmp_path):
 
 
 def test_our_own_copy_is_recognised(running_copy):
-    assert app_module._already_running(running_copy) is True
+    port, _service = running_copy
+    assert app_module._already_running(port) is True
+
+
+def test_an_activation_that_arrives_before_the_window_is_ready_is_queued(running_copy):
+    port, service = running_copy
+    token = app_module._running_instance(port)
+
+    assert app_module._activate_running(port, token) is True
+    assert service.window_activation_requests == 1
+
+    activated = []
+    service.register_window_activator(lambda: activated.append("front"))
+    assert activated == ["front"]
+
+
+def test_a_wrong_instance_token_cannot_raise_the_window(running_copy):
+    port, service = running_copy
+
+    assert app_module._activate_running(port, "x" * 43) is False
+    assert service.window_activation_requests == 0
 
 
 def test_nothing_listening_is_not_a_running_copy():

@@ -93,6 +93,89 @@ def test_the_enclosure_advertises_itself_for_discovery(service):
     assert published["records"]["deviceId"] == service.identity.device_id
 
 
+def test_the_stable_hostname_and_mdns_health_are_reported(tmp_path):
+    backend = home_network_pi(
+        country="US", services={"pitrac-web.service": True, "avahi-daemon.service": True}
+    )
+    built = PiService(
+        backend,
+        paths=ServicePaths(tmp_path / "state"),
+        pitrac=PitracInstallation(tmp_path / "s.json", tmp_path / "c.json"),
+        relay_ports={Simulator.GSPRO: 0, Simulator.E6: 0},
+        link_port=0,
+        discovery_port=0,
+        manage_hostname=True,
+        boot_grace=0.0,
+    )
+    built.start()
+    try:
+        mdns = built.status()["mdns"]
+        assert backend.hostname() == built.identity.hostname
+        assert mdns["hostnameMatches"] is True
+        assert mdns["address"] == built.identity.hostname + ".local"
+        assert mdns["serviceType"] == "_pitrac._tcp"
+        assert mdns["published"] is True
+        assert mdns["avahiPresent"] is True
+        assert mdns["avahiActive"] is True
+        assert backend.published_mdns["records"]["hostname"] == built.identity.hostname
+    finally:
+        built.stop()
+
+
+def test_an_old_no_hostname_unit_argument_no_longer_breaks_the_advertised_name():
+    from pitrac_easy_connect.pi.app import build_parser, manages_hostname
+
+    old_unit = build_parser().parse_args(["--no-hostname"])
+    simulation = build_parser().parse_args(["--simulate", "--no-hostname"])
+    assert manages_hostname(old_unit) is True
+    assert manages_hostname(simulation) is False
+
+
+def test_udp_discovery_keeps_working_when_mdns_publication_fails(tmp_path, monkeypatch):
+    from pitrac_easy_connect.common import discovery
+    from pitrac_easy_connect.pi.backend import BackendError
+
+    backend = home_network_pi(country="US")
+
+    def fail_publication(*_args, **_kwargs):
+        raise BackendError("Avahi is unavailable")
+
+    monkeypatch.setattr(backend, "publish_mdns_service", fail_publication)
+    built = PiService(
+        backend,
+        paths=ServicePaths(tmp_path / "state"),
+        pitrac=PitracInstallation(tmp_path / "s.json", tmp_path / "c.json"),
+        relay_ports={Simulator.GSPRO: 0, Simulator.E6: 0},
+        link_port=0,
+        discovery_port=0,
+        manage_hostname=False,
+        boot_grace=0.0,
+    )
+    built.start()
+    try:
+        result = discovery.discover(
+            timeout=0.5, port=built.discovery.port, broadcast_to=["127.0.0.1"]
+        )
+        assert [item.device_id for item in result] == [built.identity.device_id]
+        assert built.status()["mdns"]["published"] is False
+        assert "Avahi" in built.status()["mdns"]["error"]
+    finally:
+        built.stop()
+
+
+def test_the_installer_does_not_make_avahi_a_discovery_prerequisite():
+    from pathlib import Path
+
+    installer = (
+        Path(__file__).resolve().parent.parent / "packaging" / "pi" / "install.sh"
+    ).read_text()
+    checks = installer.split("command -v avahi-daemon", 1)[1].split(
+        "if ! nmcli", 1
+    )[0]
+    assert "die " not in checks
+    assert "UDP discovery remains available independently" in checks
+
+
 def test_the_beacon_describes_the_enclosure_without_secrets(service):
     described = json.dumps(service.describe())
     assert service.identity.device_id in described

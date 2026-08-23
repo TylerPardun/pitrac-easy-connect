@@ -52,7 +52,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--no-hostname", action="store_true",
-        help="do not set the system hostname from the device ID",
+        help="deprecated compatibility option; real enclosures always use their stable hostname",
     )
     parser.add_argument(
         "--simulate", action="store_true",
@@ -103,6 +103,12 @@ def build_backend(args) -> PiBackend:
     return NmcliBackend(device=args.wifi_device, sudo=args.sudo)
 
 
+def manages_hostname(args) -> bool:
+    """Real enclosures require their advertised stable mDNS hostname."""
+
+    return not args.simulate
+
+
 def main(argv=None) -> int:
     args = build_parser().parse_args(argv)
     backend = build_backend(args)
@@ -118,7 +124,12 @@ def main(argv=None) -> int:
         link_port=args.link_port,
         discovery_port=args.discovery_port,
         portal_port=args.portal_port,
-        manage_hostname=not args.no_hostname and not args.simulate,
+        # Existing 0.3.x/0.4.x units may still pass --no-hostname. Honouring
+        # that left the service advertising pitrac-<id> while Avahi published
+        # some unrelated system hostname, so the advertised .local name could
+        # never resolve. Keep parsing the old flag so upgrades start, but real
+        # enclosures now always make the system hostname match their identity.
+        manage_hostname=manages_hostname(args),
     )
     service.start()
 

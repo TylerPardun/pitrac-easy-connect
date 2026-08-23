@@ -29,6 +29,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--headless", action="store_true",
         help="run the local API without a window (CI, automated tests, or service use only)",
     )
+    parser.add_argument(
+        "--smoke-test", action="store_true",
+        help="exercise guarded page requests in the real native window (release validation)",
+    )
     parser.add_argument("--version", action="version", version=__version__)
     return parser
 
@@ -62,8 +66,9 @@ def _run(args, service, server) -> int:
             server.serve_forever()
             return 0
 
-        threading.Thread(target=server.serve_forever, daemon=True).start()
-        return _show_native(service, url)
+        if args.smoke_test:
+            url += "?pitracSmoke=1"
+        return _show_native(service, url, serve=server.serve_forever)
     except KeyboardInterrupt:
         return 0
     finally:
@@ -75,12 +80,18 @@ def _run(args, service, server) -> int:
         service.close()
 
 
-def _show_native(service: CompanionService, url: str) -> int:
+def _show_native(service: CompanionService, url: str, serve=None) -> int:
     from .window import NativeWindowError, run_native
 
     service.set_window_state("starting")
     try:
-        run_native(url, on_created=lambda: service.set_window_state("native"))
+        run_native(
+            url,
+            on_created=lambda: service.set_window_state("native"),
+            on_activation_ready=service.register_window_activator,
+            on_close_ready=service.register_window_closer,
+            on_started=serve,
+        )
     except NativeWindowError as exc:
         reason = str(exc)
         service.set_window_state("failed", reason)
@@ -102,13 +113,20 @@ def _handle_busy_port(args, service, failure: OSError) -> int:
         _say_it_failed("PiTrac Easy-Connect could not start.\n\n{}".format(failure))
         return 1
 
-    if _already_running(args.port):
+    instance_token = _running_instance(args.port)
+    if instance_token:
         if args.headless:
             service.close()
             return 0
-        code = _show_native(service, "http://127.0.0.1:{}".format(args.port))
+        activated = _activate_running(args.port, instance_token)
         service.close()
-        return code
+        if activated:
+            return 0
+        _say_it_failed(
+            "PiTrac Easy-Connect is already running, but its window could not be brought "
+            "to the front. Close it from the application switcher and try again."
+        )
+        return 1
 
     try:
         server = CompanionHTTPServer(("127.0.0.1", 0), service)
@@ -122,20 +140,49 @@ def _handle_busy_port(args, service, failure: OSError) -> int:
 
 
 def _already_running(port: int) -> bool:
+    """Compatibility predicate used by startup tests and diagnostics."""
+
+    return bool(_running_instance(port))
+
+
+def _running_instance(port: int) -> str:
     import json
     import urllib.error
     import urllib.request
 
     try:
         request = urllib.request.Request(
-            "http://127.0.0.1:{}/api/status".format(port),
+            "http://127.0.0.1:{}/api/instance".format(port),
             headers={"X-PiTrac-App": "1"},
         )
         with urllib.request.urlopen(request, timeout=2) as response:
             body = json.loads(response.read().decode("utf-8"))
     except (urllib.error.URLError, OSError, ValueError):
+        return ""
+    if body.get("application") != "PiTrac Easy-Connect":
+        return ""
+    token = str(body.get("instanceToken", ""))
+    return token if len(token) >= 32 else ""
+
+
+def _activate_running(port: int, instance_token: str) -> bool:
+    import json
+    import urllib.error
+    import urllib.request
+
+    payload = json.dumps({"instanceToken": instance_token}).encode("utf-8")
+    request = urllib.request.Request(
+        "http://127.0.0.1:{}/api/activate".format(port),
+        data=payload,
+        headers={"X-PiTrac-App": "1", "Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=3) as response:
+            body = json.loads(response.read().decode("utf-8"))
+    except (urllib.error.URLError, OSError, ValueError):
         return False
-    return "computerName" in body and "state" in body
+    return bool(body.get("activated") or body.get("queued"))
 
 
 def _say_it_failed(message: str) -> None:

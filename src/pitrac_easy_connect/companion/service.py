@@ -17,7 +17,7 @@ import platform
 import threading
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from .. import __version__
 from ..common import discovery, link
@@ -90,6 +90,10 @@ class CompanionService:
         #: field specifically to catch a backend that never opened.
         self._window_lifecycle = "starting"
         self._window_detail: Optional[str] = None
+        self._window_activator: Optional[Callable[[], None]] = None
+        self._window_closer: Optional[Callable[[], None]] = None
+        self._pending_window_activation = False
+        self._window_activation_requests = 0
         self.computer_name = computer_name or default_computer_name()
         # Always hold a port for every simulator. A caller that overrides only
         # one must not leave the other unmapped, or switching to it later fails
@@ -188,6 +192,49 @@ class CompanionService:
             state = self._window_lifecycle
             detail = self._window_detail
         return {"state": state, "detail": detail}
+
+    def register_window_activator(self, activator: Callable[[], None]) -> None:
+        """Attach the native window after pywebview has created it.
+
+        Keep the activation path tolerant of a request arriving before the
+        native backend registers its callback. Remembering one pending request
+        means the first window is raised as soon as it exists.
+        """
+
+        with self._lock:
+            self._window_activator = activator
+            pending = self._pending_window_activation
+            self._pending_window_activation = False
+        if pending:
+            activator()
+
+    def register_window_closer(self, closer: Callable[[], None]) -> None:
+        with self._lock:
+            self._window_closer = closer
+
+    def close_native_window(self) -> None:
+        with self._lock:
+            closer = self._window_closer
+        if closer is not None:
+            closer()
+
+    def activate_window(self) -> Dict[str, Any]:
+        """Raise this process's one native window for a second app launch."""
+
+        with self._lock:
+            self._window_activation_requests += 1
+            activator = self._window_activator
+            if activator is None:
+                self._pending_window_activation = True
+                return {"activated": False, "queued": True}
+            count = self._window_activation_requests
+        activator()
+        return {"activated": True, "queued": False, "requests": count}
+
+    @property
+    def window_activation_requests(self) -> int:
+        with self._lock:
+            return self._window_activation_requests
 
     # --- Finding an enclosure --------------------------------------------
 

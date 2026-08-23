@@ -1,12 +1,15 @@
-"""The Companion's local web server.
+"""The Companion's guarded local web server.
 
-Bound to loopback only. Nothing on the residence network can reach it, which is
-why it does not need its own authentication: reaching it already requires being
-logged in to this computer.
+The listener is bound to loopback, keeping the residence network out. Every API
+request also requires the application header and a same-origin browser context,
+keeping unrelated websites from reading or changing Easy-Connect state.
 """
 
 import json
 import re
+import secrets
+import threading
+from collections import Counter
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Callable, Dict
@@ -39,12 +42,28 @@ class CompanionHTTPServer(ThreadingHTTPServer):
 
     def __init__(self, address, service: CompanionService):
         self.service = service
+        # A second app process may ask this instance to raise its existing
+        # window. The token is handed only to a guarded loopback caller and
+        # prevents an unrelated listener that happens to resemble our status
+        # response from being treated as Easy-Connect.
+        self.instance_token = secrets.token_urlsafe(32)
+        self._request_counts: Counter = Counter()
+        self._request_lock = threading.Lock()
         #: Set when the user asks the program to stop from the page.
         self.stopped = __import__("threading").Event()
         super().__init__(address, CompanionHandler)
 
+    def record_api_request(self, method: str, path: str) -> None:
+        with self._request_lock:
+            self._request_counts["{} {}".format(method, path)] += 1
+
+    def request_counts(self) -> Dict[str, int]:
+        with self._request_lock:
+            return dict(self._request_counts)
+
     def request_stop(self) -> None:
         self.stopped.set()
+        self.service.close_native_window()
         self.shutdown()
 
 
@@ -60,6 +79,13 @@ class CompanionHandler(BaseHTTPRequestHandler):
         if path in ("/", "/index.html"):
             self._html(PAGE)
             return
+        # Every API read is guarded too. Status, shot history, range data, and
+        # backups all disclose local application state; a website must not be
+        # able to fetch any of them merely because it can name loopback.
+        if path.startswith("/api/"):
+            if not self._request_allowed():
+                return
+            self.server.record_api_request("GET", path)
         if path == "/api/status":
             self._guarded(self.server.service.status)
             return
@@ -72,6 +98,18 @@ class CompanionHandler(BaseHTTPRequestHandler):
         if path == "/api/backup":
             self._download_backup()
             return
+        if path == "/api/instance":
+            self._json(
+                HTTPStatus.OK,
+                {
+                    "application": "PiTrac Easy-Connect",
+                    "instanceToken": self.server.instance_token,
+                },
+            )
+            return
+        if path == "/api/page-check":
+            self._json(HTTPStatus.OK, {"requests": self.server.request_counts()})
+            return
         self._json(HTTPStatus.NOT_FOUND, {"error": {"failed": "That page does not exist"}})
 
     def do_POST(self) -> None:
@@ -79,6 +117,7 @@ class CompanionHandler(BaseHTTPRequestHandler):
             return
         service = self.server.service
         path = urlparse(self.path).path
+        self.server.record_api_request("POST", path)
         routes: Dict[str, Callable[[Dict[str, Any]], Any]] = {
             # Enclosures and the reason a search failed come from the same
             # operation, so concurrent searches cannot cross their answers.
@@ -110,6 +149,7 @@ class CompanionHandler(BaseHTTPRequestHandler):
             "/api/update/pi": lambda body: service.apply_pi_update(
                 str(body.get("targetTag", ""))
             ),
+            "/api/activate": self._activate,
             "/api/quit": lambda body: self._quit(),
             "/api/enclosure": lambda body: service.command(
                 str(body.get("command", "")), body.get("arguments") or {}
@@ -127,6 +167,19 @@ class CompanionHandler(BaseHTTPRequestHandler):
             self._json(HTTPStatus.BAD_REQUEST, {"error": {"failed": str(exc)}})
             return
         self._guarded(lambda: handler(body))
+
+    def do_OPTIONS(self) -> None:
+        # A cross-origin page has to preflight before it can attach the custom
+        # application header. Refusing that preflight is the browser boundary.
+        self.send_response(HTTPStatus.FORBIDDEN)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+    def _activate(self, body: Dict[str, Any]) -> Dict[str, Any]:
+        supplied = str(body.get("instanceToken", ""))
+        if not supplied or not secrets.compare_digest(supplied, self.server.instance_token):
+            raise ValueError("That activation request was not for this Easy-Connect instance")
+        return self.server.service.activate_window()
 
     def _quit(self) -> Dict[str, Any]:
         """Stop Easy Connect, so nothing is left running after a session."""

@@ -12,7 +12,7 @@ includes PiTrac's dashboard, shot history, and a practice range.
 A five-step guide walks you through the first setup. If you move the enclosure to another home, you only need to choose the new Wi-Fi network. You do not need to reconfigure PiTrac.
 
 - **Download:** <https://tylerpardun.github.io/pitrac-easy-connect/>
-- **Version:** 0.4.3
+- **Version:** 0.4.4
 - **License:** [MIT](LICENSE)
 
 ![The practice range](media/range.png)
@@ -105,6 +105,11 @@ PiTrac to send shots to the app, and prints the **owner card**.
 
 Re-run the same installer to upgrade. Your setup, saved Wi-Fi networks,
 connected computers, and camera calibration are all preserved.
+
+The service assigns each enclosure the stable hostname printed in its identity,
+`pitrac-<device id>.local`, and publishes `_pitrac._tcp` through Avahi. UDP
+discovery remains the primary search path and keeps working when mDNS is
+unavailable.
 
 ---
 

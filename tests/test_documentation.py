@@ -243,6 +243,12 @@ def test_ci_smokes_the_normal_native_path_for_every_release_platform():
     assert "xvfb-run" in workflow and '"state": *"native"' in workflow
     assert "msedgewebview2.exe" in workflow
     assert "packaging/check-native-only.py" in workflow
+    assert "--smoke-test" in workflow
+    assert "/api/page-check" in workflow
+    assert "POST /api/search" in workflow
+    assert "POST /api/finish-setup" in workflow
+    assert "POST /api/activate" in workflow
+    assert "LSMultipleInstancesProhibited" in workflow
     assert "./packaging/build-pi-archive.sh" in workflow
     assert "PiTrac-Easy-Connect-${GITHUB_REF_NAME#v}.pyz" in workflow
     assert "release/*.pyz" in workflow

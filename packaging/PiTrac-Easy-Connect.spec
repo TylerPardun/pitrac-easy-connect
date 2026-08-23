@@ -116,30 +116,39 @@ analysis = Analysis(
 )
 pyz = PYZ(analysis.pure)
 
-executable = EXE(
-    pyz,
-    analysis.scripts,
-    analysis.binaries,
-    analysis.datas,
-    [],
-    name="PiTrac Easy-Connect",
-    debug=False,
-    bootloader_ignore_signals=False,
-    strip=False,
-    upx=False,
-    # No console window: the interface is the app window.
-    console=False,
-    disable_windowed_traceback=False,
-    argv_emulation=False,
-    target_arch=None,
-    codesign_identity=None,
-    entitlements_file=None,
-    icon=ICON if os.path.exists(ICON) else None,
-)
-
 if MACOS:
-    app = BUNDLE(
+    # A onefile executable inside a .app launches a bootloader application and
+    # then a second extracted application. macOS registers both; PyInstaller
+    # explicitly warns that this layout is invalid. A normal onedir COLLECT is
+    # the supported bundle shape and leaves one foreground application.
+    executable = EXE(
+        pyz,
+        analysis.scripts,
+        [],
+        exclude_binaries=True,
+        name="PiTrac Easy-Connect",
+        debug=False,
+        bootloader_ignore_signals=False,
+        strip=False,
+        upx=False,
+        console=False,
+        disable_windowed_traceback=False,
+        argv_emulation=False,
+        target_arch=None,
+        codesign_identity=None,
+        entitlements_file=None,
+        icon=ICON if os.path.exists(ICON) else None,
+    )
+    collected = COLLECT(
         executable,
+        analysis.binaries,
+        analysis.datas,
+        strip=False,
+        upx=False,
+        name="PiTrac Easy-Connect",
+    )
+    app = BUNDLE(
+        collected,
         name="PiTrac Easy-Connect.app",
         icon=ICON if os.path.exists(ICON) else None,
         bundle_identifier="com.pitrac.easyconnect",
@@ -154,6 +163,34 @@ if MACOS:
             "NSAppTransportSecurity": {"NSAllowsLocalNetworking": True},
             "NSLocalNetworkUsageDescription":
                 "PiTrac Easy-Connect finds your launch monitor on your local network.",
+            # Launch Services should route a second normal application launch
+            # back to the existing process. The authenticated loopback
+            # activation endpoint handles direct executable launches too.
+            "LSMultipleInstancesProhibited": True,
             "LSMinimumSystemVersion": "11.0",
         },
+    )
+else:
+    # Windows intentionally remains onefile. Linux retains its existing native
+    # single executable as well; neither platform wraps that executable in a
+    # second application bundle.
+    executable = EXE(
+        pyz,
+        analysis.scripts,
+        analysis.binaries,
+        analysis.datas,
+        [],
+        name="PiTrac Easy-Connect",
+        debug=False,
+        bootloader_ignore_signals=False,
+        strip=False,
+        upx=False,
+        # No console window: the interface is the app window.
+        console=False,
+        disable_windowed_traceback=False,
+        argv_emulation=False,
+        target_arch=None,
+        codesign_identity=None,
+        entitlements_file=None,
+        icon=ICON if os.path.exists(ICON) else None,
     )

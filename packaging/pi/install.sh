@@ -7,12 +7,12 @@
 # PiTrac's own calibration.
 #
 #   sudo ./install.sh                 install or upgrade
-#   sudo ./install.sh --set-hostname  also rename this Pi to pitrac-<device id>
+#   sudo ./install.sh --set-hostname  accepted for compatibility; now automatic
 #   sudo ./install.sh --uninstall     remove the service, keep the settings
 #
-# The hostname is left alone by default. Renaming would change the .local
-# address the owner already uses to reach this Pi. Pass --set-hostname when a
-# second enclosure joins the same network and the two would otherwise collide.
+# Every enclosure uses its identity-derived pitrac-<device id> hostname. The
+# UDP beacon remains the primary discovery path; this stable .local name is the
+# fallback after DHCP changes the address.
 #
 set -euo pipefail
 
@@ -85,6 +85,14 @@ say "Python: $(python3 -V 2>&1)"
 command -v nmcli >/dev/null || die "NetworkManager (nmcli) is required."
 say "NetworkManager: $(nmcli --version | awk '{print $NF}')"
 systemctl is-active --quiet NetworkManager || die "NetworkManager is not running."
+if ! command -v avahi-daemon >/dev/null; then
+    say "WARNING: avahi-daemon is not installed, so the .local fallback will not work."
+elif ! systemctl is-active --quiet avahi-daemon; then
+    say "WARNING: avahi-daemon is not running, so the .local fallback will not work."
+else
+    say "Avahi: active"
+fi
+say "UDP discovery remains available independently of Avahi."
 
 if ! nmcli -t -f DEVICE,TYPE device status | grep -q ':wifi$'; then
     die "No Wi-Fi device was found."
@@ -180,13 +188,8 @@ say "Installed to $THIS_RELEASE"
 install -d -m 0750 "$STATE_DIR"
 
 step "Installing the service"
-HOSTNAME_FLAG="--no-hostname"
-if [ "$SET_HOSTNAME" = "yes" ]; then
-    HOSTNAME_FLAG=""
-    say "This Pi will be renamed to match its device ID."
-else
-    say "Leaving the hostname as '$(hostname)'. Use --set-hostname to change it."
-fi
+HOSTNAME_FLAG=""
+say "The stable .local hostname will match this enclosure's device ID."
 # --- Make the logs survive a reboot ---------------------------------------
 #
 # Raspberry Pi OS keeps the journal in a tmpfs, so every reboot erases it. That

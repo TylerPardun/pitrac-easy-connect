@@ -25,8 +25,11 @@ def test_native_is_reported_only_after_the_creation_callback(tmp_path, monkeypat
     service = CompanionService(config_path=tmp_path / "c.json", discovery_port=0)
     seen = []
 
-    def create(_url, on_created):
+    def create(_url, on_created, on_activation_ready, on_close_ready, on_started):
         seen.append(service.window_state()["state"])
+        on_activation_ready(lambda: seen.append("focused"))
+        on_close_ready(lambda: seen.append("closed"))
+        assert on_started is None
         on_created()
         seen.append(service.window_state()["state"])
 
@@ -34,6 +37,10 @@ def test_native_is_reported_only_after_the_creation_callback(tmp_path, monkeypat
     try:
         assert app._show_native(service, "http://127.0.0.1:1") == 0
         assert seen == ["starting", "native"]
+        service.activate_window()
+        assert seen[-1] == "focused"
+        service.close_native_window()
+        assert seen[-1] == "closed"
     finally:
         service.close()
 

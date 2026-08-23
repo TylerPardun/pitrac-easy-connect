@@ -114,9 +114,8 @@ jobs:
       - name: Package the macOS app
         if: runner.os == 'macOS'
         run: |
-          # The licences travel beside the app as well as inside it. A onefile
-          # build hides its bundled copies inside the archive, which satisfies
-          # nothing if somebody actually wants to read them.
+          # The licences travel beside the app as well as inside its supported
+          # onedir bundle, where they remain directly inspectable.
           mkdir -p dist/payload
           cp -R "dist/PiTrac Easy-Connect.app" dist/payload/
           cp LICENSE NOTICE.md dist/payload/
@@ -137,43 +136,99 @@ jobs:
             exit 1
           fi
 
-      # There was no check like this for macOS at all, which is how a build
-      # that opened a browser instead of a window reached people. The runner
-      # has no desktop, so this does not assert that a window appeared -- it
-      # asks the app whether it managed to open one, which is the thing that
-      # was quietly false.
-      - name: Check the macOS app opens its own window
+      - name: Check the exact macOS zip, page API, and single application
         if: runner.os == 'macOS'
         run: |
           ditto -x -k "${{ matrix.path }}" dist/unpacked
           APP=$(find dist/unpacked -maxdepth 3 -name "*.app" | head -1)
           BIN="$APP/Contents/MacOS/$(basename "$APP" .app)"
+          EXPECTED=$(PYTHONPATH=src python -c 'import pitrac_easy_connect; print(pitrac_easy_connect.__version__)')
+          test -x "$BIN" || { echo "::error::the app executable bit was lost"; exit 1; }
+          /usr/libexec/PlistBuddy -c 'Print :NSLocalNetworkUsageDescription' "$APP/Contents/Info.plist"
+          /usr/libexec/PlistBuddy -c 'Print :NSAppTransportSecurity:NSAllowsLocalNetworking' "$APP/Contents/Info.plist" | grep -q true
+          /usr/libexec/PlistBuddy -c 'Print :LSMultipleInstancesProhibited' "$APP/Contents/Info.plist" | grep -q true
+          RESOURCE_COUNT=$(find "$APP/Contents" -type f \( -name LICENSE -o -name NOTICE.md -o -name THIRD-PARTY-LICENCES.txt \) | tee /tmp/mac-resources.txt | wc -l | tr -d ' ')
+          cat /tmp/mac-resources.txt
+          test "$RESOURCE_COUNT" -eq 3 || {
+            echo "::error::the app must contain exactly the three required legal resources"; exit 1;
+          }
+
+          BROWSERS_BEFORE=$(pgrep -x 'Safari|Google Chrome|Firefox' 2>/dev/null | sort || true)
           echo "launching $BIN"
-          "$BIN" --port 8899 >/tmp/mac-window.log 2>&1 &
+          "$BIN" --port 8899 --smoke-test --config /tmp/pitrac-mac-smoke.json >/tmp/mac-window.log 2>&1 &
           APP_PID=$!
 
           STATUS=""
-          for i in $(seq 1 30); do
+          PAGE_CHECK=""
+          for i in $(seq 1 40); do
             sleep 2
             STATUS=$(curl -fsS -m 3 -H "X-PiTrac-App: 1" http://127.0.0.1:8899/api/status || true)
-            [ -n "$STATUS" ] && break
+            PAGE_CHECK=$(curl -fsS -m 3 -H "X-PiTrac-App: 1" http://127.0.0.1:8899/api/page-check || true)
+            echo "$PAGE_CHECK" | grep -q 'POST /api/finish-setup' && break
           done
-          # The window is opened after the server starts answering.
-          sleep 8
-          STATUS=$(curl -fsS -m 5 -H "X-PiTrac-App: 1" http://127.0.0.1:8899/api/status || echo "$STATUS")
-          kill $APP_PID 2>/dev/null || true
-          cat /tmp/mac-window.log || true
 
           if [ -z "$STATUS" ]; then
             echo "::error::the packaged app never answered /api/status"
             exit 1
           fi
           echo "$STATUS" | tr ',' '\n' | grep -i "state\|detail" || true
+          echo "$STATUS" | grep -q '"version":"'"$EXPECTED"'"' || {
+            echo "::error::the packaged app did not report version $EXPECTED"; exit 1;
+          }
           if ! echo "$STATUS" | grep -qE '"state": *"native"'; then
             echo "::error::the app did not report a created native window"
             exit 1
           fi
-          echo "the packaged app opened its own window"
+          echo "$PAGE_CHECK" | grep -q 'POST /api/search' || {
+            echo "::error::the real page did not call guarded search"; exit 1;
+          }
+          echo "$PAGE_CHECK" | grep -q 'POST /api/finish-setup' || {
+            echo "::error::the real page did not complete its state-changing API smoke"; exit 1;
+          }
+
+          "$BIN" --port 8899 --config /tmp/pitrac-mac-smoke.json >/tmp/mac-second.log 2>&1 &
+          SECOND_PID=$!
+          for _ in $(seq 1 20); do
+            sleep 0.5
+            kill -0 $SECOND_PID 2>/dev/null || break
+          done
+          if kill -0 $SECOND_PID 2>/dev/null; then
+            echo "::error::a second Easy-Connect process remained running"; exit 1
+          fi
+          wait $SECOND_PID
+          kill -0 $APP_PID
+          PAGE_CHECK=$(curl -fsS -m 5 -H "X-PiTrac-App: 1" http://127.0.0.1:8899/api/page-check)
+          echo "$PAGE_CHECK" | grep -q 'POST /api/activate' || {
+            echo "::error::the second launch did not activate the original window"; exit 1;
+          }
+
+          python - <<'PY'
+          from AppKit import NSWorkspace
+          apps = [a for a in NSWorkspace.sharedWorkspace().runningApplications()
+                  if a.bundleIdentifier() == "com.pitrac.easyconnect"]
+          print("Easy-Connect registrations:", [(a.processIdentifier(), a.activationPolicy()) for a in apps])
+          if len(apps) != 1:
+              raise SystemExit("expected exactly one Easy-Connect application registration")
+          if int(apps[0].activationPolicy()) != 0:
+              raise SystemExit("Easy-Connect is not registered as one foreground application")
+          PY
+
+          BROWSERS_AFTER=$(pgrep -x 'Safari|Google Chrome|Firefox' 2>/dev/null | sort || true)
+          test "$BROWSERS_AFTER" = "$BROWSERS_BEFORE" || {
+            echo "::error::the app launched an external browser"; exit 1;
+          }
+          curl -fsS -m 5 -H "X-PiTrac-App: 1" -H 'Content-Type: application/json' \
+            -d '{}' http://127.0.0.1:8899/api/quit >/dev/null
+          for _ in $(seq 1 20); do
+            sleep 0.5
+            kill -0 $APP_PID 2>/dev/null || break
+          done
+          if kill -0 $APP_PID 2>/dev/null; then
+            echo "::error::the macOS app did not exit cleanly"; exit 1
+          fi
+          wait $APP_PID
+          cat /tmp/mac-window.log /tmp/mac-second.log || true
+          echo "the exact macOS zip passed native page, single-instance, and browser checks"
 
       # A bare .exe cannot carry a licence file, so it travels in a zip with one.
       - name: Package the Windows app
@@ -205,7 +260,7 @@ jobs:
           Write-Host "launching $($exe.FullName)"
 
           $app = Start-Process -FilePath $exe.FullName `
-            -ArgumentList "--port","8898" -PassThru
+            -ArgumentList "--port","8898","--smoke-test","--config","$env:TEMP\pitrac-windows-smoke.json" -PassThru
 
           $serving = $false
           foreach ($i in 1..30) {
@@ -273,9 +328,15 @@ jobs:
           try {
             $s = Invoke-WebRequest -Uri "http://127.0.0.1:8898/api/status" `
                   -Headers @{"X-PiTrac-App"="1"} -UseBasicParsing -TimeoutSec 5
-            $w = ($s.Content | ConvertFrom-Json).window
+            $reported = $s.Content | ConvertFrom-Json
+            $w = $reported.window
             $windowState = $w.state
             Write-Host "the app reports: state=$($w.state) detail=$($w.detail)"
+            $expected = python -c "import sys;sys.path.insert(0,'src');import pitrac_easy_connect;print(pitrac_easy_connect.__version__)"
+            if ($reported.version -ne $expected) {
+              Write-Error "the packaged app reported $($reported.version), expected $expected"
+              exit 1
+            }
           } catch { Write-Host "could not read the window state back" }
           $app.Refresh()
           if (-not $app.HasExited -and $app.MainWindowHandle -ne 0) {
@@ -284,8 +345,41 @@ jobs:
             Write-Host "no window handle, as expected on a runner with no desktop"
           }
 
+          $pageReady = $false
+          foreach ($i in 1..30) {
+            Start-Sleep -Seconds 1
+            try {
+              $p = Invoke-WebRequest -Uri "http://127.0.0.1:8898/api/page-check" `
+                    -Headers @{"X-PiTrac-App"="1"} -UseBasicParsing -TimeoutSec 5
+              $requests = ($p.Content | ConvertFrom-Json).requests
+              if ($requests.'POST /api/search' -ge 1 -and
+                  $requests.'POST /api/finish-setup' -ge 1) {
+                $pageReady = $true; break
+              }
+            } catch { }
+          }
+
+          # The second executable must ask the original window to activate and
+          # then exit, leaving the original server and WebView2 tree intact.
+          $second = Start-Process -FilePath $exe.FullName `
+            -ArgumentList "--port","8898","--config","$env:TEMP\pitrac-windows-smoke.json" -PassThru
+          if (-not $second.WaitForExit(15000)) {
+            Stop-Process -Id $second.Id -Force -ErrorAction SilentlyContinue
+            Write-Error "a second Easy-Connect process remained running"; exit 1
+          }
+          if ($second.ExitCode -ne 0) {
+            Write-Error "the second launch exited $($second.ExitCode)"; exit 1
+          }
+          $app.Refresh()
+          if ($app.HasExited) { Write-Error "the original app exited after second launch"; exit 1 }
+          $p = Invoke-WebRequest -Uri "http://127.0.0.1:8898/api/page-check" `
+                -Headers @{"X-PiTrac-App"="1"} -UseBasicParsing -TimeoutSec 5
+          $requests = ($p.Content | ConvertFrom-Json).requests
+          if ($requests.'POST /api/activate' -lt 1) {
+            Write-Error "the second launch did not activate the original window"; exit 1
+          }
+
           $exited = $app.HasExited
-          Stop-Process -Id $app.Id -Force -ErrorAction SilentlyContinue
 
           if ($exited)       { Write-Error "the app exited on its own"; exit 1 }
           if (-not $serving) { Write-Error "the app never answered /api/status"; exit 1 }
@@ -302,7 +396,19 @@ jobs:
             Write-Error "the app launched ordinary Edge in addition to its embedded window"
             exit 1
           }
-          Write-Host "the packaged app started its native window"
+          if (-not $pageReady) {
+            Write-Error "the real packaged page did not complete guarded search and state change"
+            exit 1
+          }
+
+          Invoke-WebRequest -Uri "http://127.0.0.1:8898/api/quit" -Method POST `
+            -Headers @{"X-PiTrac-App"="1"} -ContentType "application/json" `
+            -Body "{}" -UseBasicParsing -TimeoutSec 5 | Out-Null
+          if (-not $app.WaitForExit(15000)) {
+            Stop-Process -Id $app.Id -Force -ErrorAction SilentlyContinue
+            Write-Error "the app did not exit cleanly"; exit 1
+          }
+          Write-Host "the exact Windows zip passed native page and single-instance checks"
 
       - name: Package the Linux app
         if: runner.os == 'Linux'
@@ -318,20 +424,65 @@ jobs:
         run: |
           mkdir -p dist/unpacked-linux
           unzip -q dist/PiTrac-Easy-Connect-linux-x86_64.zip -d dist/unpacked-linux
-          xvfb-run -a "dist/unpacked-linux/PiTrac Easy-Connect" --port 8899 >linux-window.log 2>&1 &
+          BIN="dist/unpacked-linux/PiTrac Easy-Connect"
+          test -x "$BIN" || { echo "::error::the Linux executable bit was lost"; exit 1; }
+          EXPECTED=$(PYTHONPATH=src python -c 'import pitrac_easy_connect; print(pitrac_easy_connect.__version__)')
+          BROWSERS_BEFORE=$(pgrep -x 'firefox|chromium|google-chrome' 2>/dev/null | sort || true)
+          xvfb-run -a "$BIN" --port 8899 --smoke-test --config /tmp/pitrac-linux-smoke.json >linux-window.log 2>&1 &
           APP_PID=$!
           STATUS=""
-          for _ in $(seq 1 30); do
+          PAGE_CHECK=""
+          for _ in $(seq 1 40); do
             sleep 2
             STATUS=$(curl -fsS -m 3 -H "X-PiTrac-App: 1" http://127.0.0.1:8899/api/status || true)
-            echo "$STATUS" | grep -qE '"state": *"native"' && break
+            PAGE_CHECK=$(curl -fsS -m 3 -H "X-PiTrac-App: 1" http://127.0.0.1:8899/api/page-check || true)
+            echo "$STATUS" | grep -qE '"state": *"native"' && \
+              echo "$PAGE_CHECK" | grep -q 'POST /api/finish-setup' && break
           done
-          kill $APP_PID 2>/dev/null || true
-          cat linux-window.log || true
           echo "$STATUS" | grep -qE '"state": *"native"' || {
             echo "::error::the Linux artifact did not create a native WebKitGTK window"
             exit 1
           }
+          echo "$STATUS" | grep -q '"version":"'"$EXPECTED"'"' || {
+            echo "::error::the Linux artifact reported the wrong version"; exit 1;
+          }
+          echo "$PAGE_CHECK" | grep -q 'POST /api/search' || {
+            echo "::error::the real Linux page did not call guarded search"; exit 1;
+          }
+          echo "$PAGE_CHECK" | grep -q 'POST /api/finish-setup' || {
+            echo "::error::the real Linux page did not call a state-changing route"; exit 1;
+          }
+
+          "$BIN" --port 8899 --config /tmp/pitrac-linux-smoke.json >linux-second.log 2>&1 &
+          SECOND_PID=$!
+          for _ in $(seq 1 20); do
+            sleep 0.5
+            kill -0 $SECOND_PID 2>/dev/null || break
+          done
+          if kill -0 $SECOND_PID 2>/dev/null; then
+            echo "::error::a second Linux app process remained running"; exit 1
+          fi
+          wait $SECOND_PID
+          kill -0 $APP_PID
+          PAGE_CHECK=$(curl -fsS -m 5 -H "X-PiTrac-App: 1" http://127.0.0.1:8899/api/page-check)
+          echo "$PAGE_CHECK" | grep -q 'POST /api/activate' || {
+            echo "::error::the second Linux launch did not activate the original"; exit 1;
+          }
+          BROWSERS_AFTER=$(pgrep -x 'firefox|chromium|google-chrome' 2>/dev/null | sort || true)
+          test "$BROWSERS_AFTER" = "$BROWSERS_BEFORE" || {
+            echo "::error::the Linux app launched an external browser"; exit 1;
+          }
+          curl -fsS -m 5 -H "X-PiTrac-App: 1" -H 'Content-Type: application/json' \
+            -d '{}' http://127.0.0.1:8899/api/quit >/dev/null
+          for _ in $(seq 1 20); do
+            sleep 0.5
+            kill -0 $APP_PID 2>/dev/null || break
+          done
+          if kill -0 $APP_PID 2>/dev/null; then
+            echo "::error::the Linux app did not exit cleanly"; exit 1
+          fi
+          wait $APP_PID
+          cat linux-window.log linux-second.log || true
 
       - name: Check NOTICE.md credits everything the build bundles
         run: python packaging/bundled-licences.py --check
@@ -458,9 +609,20 @@ jobs:
             Raspberry Pi service-update payload used by Easy-Connect. It is
             not a desktop application or a Linux desktop download.
 
+            ### v0.4.4 hotfix
+
+            - Fixes the packaged desktop page being rejected by its own guarded API.
+            - Restores search and pairing from the real packaged UI.
+            - Replaces the invalid macOS onefile-in-app layout that registered two applications.
+            - Makes a second launch activate the existing native window and exit.
+
             Existing users must replace and restart the desktop app first.
-            Let that 0.4.3 desktop app update the enclosure afterward; it pins
+            Let that 0.4.4 desktop app update the enclosure afterward; it pins
             both halves of the update to this exact release.
+
+            Hardware readiness is separate. Missing cameras, calibration,
+            models, or measurement operation still report `RECOVERY REQUIRED`;
+            this hotfix does not claim those components are operational.
 
             ### Checking what you downloaded
 
