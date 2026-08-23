@@ -328,6 +328,31 @@ def test_a_second_computer_is_told_the_enclosure_is_busy(chain):
     stream.close()
 
 
+def test_the_same_paired_computer_supersedes_its_stale_socket(chain):
+    """A quick reconnect must not wait for the old handler to notice EOF."""
+
+    old_session = chain.server.session
+    sock = socket.create_connection(("127.0.0.1", chain.link_port), timeout=5)
+    stream = link.FrameStream(sock)
+    hello = stream.receive(timeout=5)
+    proof = PairingManager.client_proof(chain.pairing.secret, hello["challenge"])
+    stream.send(
+        link.auth(
+            chain.pairing.pairing_id,
+            proof,
+            VERSION,
+            "Sim Room PC",
+        )
+    )
+
+    assert stream.receive(timeout=5)["type"] == "authOk"
+    _wait_for(
+        lambda: chain.server.session is not old_session,
+        "the stale session was not replaced",
+    )
+    stream.close()
+
+
 def test_a_protocol_mismatch_names_the_side_that_must_be_updated(tmp_path):
     chain = Chain(tmp_path, pair=False)
     try:

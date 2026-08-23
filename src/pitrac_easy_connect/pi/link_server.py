@@ -131,14 +131,23 @@ class CompanionLinkServer:
         with self._lock:
             existing = self._session
             if existing is not None and existing.authenticated and existing.alive:
-                _try_send(
-                    stream,
-                    link.error(
-                        LINK_BUSY.code, LINK_BUSY.failed, LINK_BUSY.next_step, LINK_BUSY.still_safe
-                    ),
-                )
-                stream.close()
-                return
+                if existing.pairing_id != session.pairing_id:
+                    _try_send(
+                        stream,
+                        link.error(
+                            LINK_BUSY.code, LINK_BUSY.failed, LINK_BUSY.next_step,
+                            LINK_BUSY.still_safe,
+                        ),
+                    )
+                    stream.close()
+                    return
+                # A reconnect from the same proved pairing supersedes its old
+                # socket. On a busy machine the old handler can take long
+                # enough to observe EOF that every immediate reconnect is
+                # rejected as "busy". Closing it here is safe: the new client
+                # proved the same secret, and the identity guard in finally
+                # prevents the old handler from detaching this new session.
+                existing.close()
             self._session = session
 
         session.authenticated = True
