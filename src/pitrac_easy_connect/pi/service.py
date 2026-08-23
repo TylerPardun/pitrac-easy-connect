@@ -477,8 +477,8 @@ class PiService:
             "reboot": lambda a: self._reboot(),
             "shutdown": lambda a: self._shutdown(),
             "ownerCard": lambda a: {"text": self.identity.owner_card()},
-            "checkForUpdates": lambda a: self._check_updates(),
-            "applyUpdate": lambda a: self._apply_update(),
+            "checkForUpdates": lambda a: self._check_updates(a),
+            "applyUpdate": lambda a: self._apply_update(a),
             "createBackup": lambda a: self._create_backup(a),
             "inspectBackup": lambda a: self.backups.inspect(str(a.get("file", ""))).as_dict(),
             "restoreBackup": lambda a: self._restore_backup(a),
@@ -646,14 +646,42 @@ class PiService:
             else self.enclosure_updates
         )
 
-    def _check_updates(self) -> Dict[str, Any]:
+    def _check_updates(self, arguments: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        target = str((arguments or {}).get("targetTag") or "").strip()
         updater = self._updater()
         if updater is self.updates:
+            if target:
+                return {
+                    "installed": self.version,
+                    "kind": updates_module.SOURCE,
+                    "latest": target,
+                    "available": False,
+                    "canApply": False,
+                    "detail": (
+                        "This Pi uses a source checkout, so an exact release cannot be "
+                        "installed automatically. Update it manually to {}."
+                    ).format(target),
+                }
             return self.updates.check(force=True).as_dict()
-        return updater.check().as_dict()
+        return updater.check(target or None).as_dict()
 
-    def _apply_update(self) -> Dict[str, Any]:
-        return self._updater().apply()
+    def _apply_update(self, arguments: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        target = str((arguments or {}).get("targetTag") or "").strip()
+        if not target:
+            return {
+                "applied": False,
+                "detail": "An exact target release is required; PiTrac was not changed.",
+            }
+        updater = self._updater()
+        if updater is self.updates:
+            return {
+                "applied": False,
+                "detail": "This Pi uses a source checkout and must be updated manually.",
+            }
+        checked = updater.check(target)
+        if not checked.available or not checked.can_apply:
+            return {"applied": False, "detail": checked.detail, "version": checked.latest}
+        return updater.apply(target)
 
     def _restart_service(self) -> None:
         # Restarting kills this process, so nothing after it in the update runs.

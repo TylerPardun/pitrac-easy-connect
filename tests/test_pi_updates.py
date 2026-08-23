@@ -63,14 +63,22 @@ def upstream(tmp_path):
 
     class Handler(http.server.BaseHTTPRequestHandler):
         def do_GET(self):
-            if self.path.endswith("/releases/latest"):
+            if self.path.endswith("/releases/latest") or "/releases/tags/" in self.path:
+                state.setdefault("requests", []).append(self.path)
+                if "/releases/tags/" in self.path:
+                    requested = self.path.rsplit("/", 1)[-1].lstrip("v")
+                    if requested != state["tag"].lstrip("v"):
+                        self.send_error(404)
+                        return
                 # The real API states a sha256 for every asset, and the
                 # enclosure refuses an archive that does not match it, so a
                 # stand-in without one is not a useful stand-in.
                 digest = state.get("digest")
                 if digest is None:
                     digest = "sha256:" + hashlib.sha256(state["blob"]).hexdigest()
-                assets = ([{"name": "PiTrac-Easy-Connect.pyz",
+                assets = ([{"name": "PiTrac-Easy-Connect-{}.pyz".format(
+                                state["tag"].lstrip("v")
+                            ),
                             "browser_download_url": base[0] + "/download",
                             "digest": digest}]
                           if state["asset"] else [])
@@ -124,6 +132,21 @@ def test_a_newer_release_can_be_installed(installed, upstream):
     assert status.available is True
     assert status.can_apply is True
     assert status.latest == "9.9.9"
+
+
+def test_an_exact_target_uses_the_tag_endpoint(installed, upstream):
+    _base, state = upstream
+    status = updater(installed, upstream).check("v9.9.9")
+
+    assert status.can_apply is True
+    assert state["requests"][-1].endswith("/releases/tags/v9.9.9")
+
+
+def test_a_missing_exact_target_is_not_replaced_with_latest(installed, upstream):
+    result = updater(installed, upstream).apply("v8.8.8")
+
+    assert result["applied"] is False
+    assert not (installed / "pitrac_easy_connect.previous").exists()
 
 
 def test_the_same_version_is_up_to_date(installed, upstream):
@@ -508,7 +531,7 @@ def _updater(tmp_path, release, blob):
         app_dir=tmp_path / "app",
         fetch=lambda url: blob,
     )
-    updater._release = lambda: release
+    updater._release = lambda target_tag=None: release
     return updater
 
 

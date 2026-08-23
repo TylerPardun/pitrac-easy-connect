@@ -48,6 +48,7 @@ def test_finishing_survives_a_restart(rig, tmp_path):
         simulator_ports={Simulator.GSPRO: rig.mock.address[1]},
         discovery_port=rig.pi.discovery.port,
         computer_name="Sim Room PC",
+        discovery_targets=["127.0.0.1"],
     )
     try:
         assert restarted.status()["setupComplete"] is True

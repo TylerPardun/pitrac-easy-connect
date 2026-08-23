@@ -99,18 +99,26 @@ class CompanionLinkClient:
                     return
                 with self._lock:
                     self.host = candidate
+                connected_here = False
                 try:
                     self._connect_once()
                 except Exception as exc:  # every failure here is a retry, not a crash
+                    # Snapshot this before finally marks the client down. A
+                    # socket that completed its handshake and later dropped is
+                    # not a failed address lookup. Trying every stale fallback
+                    # after that made an ordinary reconnect take longer than
+                    # all of their DNS/connect timeouts combined.
+                    connected_here = self.connected
                     self._set_error(_as_error(exc))
-                    continue
                 finally:
                     self._mark_disconnected()
-                # A completed connection that later dropped should keep its
-                # successful hostname/address first on the next retry cycle.
-                self._hosts.remove(candidate)
-                self._hosts.insert(0, candidate)
-                break
+                if connected_here:
+                    # Keep the address that just worked first and retry it on
+                    # the next cycle. Fallbacks remain available if the next
+                    # connection attempt itself fails.
+                    self._hosts.remove(candidate)
+                    self._hosts.insert(0, candidate)
+                    break
             if self._stop.wait(self.reconnect_seconds):
                 return
 

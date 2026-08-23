@@ -135,6 +135,20 @@ def test_discovery_problem_is_shown_in_the_desktop_ui():
     assert "No PiTrac was found" in search
 
 
+def test_update_ui_never_updates_pi_before_the_desktop():
+    render = COMPANION.split("function renderUpdate(update)")[1].split(
+        "async function copyText", 1
+    )[0]
+    assert 'phase==="desktop-update-required"' in render
+    assert 'phase==="pi-update-required"' in render
+    assert render.index('phase==="desktop-update-required"') < render.index(
+        'phase==="pi-update-required"'
+    )
+    assert '"/api/update/pi"' in render
+    assert '"/api/update/prepare"' in render
+    assert 'command:"applyUpdate"' not in render
+
+
 @pytest.mark.parametrize("name,page", PAGES, ids=[case[0] for case in PAGES])
 def test_no_style_is_left_behind_with_nothing_using_it(name, page):
     """Rules for elements that no longer exist quietly rot.

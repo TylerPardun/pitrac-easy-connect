@@ -243,10 +243,22 @@ def test_ci_smokes_the_normal_native_path_for_every_release_platform():
     assert "xvfb-run" in workflow and '"state": *"native"' in workflow
     assert "msedgewebview2.exe" in workflow
     assert "packaging/check-native-only.py" in workflow
+    assert "./packaging/build-pi-archive.sh" in workflow
+    assert "PiTrac-Easy-Connect-${GITHUB_REF_NAME#v}.pyz" in workflow
+    assert "release/*.pyz" in workflow
     # Headless is tested at API level, never used to make an artifact smoke
     # test pass without creating the window users receive.
     build_job = workflow.split("  build:\n", 1)[1].split("  release:\n", 1)[0]
     assert "--headless" not in build_job
+
+
+def test_the_pi_archive_is_not_a_browser_or_desktop_entry_point():
+    script = read(
+        Path(__file__).resolve().parent.parent / "packaging" / "build-pi-archive.sh"
+    )
+    assert "pitrac_easy_connect.pi.app import main" in script
+    assert "pitrac_easy_connect.companion.app" not in script
+    assert "webbrowser" not in script
 
 
 def test_the_release_notes_warn_about_the_unsigned_builds():

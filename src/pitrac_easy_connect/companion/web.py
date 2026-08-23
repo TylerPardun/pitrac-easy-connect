@@ -103,7 +103,13 @@ class CompanionHandler(BaseHTTPRequestHandler):
             "/api/shots/clear": lambda body: service.clear_shots(),
             "/api/cameras": lambda body: service.cameras(),
             "/api/update/check": lambda body: service.check_for_updates(),
+            "/api/update/prepare": lambda body: service.prepare_update(
+                str(body.get("targetTag", ""))
+            ),
             "/api/update/apply": lambda body: service.apply_update(),
+            "/api/update/pi": lambda body: service.apply_pi_update(
+                str(body.get("targetTag", ""))
+            ),
             "/api/quit": lambda body: self._quit(),
             "/api/enclosure": lambda body: service.command(
                 str(body.get("command", "")), body.get("arguments") or {}

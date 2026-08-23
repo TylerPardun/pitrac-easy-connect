@@ -12,6 +12,11 @@ set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$HERE"
+python3 -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)' || {
+    printf 'Building the desktop app requires Python 3.10 or newer (found %s).\n' \
+        "$(python3 -V 2>&1)" >&2
+    exit 1
+}
 OUT="$HERE/dist"
 VERSION="$(python3 -c "import re,pathlib; print(re.search(r'__version__ = \"([^\"]+)\"', pathlib.Path('src/pitrac_easy_connect/__init__.py').read_text()).group(1))")"
 export PITRAC_VERSION="$VERSION"

@@ -31,7 +31,8 @@ from ..common.errors import (
     lookup,
 )
 from ..common.states import State
-from ..common.updates import Updater
+from ..common.updates import Updater, coordinate_update
+from ..common.versions import compare
 from ..models import TEST_SHOT, Simulator
 from .link_client import CompanionLinkClient
 from . import shotlog
@@ -68,6 +69,7 @@ class CompanionService:
         computer_name: Optional[str] = None,
         search_seconds: float = 2.0,
         research_seconds: float = 3.0,
+        discovery_targets: Optional[List[str]] = None,
     ):
         self.version = version
         self.simulator_host = simulator_host
@@ -79,6 +81,10 @@ class CompanionService:
         #: seconds cannot be exercised three hundred times.
         self.search_seconds = search_seconds
         self.research_seconds = research_seconds
+        # Production discovers every active IPv4 interface. Tests and local
+        # simulators can opt into loopback explicitly so a hosted runner's
+        # routing table or macOS Local Network policy cannot affect them.
+        self.discovery_targets = discovery_targets
         #: The app starts the HTTP service before pywebview creates the OS
         #: window. Do not call that interval native: build checks query this
         #: field specifically to catch a backend that never opened.
@@ -96,6 +102,10 @@ class CompanionService:
                 "simulator": Simulator.GSPRO.value,
                 "enclosures": {},
                 "activeDeviceId": "",
+                # An update spans a desktop replacement and restart. Keeping
+                # its exact target here lets the new desktop copy continue the
+                # same transaction instead of chasing a newer release midway.
+                "updateTarget": "",
                 #: Set once the owner has been walked through setup. Until then
                 #: the app leads them a step at a time instead of presenting a
                 #: window full of things to click.
@@ -114,6 +124,7 @@ class CompanionService:
         self._shots_delivered = 0
         self._shots_lost = 0
         self._pi_status: Dict[str, Any] = {}
+        self._pending_update_target = str(self.store.get("updateTarget", "") or "")
         #: The practice range. In memory only: a session is a bucket of balls.
         self.range = RangeSession()
         self._raw_shots: List[Dict[str, Any]] = []
@@ -183,7 +194,11 @@ class CompanionService:
     def _search(self, timeout: Optional[float] = None) -> discovery.DiscoveryResult:
         if timeout is None:
             timeout = self.search_seconds
-        result = discovery.discover(timeout=timeout, port=self.discovery_port)
+        result = discovery.discover(
+            timeout=timeout,
+            port=self.discovery_port,
+            broadcast_to=self.discovery_targets,
+        )
         with self._lock:
             self._found = list(result.enclosures)
         return result
@@ -900,25 +915,119 @@ class CompanionService:
             "shots": shots,
         }
 
-    def _update_status(self) -> Dict[str, Any]:
+    def _update_status(self, force: bool = False) -> Dict[str, Any]:
         """What is installed here and on the enclosure, and whether either is behind."""
 
         with self._lock:
-            enclosure_version = (self._pi_status or {}).get("version", "")
-        status = self.updates.check().as_dict()
+            linked = bool(self._link and self._link.connected)
+            pending_target = self._pending_update_target
+            enclosure_version = (
+                (self._pi_status or {}).get("version", "") if linked else ""
+            )
+        checked = self.updates.check(force=force)
+        status = checked.as_dict()
         status["enclosureVersion"] = enclosure_version
         # The two halves are meant to move together. Saying so is more useful
         # than letting someone update one and wonder why the other complains.
         status["versionsMatch"] = (
             not enclosure_version or enclosure_version == self.version
         )
+        plan = coordinate_update(checked, enclosure_version, pending_target)
+        status["coordination"] = plan.as_dict()
+        if pending_target and plan.synchronized:
+            self._remember_update_target("")
         return status
 
     def check_for_updates(self) -> Dict[str, Any]:
-        return self.updates.check(force=True).as_dict()
+        return self._update_status(force=True)
 
     def apply_update(self) -> Dict[str, Any]:
         return self.updates.apply()
+
+    def prepare_update(self, target_tag: str) -> Dict[str, Any]:
+        """Persist the release selected before the desktop is replaced."""
+
+        target = str(target_tag or "").strip().lstrip("v")
+        current = self._update_status(force=True)
+        plan = current.get("coordination") or {}
+        if (
+            plan.get("phase") != "desktop-update-required"
+            or compare(str(plan.get("targetVersion") or ""), target) != 0
+        ):
+            return {
+                "prepared": False,
+                "detail": plan.get("detail") or "That release is not the current update target.",
+                "coordination": plan,
+            }
+        self._remember_update_target(target)
+        return {
+            "prepared": True,
+            "targetVersion": target,
+            "detail": (
+                "Update target {} is saved. Install it and restart the desktop app; the Pi "
+                "will remain unchanged until then."
+            ).format(target),
+        }
+
+    def _remember_update_target(self, target: str) -> None:
+        with self._lock:
+            self._pending_update_target = str(target or "")
+        self.store.set("updateTarget", self._pending_update_target)
+
+    def apply_pi_update(self, target_tag: str) -> Dict[str, Any]:
+        """Start the Pi half only after the desktop is already at that release."""
+
+        target = str(target_tag or "").strip().lstrip("v")
+        current = self._update_status(force=True)
+        plan = current.get("coordination") or {}
+        if (
+            plan.get("phase") != "pi-update-required"
+            or compare(str(plan.get("targetVersion") or ""), target) != 0
+        ):
+            return {
+                "started": False,
+                "applied": False,
+                "detail": plan.get("detail") or "The ordered update plan did not permit this.",
+                "coordination": plan,
+            }
+
+        exact_tag = "v" + target
+        found = self.command("checkForUpdates", {"targetTag": exact_tag})
+        if (
+            compare(str(found.get("latest") or ""), exact_tag) != 0
+            or not found.get("available")
+            or not found.get("canApply")
+        ):
+            return {
+                "started": False,
+                "applied": False,
+                "detail": found.get("detail") or "PiTrac cannot install that exact release.",
+                "targetVersion": target,
+            }
+
+        self._remember_update_target(target)
+        try:
+            result = self.command("applyUpdate", {"targetTag": exact_tag})
+        except EasyConnectError:
+            client = self._link
+            if client is not None and client.connected:
+                self._remember_update_target("")
+                raise
+            # systemd restarts the Pi service from inside the command. The
+            # command socket normally disappears before a reply can arrive.
+            result = {"applied": True}
+        if not result.get("applied"):
+            self._remember_update_target("")
+            return {**result, "started": False, "targetVersion": target}
+        return {
+            **result,
+            "started": True,
+            "targetVersion": target,
+            "detail": (
+                "PiTrac is restarting into {}. Success will be confirmed only after it "
+                "reconnects and reports the same version as this app."
+            ).format(target),
+        }
 
     def _dashboard_url(self) -> str:
         """PiTrac's own dashboard, for anyone who wants the raw shot data."""

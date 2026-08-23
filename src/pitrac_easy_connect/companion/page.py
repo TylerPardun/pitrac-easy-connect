@@ -627,32 +627,29 @@ function doAction(id, button){
 function renderUpdate(update){
   const host=$("update");
   if(!update){ host.innerHTML=""; return; }
-
-  // The two halves are meant to move together. Updating the app and leaving
-  // the enclosure behind is the ordinary way that happens, and until now
-  // nothing said so -- the mismatch was computed and never shown.
-  if(update.versionsMatch === false && update.enclosureVersion){
-    host.innerHTML =
-      '<div class="update"><span>PiTrac is running ' + esc(update.enclosureVersion) +
-      ' and this app is ' + esc(update.installed) + '. They should match.</span>' +
-      '<button class="quiet" id="syncPi">Update PiTrac</button></div>';
-    $("syncPi").addEventListener("click", e=>run(e.target, async()=>{
-      host.innerHTML='<div class="update"><span>Checking what PiTrac can install…</span></div>';
-      const found = await api("/api/enclosure",{command:"checkForUpdates"});
-      if(!found.available || !found.canApply){
-        host.innerHTML='<div class="update"><span>'+
-          esc(found.detail || "PiTrac has no update to install.")+
-          ' You may need to install it on the enclosure by hand.</span></div>';
-        return;
-      }
-      host.innerHTML='<div class="update"><span>Updating PiTrac. It will restart, '+
-        'and the connection will drop for a moment.</span></div>';
-      const done = await api("/api/enclosure",{command:"applyUpdate"});
-      host.innerHTML='<div class="update"><span>'+esc(done.detail||"")+'</span></div>';
-    }));
+  const plan=update.coordination||{};
+  if(plan.phase==="desktop-update-required"){
+    host.innerHTML='<div class="update"><span>'+esc(plan.detail||update.detail||"")+'</span>'+
+      '<button class="quiet" id="getUpdate">Get desktop update</button></div>';
+    wireDesktopDownload(host,plan.downloadUrl||update.downloadUrl,plan.targetVersion);
     return;
   }
+  if(plan.phase==="pi-update-required"){
+    host.innerHTML='<div class="update"><span>'+esc(plan.detail||"")+'</span>'+
+      '<button class="quiet" id="syncPi">Update PiTrac to '+
+      esc(plan.targetVersion||"")+'</button></div>';
+    $("syncPi").addEventListener("click",e=>run(e.target,()=>beginPiUpdate(
+      plan.targetVersion,host,"update")));
+    return;
+  }
+  if(plan.phase==="verifying-pi" || plan.phase==="blocked"){
+    host.innerHTML='<div class="update"><span>'+esc(plan.detail||"")+'</span></div>';
+    return;
+  }
+  if(plan.phase){ host.innerHTML=""; return; }
 
+  // Compatibility for a source service old enough not to send a coordinated
+  // plan. It may update only itself; the Pi is never touched from this path.
   if(!update.available){ host.innerHTML=""; return; }
   // Offer to install only when this copy can actually install it; otherwise
   // send them to the download rather than promising something that will fail.
@@ -666,16 +663,38 @@ function renderUpdate(update){
     host.innerHTML=`<div class="update"><span>${esc(result.detail)}</span></div>`;
   }));
   const get=$("getUpdate");
-  if(get) get.addEventListener("click",()=>{
-    if(!update.downloadUrl) return;
+  if(get) wireDesktopDownload(host,update.downloadUrl);
+}
+
+function wireDesktopDownload(host,url,target){
+  const get=$("getUpdate");
+  if(!get) return;
+  get.addEventListener("click",e=>run(e.target,async()=>{
+    if(!url) return;
+    if(target){
+      const prepared=await api("/api/update/prepare",{targetTag:target});
+      if(!prepared.prepared){
+        host.innerHTML='<div class="update"><span>'+esc(prepared.detail||
+          "That update could not be prepared.")+'</span></div>';
+        return;
+      }
+    }
     host.innerHTML='<div class="update"><span>Copy this release address and open it when ready:<br>'+
-      '<code>'+esc(update.downloadUrl)+'</code></span>'+
+      '<code>'+esc(url)+'</code></span>'+
       '<button class="quiet" id="copyUpdate">Copy address</button></div>';
     $("copyUpdate").addEventListener("click",async e=>{
-      const copied=await copyText(update.downloadUrl);
+      const copied=await copyText(url);
       e.target.textContent=copied?"Copied":"Copy failed";
     });
-  });
+  }));
+}
+
+async function beginPiUpdate(target,host,style){
+  host.innerHTML='<div class="'+style+'"><span>Requesting the exact '+esc(target)+
+    ' Pi-service release. The connection will drop while PiTrac restarts.</span></div>';
+  const done=await api("/api/update/pi",{targetTag:target});
+  host.innerHTML='<div class="'+style+'"><span>'+esc(done.detail||"")+'</span></div>';
+  return done;
 }
 
 async function copyText(value){
@@ -785,24 +804,23 @@ $("cancelPair").addEventListener("click",()=>{ closeAsk(); refresh(); });
 // SSH into it. The app only asks; the Pi does the work and restarts itself.
 $("checkPiUpdate").addEventListener("click",e=>run(e.target, async()=>{
   const host=$("piUpdate");
-  const status=await api("/api/enclosure",{command:"checkForUpdates"});
-  if(!status.available){
-    host.innerHTML='<div class="note good">PiTrac is up to date ('+
-      esc(status.installed||"")+').</div>';
+  const status=await api("/api/update/check",{});
+  const plan=status.coordination||{};
+  if(plan.phase==="synchronized"){
+    host.innerHTML='<div class="note good">'+esc(plan.detail||"Versions match.")+'</div>';
     return;
   }
-  if(!status.canApply){
-    host.innerHTML='<div class="note">'+esc(status.detail)+'</div>';
+  if(plan.phase!=="pi-update-required"){
+    host.innerHTML='<div class="note">'+esc(plan.detail||status.detail||"")+'</div>';
+    renderUpdate(status);
     return;
   }
-  host.innerHTML='<div class="note">'+esc(status.detail)+'</div>'+
-    '<button class="quiet" id="doPiUpdate">Update PiTrac to '+esc(status.latest)+'</button>';
+  host.innerHTML='<div class="note">'+esc(plan.detail||"")+'</div>'+
+    '<button class="quiet" id="doPiUpdate">Update PiTrac to '+
+    esc(plan.targetVersion||"")+'</button>';
   $("doPiUpdate").addEventListener("click",ev=>run(ev.target, async()=>{
-    host.innerHTML='<div class="note">Updating. PiTrac will restart and the '+
-      'connection will drop for a moment.</div>';
-    const done=await api("/api/enclosure",{command:"applyUpdate"});
-    host.innerHTML='<div class="note '+(done.applied?"good":"bad")+'">'+
-      esc(done.detail||"")+'</div>';
+    const done=await beginPiUpdate(plan.targetVersion,host,"note");
+    if(!done.started) host.firstElementChild.classList.add("bad");
   }));
 }));
 

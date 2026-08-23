@@ -14,7 +14,9 @@ from pitrac_easy_connect.common.updates import (
     PACKAGED,
     SOURCE,
     UNKNOWN,
+    UpdateStatus,
     Updater,
+    coordinate_update,
 )
 from pitrac_easy_connect.common.versions import compare, is_newer, parse
 
@@ -236,14 +238,155 @@ def test_a_failed_check_still_produces_a_usable_status(tmp_path):
 
 
 def test_mismatched_versions_between_the_two_halves_are_flagged(tmp_path):
+    from types import SimpleNamespace
     from pitrac_easy_connect.companion.service import CompanionService
 
     service = CompanionService(config_path=tmp_path / "c.json", computer_name="PC")
     service.updates = Updater("0.2.0", root=tmp_path, fetch=fake_release("v0.2.0"))
+    service._link = SimpleNamespace(connected=True, stop=lambda: None)
     try:
         service._pi_status = {"version": "0.1.0"}
-        assert service.status()["update"]["versionsMatch"] is False
+        assert service._update_status()["versionsMatch"] is False
         service._pi_status = {"version": service.version}
-        assert service.status()["update"]["versionsMatch"] is True
+        assert service._update_status()["versionsMatch"] is True
     finally:
         service.close()
+
+
+# --- Coordinating both sides ---------------------------------------------
+
+
+def release_status(desktop, latest="v0.5.0", url="https://example.invalid/download"):
+    return UpdateStatus(
+        installed=desktop,
+        kind=PACKAGED,
+        latest=latest,
+        available=compare(latest, desktop) == 1,
+        download_url=url,
+    )
+
+
+def test_the_desktop_always_updates_before_an_older_pi():
+    plan = coordinate_update(release_status("0.4.2"), "0.3.0")
+
+    assert plan.phase == "desktop-update-required"
+    assert plan.target_version == "0.5.0"
+    assert plan.can_update_pi is False
+    assert "will not be updated first" in plan.detail
+
+
+def test_only_a_current_desktop_can_authorize_the_exact_pi_release():
+    plan = coordinate_update(release_status("0.5.0"), "0.3.0")
+
+    assert plan.phase == "pi-update-required"
+    assert plan.target_version == "0.5.0"
+    assert plan.can_update_pi is True
+
+
+def test_update_success_requires_both_sides_to_report_the_target():
+    status = release_status("0.5.0")
+
+    restarting = coordinate_update(status, "", pending_target="0.5.0")
+    wrong = coordinate_update(status, "0.4.0", pending_target="0.5.0")
+    done = coordinate_update(status, "0.5.0", pending_target="0.5.0")
+
+    assert restarting.phase == "verifying-pi"
+    assert restarting.synchronized is False
+    assert wrong.synchronized is False
+    assert done.phase == "synchronized"
+    assert done.synchronized is True
+
+
+def test_a_newer_pi_is_never_silently_downgraded():
+    plan = coordinate_update(release_status("0.5.0"), "0.6.0")
+
+    assert plan.phase == "blocked"
+    assert plan.can_update_pi is False
+    assert "not downgraded" in plan.detail
+
+
+def test_companion_sends_the_same_exact_tag_to_check_and_apply(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from pitrac_easy_connect.companion.service import CompanionService
+
+    service = CompanionService(
+        config_path=tmp_path / "c.json", computer_name="PC", version="0.5.0"
+    )
+    service.updates = Updater("0.5.0", root=tmp_path, fetch=fake_release("v0.5.0"))
+    service._pi_status = {"version": "0.3.0"}
+    link = SimpleNamespace(connected=True, stop=lambda: None)
+    service._link = link
+    calls = []
+
+    def command(name, arguments=None):
+        calls.append((name, arguments))
+        if name == "checkForUpdates":
+            return {
+                "latest": "v0.5.0", "available": True, "canApply": True,
+                "detail": "ready",
+            }
+        return {"applied": True, "version": "v0.5.0"}
+
+    monkeypatch.setattr(service, "command", command)
+    try:
+        result = service.apply_pi_update("0.5.0")
+        assert result["started"] is True
+        assert calls == [
+            ("checkForUpdates", {"targetTag": "v0.5.0"}),
+            ("applyUpdate", {"targetTag": "v0.5.0"}),
+        ]
+        link.connected = False
+        assert service._update_status()["coordination"]["phase"] == "verifying-pi"
+    finally:
+        service.close()
+
+
+def test_companion_refuses_to_touch_pi_while_desktop_is_behind(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from pitrac_easy_connect.companion.service import CompanionService
+
+    service = CompanionService(
+        config_path=tmp_path / "c.json", computer_name="PC", version="0.4.2"
+    )
+    service.updates = Updater("0.4.2", root=tmp_path, fetch=fake_release("v0.5.0"))
+    service._pi_status = {"version": "0.3.0"}
+    service._link = SimpleNamespace(connected=True, stop=lambda: None)
+    touched = []
+    monkeypatch.setattr(service, "command", lambda *args: touched.append(args))
+    try:
+        result = service.apply_pi_update("0.5.0")
+        assert result["started"] is False
+        assert touched == []
+        assert "desktop" in result["detail"].lower()
+    finally:
+        service.close()
+
+
+def test_update_target_survives_desktop_restart_and_latest_release_changing(tmp_path):
+    from types import SimpleNamespace
+    from pitrac_easy_connect.companion.service import CompanionService
+
+    config = tmp_path / "c.json"
+    old = CompanionService(config_path=config, computer_name="PC", version="0.4.2")
+    old.updates = Updater("0.4.2", root=tmp_path, fetch=fake_release("v0.5.0"))
+    old._link = SimpleNamespace(connected=True, stop=lambda: None)
+    old._pi_status = {"version": "0.3.0"}
+    try:
+        prepared = old.prepare_update("0.5.0")
+        assert prepared["prepared"] is True
+        assert old.store.get("updateTarget") == "0.5.0"
+    finally:
+        old.close()
+
+    # A 0.5.1 release appears while the owner is replacing/restarting the
+    # desktop. The in-flight transaction must still put both sides on 0.5.0.
+    current = CompanionService(config_path=config, computer_name="PC", version="0.5.0")
+    current.updates = Updater("0.5.0", root=tmp_path, fetch=fake_release("v0.5.1"))
+    current._link = SimpleNamespace(connected=True, stop=lambda: None)
+    current._pi_status = {"version": "0.3.0"}
+    try:
+        plan = current._update_status(force=True)["coordination"]
+        assert plan["phase"] == "pi-update-required"
+        assert plan["targetVersion"] == "0.5.0"
+    finally:
+        current.close()

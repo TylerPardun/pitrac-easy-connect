@@ -12,7 +12,7 @@ includes PiTrac's dashboard, shot history, and a practice range.
 A five-step guide walks you through the first setup. If you move the enclosure to another home, you only need to choose the new Wi-Fi network. You do not need to reconfigure PiTrac.
 
 - **Download:** <https://tylerpardun.github.io/pitrac-easy-connect/>
-- **Version:** 0.4.2
+- **Version:** 0.4.3
 - **License:** [MIT](LICENSE)
 
 ![The practice range](media/range.png)
@@ -163,6 +163,13 @@ This proves where a file came from. It is not the certificate that would stop
 the warnings above; those need paid programmes from Microsoft and Apple. The
 enclosure enforces the same idea for itself and refuses an update whose bytes
 do not match the checksum its release publishes.
+
+Easy-Connect coordinates its two updates in one direction. If a newer release
+exists, install and restart the desktop app first. Only that current desktop
+may ask the enclosure to install the exact same release tag. The app reports
+success only after the enclosure reconnects and both sides report that version.
+The versioned `.pyz` attached to each release is this verified Pi-service
+payload; it is not a Linux desktop application.
 
 Open the app and follow five steps: find the enclosure, choose your simulator,
 open it, send a test shot, and play. The guide does not appear again after

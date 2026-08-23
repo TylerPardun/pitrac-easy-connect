@@ -36,12 +36,13 @@ import sys
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
-from .versions import is_newer
+from .versions import compare, is_newer, parse
 
 #: Where releases are published. Overridable so the update path can be
 #: exercised against a stand-in rather than against GitHub.
@@ -88,6 +89,186 @@ class UpdateStatus:
             "downloadUrl": self.download_url,
             "checkedAt": self.checked_at,
         }
+
+
+@dataclass
+class UpdateCoordination:
+    """The one safe next step for bringing desktop and enclosure together."""
+
+    phase: str
+    desktop_version: str
+    enclosure_version: str
+    latest_version: str
+    target_version: str = ""
+    synchronized: bool = False
+    can_update_pi: bool = False
+    detail: str = ""
+    download_url: str = ""
+
+    def as_dict(self) -> Dict[str, Any]:
+        return {
+            "phase": self.phase,
+            "desktopVersion": self.desktop_version,
+            "enclosureVersion": self.enclosure_version,
+            "latestVersion": self.latest_version,
+            "targetVersion": self.target_version,
+            "synchronized": self.synchronized,
+            "canUpdatePi": self.can_update_pi,
+            "detail": self.detail,
+            "downloadUrl": self.download_url,
+        }
+
+
+def coordinate_update(
+    desktop: UpdateStatus,
+    enclosure_version: str,
+    pending_target: str = "",
+) -> UpdateCoordination:
+    """Choose one update direction after comparing all three versions.
+
+    A Pi update is permitted only when this desktop already runs the exact
+    latest release. That makes it impossible for an older desktop to send the
+    enclosure ahead of itself. A pending target survives the expected link
+    drop while the Pi restarts, and success is reported only after the Pi has
+    reconnected and identified itself as that target.
+    """
+
+    installed = str(desktop.installed or "")
+    enclosure = str(enclosure_version or "")
+    latest = str(desktop.latest or "")
+    pending = str(pending_target or "")
+
+    if pending:
+        pending = pending.lstrip("v")
+        desktop_to_pending = compare(installed, pending)
+        if desktop_to_pending is None:
+            return UpdateCoordination(
+                "blocked", installed, enclosure, latest, pending,
+                detail="The saved update target is not a valid version.",
+            )
+        if desktop_to_pending < 0:
+            return UpdateCoordination(
+                "desktop-update-required", installed, enclosure, latest, pending,
+                detail=(
+                    "Update this desktop app to {}, close the old copy, and restart the new "
+                    "copy. PiTrac will not be updated first."
+                ).format(pending),
+                download_url=desktop.download_url,
+            )
+        if desktop_to_pending > 0:
+            return UpdateCoordination(
+                "blocked", installed, enclosure, latest, pending,
+                detail=(
+                    "This desktop ({}) is newer than the saved update target ({}). Start a "
+                    "new update check before changing PiTrac."
+                ).format(installed, pending),
+                download_url=desktop.download_url,
+            )
+        if not enclosure:
+            return UpdateCoordination(
+                "verifying-pi", installed, enclosure, latest, pending,
+                detail=(
+                    "Waiting for PiTrac to connect and report its version before continuing "
+                    "the {} update."
+                ).format(pending),
+            )
+        enclosure_to_pending = compare(enclosure, pending)
+        if enclosure_to_pending == 0:
+            return UpdateCoordination(
+                "synchronized", installed, enclosure, latest, pending,
+                synchronized=True,
+                detail="This app and PiTrac are both running {}.".format(pending),
+            )
+        if enclosure_to_pending == -1:
+            return UpdateCoordination(
+                "pi-update-required", installed, enclosure, latest, pending,
+                can_update_pi=True,
+                detail="The desktop is current. PiTrac can now be updated to exactly {}.".format(
+                    pending
+                ),
+                download_url=desktop.download_url,
+            )
+        return UpdateCoordination(
+            "blocked", installed, enclosure, latest, pending,
+            detail=(
+                "PiTrac reported {} while the saved update target is {}. It was not "
+                "downgraded or changed."
+            ).format(enclosure, pending),
+            download_url=desktop.download_url,
+        )
+
+    if not latest or parse(latest) is None:
+        return UpdateCoordination(
+            "unavailable", installed, enclosure, latest,
+            detail=desktop.detail or "The latest release could not be determined.",
+            download_url=desktop.download_url,
+        )
+
+    target = latest.lstrip("v")
+    desktop_order = compare(installed, target)
+    if desktop_order is None:
+        return UpdateCoordination(
+            "blocked", installed, enclosure, latest, target,
+            detail="The desktop version could not be compared with the latest release.",
+            download_url=desktop.download_url,
+        )
+    if desktop_order < 0:
+        return UpdateCoordination(
+            "desktop-update-required", installed, enclosure, latest, target,
+            detail=(
+                "Update this desktop app to {}, close the old copy, and restart the new copy. "
+                "PiTrac will not be updated first."
+            ).format(target),
+            download_url=desktop.download_url,
+        )
+    if desktop_order > 0:
+        return UpdateCoordination(
+            "blocked", installed, enclosure, latest, target,
+            detail=(
+                "This desktop ({}) is newer than the latest published release ({}), so "
+                "PiTrac will not be changed automatically."
+            ).format(installed, target),
+            download_url=desktop.download_url,
+        )
+
+    if not enclosure:
+        return UpdateCoordination(
+            "reconnect-required", installed, enclosure, latest, target,
+            detail="Connect to PiTrac before continuing so its installed version can be verified.",
+            download_url=desktop.download_url,
+        )
+
+    enclosure_order = compare(enclosure, target)
+    if enclosure_order is None:
+        return UpdateCoordination(
+            "blocked", installed, enclosure, latest, target,
+            detail="PiTrac reported an unreadable version, so it was not updated.",
+            download_url=desktop.download_url,
+        )
+    if enclosure_order < 0:
+        return UpdateCoordination(
+            "pi-update-required", installed, enclosure, latest, target,
+            can_update_pi=True,
+            detail="The desktop is current. PiTrac can now be updated to exactly {}.".format(
+                target
+            ),
+            download_url=desktop.download_url,
+        )
+    if enclosure_order > 0:
+        return UpdateCoordination(
+            "blocked", installed, enclosure, latest, target,
+            detail=(
+                "PiTrac ({}) is newer than the latest published release ({}), so it was "
+                "not downgraded."
+            ).format(enclosure, target),
+            download_url=desktop.download_url,
+        )
+    return UpdateCoordination(
+        "synchronized", installed, enclosure, latest, target,
+        synchronized=True,
+        detail="This app and PiTrac are both running {}.".format(target),
+        download_url=desktop.download_url,
+    )
 
 
 def _run_git(arguments, cwd: Path, timeout: float = GIT_TIMEOUT):
@@ -289,6 +470,19 @@ MIN_ARCHIVE_BYTES = 50 * 1024
 MAX_ARCHIVE_BYTES = 80 * 1024 * 1024
 
 
+def _requested_tag(value: str) -> str:
+    """A validated release tag in the form GitHub publishes."""
+
+    text = str(value or "").strip()
+    if parse(text) is None:
+        raise ValueError("The requested release tag is not a valid version.")
+    return text if text.startswith("v") else "v" + text
+
+
+def _archive_name(tag: str) -> str:
+    return "PiTrac-Easy-Connect-{}{}".format(str(tag).lstrip("v"), ARCHIVE_SUFFIX)
+
+
 def _let_others_read(root: Path) -> None:
     """Open the staged tree just far enough for an unprivileged check.
 
@@ -353,20 +547,34 @@ class ArchiveUpdater:
         self._api = (api_base or API_BASE).rstrip("/")
         self._lock = threading.RLock()
 
-    def check(self) -> UpdateStatus:
+    def check(self, target_tag: Optional[str] = None) -> UpdateStatus:
         try:
-            release = self._release()
+            requested = _requested_tag(target_tag) if target_tag else ""
+        except ValueError as exc:
+            return UpdateStatus(self.installed, PACKAGED, detail=str(exc))
+        try:
+            release = self._release(requested or None)
         except Exception:
             return UpdateStatus(self.installed, PACKAGED, detail="Could not check for updates.")
 
         tag = str(release.get("tag_name") or "")
+        if requested and compare(tag, requested) != 0:
+            return UpdateStatus(
+                self.installed, PACKAGED, latest=requested,
+                detail="The update service did not return the requested release {}.".format(
+                    requested
+                ),
+            )
         if not tag or not is_newer(tag, self.installed):
             return UpdateStatus(self.installed, PACKAGED, latest=tag or self.installed,
                                 detail="Up to date.")
-        if not self._archive_url(release):
+        if not self._archive_url(release, tag):
             return UpdateStatus(
                 self.installed, PACKAGED, latest=tag, available=True, can_apply=False,
-                detail="Version {} is available, but it has no archive to install.".format(tag),
+                detail=(
+                    "Version {} is available, but it has no matching Pi-service archive "
+                    "to install."
+                ).format(tag),
                 download_url=str(release.get("html_url") or ""),
             )
         return UpdateStatus(
@@ -375,20 +583,34 @@ class ArchiveUpdater:
             download_url=str(release.get("html_url") or ""),
         )
 
-    def apply(self) -> Dict[str, Any]:
+    def apply(self, target_tag: Optional[str] = None) -> Dict[str, Any]:
         with self._lock:
             try:
-                release = self._release()
+                requested = _requested_tag(target_tag) if target_tag else ""
+            except ValueError as exc:
+                return {"applied": False, "detail": str(exc)}
+            try:
+                release = self._release(requested or None)
             except Exception as exc:
                 return {"applied": False, "detail": "Could not reach the update service: {}".format(exc)}
 
             tag = str(release.get("tag_name") or "")
+            if requested and compare(tag, requested) != 0:
+                return {
+                    "applied": False,
+                    "detail": "The update service did not return the requested release {}.".format(
+                        requested
+                    ),
+                }
             if not tag or not is_newer(tag, self.installed):
                 return {"applied": False, "detail": "Already up to date."}
 
-            url = self._archive_url(release)
+            url = self._archive_url(release, tag)
             if not url:
-                return {"applied": False, "detail": "That release has nothing to install."}
+                return {
+                    "applied": False,
+                    "detail": "That release has no matching Pi-service archive to install.",
+                }
 
             try:
                 blob = self._fetch(url)
@@ -399,7 +621,7 @@ class ArchiveUpdater:
                 return {"applied": False,
                         "detail": "The downloaded file is not the right size to be an update."}
 
-            expected = self._archive_digest(release)
+            expected = self._archive_digest(release, tag)
             if expected:
                 actual = hashlib.sha256(blob).hexdigest()
                 if actual != expected:
@@ -483,24 +705,30 @@ class ArchiveUpdater:
 
     # --- The pieces ------------------------------------------------------
 
-    def _release(self) -> Dict[str, Any]:
+    def _release(self, target_tag: Optional[str] = None) -> Dict[str, Any]:
+        endpoint = (
+            "releases/tags/{}".format(urllib.parse.quote(target_tag, safe=""))
+            if target_tag
+            else "releases/latest"
+        )
         request = urllib.request.Request(
-            "{}/repos/{}/releases/latest".format(self._api, self.repository),
+            "{}/repos/{}/{}".format(self._api, self.repository, endpoint),
             headers={"Accept": "application/vnd.github+json", "User-Agent": "PiTrac"},
         )
         with urllib.request.urlopen(request, timeout=CHECK_TIMEOUT) as response:
             return json.loads(response.read().decode("utf-8"))
 
     @staticmethod
-    def _archive_url(release: Dict[str, Any]) -> str:
+    def _archive_url(release: Dict[str, Any], tag: str = "") -> str:
+        expected = _archive_name(tag) if tag else ""
         for asset in release.get("assets") or []:
             name = str(asset.get("name") or "")
-            if name.endswith(ARCHIVE_SUFFIX):
+            if name == expected or (not expected and name.endswith(ARCHIVE_SUFFIX)):
                 return str(asset.get("browser_download_url") or "")
         return ""
 
     @staticmethod
-    def _archive_digest(release: Dict[str, Any]) -> str:
+    def _archive_digest(release: Dict[str, Any], tag: str = "") -> str:
         """The sha256 the release API states for the archive, if it states one.
 
         The listing and the download come from different hosts: the API is
@@ -509,9 +737,10 @@ class ArchiveUpdater:
         the release actually says it contains, not merely arrive over TLS.
         """
 
+        expected = _archive_name(tag) if tag else ""
         for asset in release.get("assets") or []:
             name = str(asset.get("name") or "")
-            if name.endswith(ARCHIVE_SUFFIX):
+            if name == expected or (not expected and name.endswith(ARCHIVE_SUFFIX)):
                 digest = str(asset.get("digest") or "")
                 return digest[7:] if digest.startswith("sha256:") else ""
         return ""

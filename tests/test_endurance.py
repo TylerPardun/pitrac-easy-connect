@@ -163,6 +163,7 @@ def test_a_second_computer_cannot_take_over_a_busy_enclosure(rig, tmp_path):
         simulator_ports={Simulator.GSPRO: rig.mock.address[1]},
         discovery_port=rig.pi.discovery.port,
         computer_name="Someone else's laptop",
+        discovery_targets=["127.0.0.1"],
     )
     try:
         intruder.search(timeout=2.0)
@@ -189,6 +190,7 @@ def test_the_owner_can_hand_the_enclosure_to_the_second_computer(rig, tmp_path):
         simulator_ports={Simulator.GSPRO: rig.mock.address[1]},
         discovery_port=rig.pi.discovery.port,
         computer_name="Kitchen laptop",
+        discovery_targets=["127.0.0.1"],
     )
     try:
         second.search(timeout=2.0)

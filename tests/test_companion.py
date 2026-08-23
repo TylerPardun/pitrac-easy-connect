@@ -61,6 +61,7 @@ class Rig:
             simulator_ports={simulator: self.mock.address[1]},
             discovery_port=self.pi.discovery.port,
             computer_name="Sim Room PC",
+            discovery_targets=["127.0.0.1"],
         )
         self.companion.store.set("simulator", simulator.value)
 
@@ -258,6 +259,7 @@ def test_the_pairing_survives_a_companion_restart(rig, tmp_path):
         simulator_ports={Simulator.GSPRO: rig.mock.address[1]},
         discovery_port=rig.pi.discovery.port,
         computer_name="Sim Room PC",
+        discovery_targets=["127.0.0.1"],
     )
     try:
         assert restarted.paired_enclosures == stored
@@ -302,6 +304,33 @@ def test_changed_ip_reconnects_through_the_saved_hostname(rig, monkeypatch):
     rig.companion.connect(device_id)
     assert rig.wait_linked()
     assert attempted[:2] == ["192.0.2.99", "localhost"]
+
+
+def test_a_dropped_working_address_is_retried_before_stale_fallbacks(monkeypatch):
+    """A healthy link dropping is not evidence that DNS/IP selection failed."""
+
+    from pitrac_easy_connect.common import link
+    from pitrac_easy_connect.companion.link_client import CompanionLinkClient
+
+    client = CompanionLinkClient(
+        "working.local", 1234, "pairing", "secret", "1.0.0", "PC",
+        on_shot=lambda *_args: {}, reconnect_seconds=0,
+        fallback_hosts=["stale.local"],
+    )
+    attempted = []
+
+    def connect_once():
+        attempted.append(client.host)
+        if len(attempted) == 1:
+            client.connected = True
+            raise link.LinkClosed("the established socket dropped")
+        client._stop.set()
+        raise ConnectionRefusedError("stop the test")
+
+    monkeypatch.setattr(client, "_connect_once", connect_once)
+    client._run()
+
+    assert attempted == ["working.local", "working.local"]
 
 
 # --- The chain ------------------------------------------------------------
@@ -669,12 +698,22 @@ def test_a_search_that_cannot_send_says_so(rig, monkeypatch):
             raise OSError(65, "No route to host")
 
     monkeypatch.setattr(socket_module, "socket", Blocked)
+    # This test exercises a LAN failure, so use a real network target even
+    # though the rest of the simulated rig is deliberately loopback-only.
+    rig.companion.discovery_targets = ["192.0.2.255", "127.0.0.1"]
     result = rig.companion.search_payload(timeout=0.2)
 
     assert result["enclosures"] == []
     problem = result["problem"]
     assert problem, "an empty result with no reason is the bug"
-    assert "Local Network" in problem["message"] or "Local Network" in problem["nextStep"]
+    import sys
+
+    if sys.platform == "darwin":
+        assert problem["kind"] == "permission"
+        assert "Local Network" in problem["message"] + problem["nextStep"]
+    else:
+        assert problem["kind"] == "network"
+        assert "Local Network" not in problem["message"] + problem["nextStep"]
 
 
 def test_a_search_that_sends_and_hears_nothing_reports_no_problem(rig):

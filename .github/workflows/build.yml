@@ -346,9 +346,32 @@ jobs:
           # the default ninety days is ninety days of storing them twice.
           retention-days: 7
 
+  pi-archive:
+    name: Raspberry Pi service archive
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: "3.13"
+      - name: Build and check the Pi-service archive
+        run: |
+          ./packaging/build-pi-archive.sh
+          VERSION=$(PYTHONPATH=src python3 -c 'import pitrac_easy_connect; print(pitrac_easy_connect.__version__)')
+          ARCHIVE="dist/PiTrac-Easy-Connect-$VERSION.pyz"
+          python3 "$ARCHIVE" --version
+          python3 -m zipfile -t "$ARCHIVE"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: PiTrac-pi-service
+          path: dist/PiTrac-Easy-Connect-*.pyz
+          if-no-files-found: error
+          retention-days: 7
+
   release:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [build]
+    needs: [build, pi-archive]
     runs-on: ubuntu-latest
     permissions:
       # The only job that writes anything back to the repository.
@@ -378,7 +401,16 @@ jobs:
       - name: Gather what is being released
         run: |
           mkdir -p release
-          find artifacts -type f -name '*.zip' -exec cp {} release/ \;
+          find artifacts -type f \( -name '*.zip' -o -name '*.pyz' \) -exec cp {} release/ \;
+          EXPECTED=(
+            PiTrac-Easy-Connect-macos-apple-silicon.zip
+            PiTrac-Easy-Connect-macos-intel.zip
+            PiTrac-Easy-Connect-windows.zip
+            PiTrac-Easy-Connect-linux-x86_64.zip
+            "PiTrac-Easy-Connect-${GITHUB_REF_NAME#v}.pyz"
+          )
+          [ "$(find release -maxdepth 1 -type f | wc -l)" -eq "${#EXPECTED[@]}" ]
+          for asset in "${EXPECTED[@]}"; do test -s "release/$asset"; done
           ls -l release
 
       - name: Write the checksums
@@ -397,6 +429,7 @@ jobs:
         with:
           subject-path: |
             release/*.zip
+            release/*.pyz
 
       - name: Publish the release
         uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228  # v3.0.2
@@ -420,6 +453,14 @@ jobs:
             **Linux x86-64** — `PiTrac-Easy-Connect-linux-x86_64.zip`. Install
             WebKitGTK 4.1 from your distribution, unzip it, and run
             `PiTrac Easy-Connect`.
+
+            `PiTrac-Easy-Connect-<version>.pyz` is the verified
+            Raspberry Pi service-update payload used by Easy-Connect. It is
+            not a desktop application or a Linux desktop download.
+
+            Existing users must replace and restart the desktop app first.
+            Let that 0.4.3 desktop app update the enclosure afterward; it pins
+            both halves of the update to this exact release.
 
             ### Checking what you downloaded
 
