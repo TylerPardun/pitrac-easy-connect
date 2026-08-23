@@ -42,7 +42,10 @@ def running_copy(tmp_path):
 def test_a_second_launch_shows_the_copy_that_is_already_running(running_copy, tmp_path):
     port, first_service = running_copy
     activated = []
-    first_service.register_window_activator(lambda: activated.append("front"))
+    activation_finished = threading.Event()
+    first_service.register_window_activator(
+        lambda: (activated.append("front"), activation_finished.set())
+    )
     argv = ["--port", str(port), "--config", str(tmp_path / "second.json"),
             "--discovery-port", "0"]
 
@@ -52,9 +55,34 @@ def test_a_second_launch_shows_the_copy_that_is_already_running(running_copy, tm
         code = app_module.main(argv)
 
     assert code == 0, "a second launch must not exit as a failure"
+    assert activation_finished.wait(1)
     assert activated == ["front"]
     assert first_service.window_activation_requests == 1
     assert app_module._already_running(port) is True, "the original server must remain active"
+
+
+def test_a_second_launch_does_not_wait_for_the_gui_thread(running_copy, tmp_path):
+    port, first_service = running_copy
+    activation_started = threading.Event()
+    release_activation = threading.Event()
+
+    def slow_gui_handoff():
+        activation_started.set()
+        release_activation.wait(2)
+
+    first_service.register_window_activator(slow_gui_handoff)
+    argv = ["--port", str(port), "--config", str(tmp_path / "second.json"),
+            "--discovery-port", "0"]
+
+    try:
+        with mock.patch.object(
+            app_module, "_show_native", side_effect=AssertionError("opened a second window")
+        ):
+            assert app_module.main(argv) == 0
+        assert activation_started.wait(1)
+        assert first_service.window_activation_status()["completed"] == 0
+    finally:
+        release_activation.set()
 
 
 def test_a_port_held_by_something_else_does_not_stop_the_app(tmp_path):
@@ -139,7 +167,11 @@ def test_an_activation_that_arrives_before_the_window_is_ready_is_queued(running
     assert service.window_activation_requests == 1
 
     activated = []
-    service.register_window_activator(lambda: activated.append("front"))
+    activation_finished = threading.Event()
+    service.register_window_activator(
+        lambda: (activated.append("front"), activation_finished.set())
+    )
+    assert activation_finished.wait(1)
     assert activated == ["front"]
 
 

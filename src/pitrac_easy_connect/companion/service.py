@@ -94,6 +94,8 @@ class CompanionService:
         self._window_closer: Optional[Callable[[], None]] = None
         self._pending_window_activation = False
         self._window_activation_requests = 0
+        self._window_activation_completed = 0
+        self._window_activation_error: Optional[str] = None
         self.computer_name = computer_name or default_computer_name()
         # Always hold a port for every simulator. A caller that overrides only
         # one must not leave the other unmapped, or switching to it later fails
@@ -205,8 +207,9 @@ class CompanionService:
             self._window_activator = activator
             pending = self._pending_window_activation
             self._pending_window_activation = False
+            request_number = self._window_activation_requests
         if pending:
-            activator()
+            self._dispatch_window_activation(activator, request_number)
 
     def register_window_closer(self, closer: Callable[[], None]) -> None:
         with self._lock:
@@ -219,17 +222,50 @@ class CompanionService:
             closer()
 
     def activate_window(self) -> Dict[str, Any]:
-        """Raise this process's one native window for a second app launch."""
+        """Queue this process's native window to be raised for a second launch."""
 
         with self._lock:
             self._window_activation_requests += 1
             activator = self._window_activator
+            count = self._window_activation_requests
             if activator is None:
                 self._pending_window_activation = True
                 return {"activated": False, "queued": True}
-            count = self._window_activation_requests
-        activator()
-        return {"activated": True, "queued": False, "requests": count}
+        # Window APIs marshal work onto the OS GUI thread. Never make the
+        # authenticated loopback response wait for that handoff: a second app
+        # launch must exit immediately even when a desktop backend is busy.
+        self._dispatch_window_activation(activator, count)
+        return {"activated": False, "queued": True, "requests": count}
+
+    def _dispatch_window_activation(
+        self, activator: Callable[[], None], request_number: int
+    ) -> None:
+        def dispatch() -> None:
+            try:
+                activator()
+            except Exception as exc:
+                with self._lock:
+                    self._window_activation_error = "{}: {}".format(
+                        type(exc).__name__, exc
+                    )
+            else:
+                with self._lock:
+                    self._window_activation_completed = max(
+                        self._window_activation_completed, request_number
+                    )
+                    self._window_activation_error = None
+
+        threading.Thread(
+            target=dispatch, name="pitrac-window-activation", daemon=True
+        ).start()
+
+    def window_activation_status(self) -> Dict[str, Any]:
+        with self._lock:
+            return {
+                "requests": self._window_activation_requests,
+                "completed": self._window_activation_completed,
+                "error": self._window_activation_error,
+            }
 
     @property
     def window_activation_requests(self) -> int:

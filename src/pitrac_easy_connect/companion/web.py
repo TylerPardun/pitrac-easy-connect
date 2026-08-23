@@ -108,7 +108,13 @@ class CompanionHandler(BaseHTTPRequestHandler):
             )
             return
         if path == "/api/page-check":
-            self._json(HTTPStatus.OK, {"requests": self.server.request_counts()})
+            self._json(
+                HTTPStatus.OK,
+                {
+                    "requests": self.server.request_counts(),
+                    "activation": self.server.service.window_activation_status(),
+                },
+            )
             return
         self._json(HTTPStatus.NOT_FOUND, {"error": {"failed": "That page does not exist"}})
 

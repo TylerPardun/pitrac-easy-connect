@@ -483,9 +483,19 @@ jobs:
             echo "::error::the second Linux launch exited with a failure"; exit 1
           fi
           kill -0 $APP_PID
-          PAGE_CHECK=$(curl -fsS -m 5 -H "X-PiTrac-App: 1" http://127.0.0.1:8899/api/page-check)
+          for _ in $(seq 1 20); do
+            PAGE_CHECK=$(curl -fsS -m 5 -H "X-PiTrac-App: 1" http://127.0.0.1:8899/api/page-check)
+            if echo "$PAGE_CHECK" | grep -q '"completed":1'; then break; fi
+            sleep 0.25
+          done
           echo "$PAGE_CHECK" | grep -q 'POST /api/activate' || {
             echo "::error::the second Linux launch did not activate the original"; exit 1;
+          }
+          echo "$PAGE_CHECK" | grep -q '"completed":1' || {
+            echo "::error::the Linux window did not complete its native activation"; exit 1;
+          }
+          echo "$PAGE_CHECK" | grep -q '"error":null' || {
+            echo "::error::the Linux native activation reported an error: $PAGE_CHECK"; exit 1;
           }
           BROWSERS_AFTER=$(pgrep -x 'firefox|chromium|google-chrome' 2>/dev/null | sort || true)
           test "$BROWSERS_AFTER" = "$BROWSERS_BEFORE" || {

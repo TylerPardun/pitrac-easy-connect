@@ -1,6 +1,7 @@
 """The installed desktop has one window path and explicit lifecycle states."""
 
 from pathlib import Path
+import threading
 
 import pytest
 
@@ -24,10 +25,11 @@ def test_each_window_lifecycle_state_is_reported(tmp_path):
 def test_native_is_reported_only_after_the_creation_callback(tmp_path, monkeypatch):
     service = CompanionService(config_path=tmp_path / "c.json", discovery_port=0)
     seen = []
+    focused = threading.Event()
 
     def create(_url, on_created, on_activation_ready, on_close_ready, on_started):
         seen.append(service.window_state()["state"])
-        on_activation_ready(lambda: seen.append("focused"))
+        on_activation_ready(lambda: (seen.append("focused"), focused.set()))
         on_close_ready(lambda: seen.append("closed"))
         assert on_started is None
         on_created()
@@ -38,6 +40,7 @@ def test_native_is_reported_only_after_the_creation_callback(tmp_path, monkeypat
         assert app._show_native(service, "http://127.0.0.1:1") == 0
         assert seen == ["starting", "native"]
         service.activate_window()
+        assert focused.wait(1)
         assert seen[-1] == "focused"
         service.close_native_window()
         assert seen[-1] == "closed"
