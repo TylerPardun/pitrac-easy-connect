@@ -524,7 +524,7 @@ const WIZARD=[
   {key:"test",  label:"Test shot"},
   {key:"done",  label:"Ready"},
 ];
-let wizard={started:false, simPicked:false};
+let wizard={started:false, simPicked:false, reachedEnclosure:false};
 
 const CANNOT_FIND=`<ol>
   <li>Check the Raspberry Pi has power and its light is on.</li>
@@ -573,14 +573,19 @@ function wizardView(data){
     why:data.simulator==="gspro"
       ? "In GSPro, open the Open Connect screen so it is waiting for a device."
       : "In E6 Connect, start a session and step onto the tee.",
+    // Finish later, because these last steps need a simulator running and
+    // the rest of the app does not. Without it, anyone who opened this
+    // before starting GSPro was held here.
     actions:[{label:"Check again", id:"check", primary:true},
-             {label:"Back", id:"wizBackSim", primary:false}]};
+             {label:"Back", id:"wizBackSim", primary:false},
+             {label:"Finish later", id:"wizFinish", primary:false}]};
 
   if(!sim.ready) return {step:"test",
     dot:"busy", head:"One test shot", sub:esc(data.simulatorLabel)+" · "+name,
     why:"This proves the whole path from the launch monitor to your simulator. "+
         "It is a real shot, so close any open round first.",
-    actions:[{label:"Send a test shot", id:"test", primary:true}]};
+    actions:[{label:"Send a test shot", id:"test", primary:true},
+             {label:"Finish later", id:"wizFinish", primary:false}]};
 
   return {step:"done",
     dot:"good", head:"You're ready to play", sub:esc(data.simulatorLabel)+" · "+name,
@@ -693,7 +698,24 @@ function render(data){
   const linkedNow=!!(data.link && data.link.connected);
   // Once setup is done the tabs stay, whether or not PiTrac is connected now.
   // Hiding them on a dropped link strands whoever was reading their numbers.
-  $("tabs").classList.toggle("hidden", guiding);
+  // The guide used to hide the tabs for the whole of setup, so that a first
+  // run had nowhere confusing to wander off to. That was right for the first
+  // two steps and wrong after them: the remaining steps are about the
+  // simulator, and the range, the shot history and PiTrac's own pages all
+  // work with no simulator at all. Anyone without GSPro open was held on the
+  // guide with no way past it and no way to reach the range -- which is the
+  // one part of this that needs no simulator, no account and no internet.
+  //
+  // So the tabs come back once the enclosure has connected, which is the
+  // moment there is something worth reaching. Latched, because a link that
+  // drops for a moment should not take the navigation with it.
+  if(linkedNow) wizard.reachedEnclosure = true;
+  // pairedEnclosures survives a restart, so someone who linked once, quit
+  // before finishing, and reopened with the enclosure switched off still has
+  // their navigation. The session latch alone would have taken it away again.
+  const beenHere = wizard.reachedEnclosure || !!(data.pairedEnclosures || []).length;
+  const gated = guiding && !beenHere;
+  $("tabs").classList.toggle("hidden", gated);
   // The guide is one question at a time and reads better in a narrow
   // column; everything after it is a desktop window with work in it.
   document.body.classList.toggle("guiding", guiding);
@@ -1135,7 +1157,7 @@ $("showRaw").addEventListener("click",e=>run(e.target, async()=>{
 }));
 
 $("setupAgain").addEventListener("click",e=>run(e.target, async()=>{
-  wizard={started:true, simPicked:false};
+  wizard={started:true, simPicked:false, reachedEnclosure:false};
   await api("/api/finish-setup",{done:false});
 }));
 

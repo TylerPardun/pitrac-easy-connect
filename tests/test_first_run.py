@@ -103,11 +103,62 @@ def test_a_pi_that_was_never_on_wifi_is_explained():
     assert "PiTrac-" in help_text
 
 
-def test_nothing_else_is_clickable_during_setup():
+def test_nothing_else_is_clickable_until_the_enclosure_is_found():
+    """Deliberately narrowed, from "for the whole of setup" to "until linked".
+
+    Hiding the tabs for all of setup was meant to keep a first run from
+    wandering off, and it did that. It also meant the last three steps -- pick
+    a simulator, open it, hit a test shot -- were a gate on the whole app,
+    because they cannot be finished without a simulator running. Anyone who
+    opened this before starting GSPro was held on the guide, unable to reach
+    the practice range, which is the part that needs no simulator, no account
+    and no internet.
+
+    The line is now drawn where there is something worth reaching: once the
+    enclosure has connected. Advanced is unchanged.
+    """
+
     render = PAGE.split("function render(data){")[1].split("function doAction(")[0]
-    # The tabs are gone for the whole of setup, and Advanced with them.
-    assert '$("tabs").classList.toggle("hidden", guiding)' in render
+    assert 'const gated = guiding && !beenHere' in render
+    assert '$("tabs").classList.toggle("hidden", gated)' in render
     assert 'classList.toggle("hidden", guiding || !data.pairedEnclosures.length)' in render
+
+
+def test_the_tabs_stay_once_the_enclosure_has_been_seen():
+    """A link that drops for a moment must not take the navigation with it."""
+
+    render = PAGE.split("function render(data){")[1].split("function doAction(")[0]
+    assert "if(linkedNow) wizard.reachedEnclosure = true;" in render, (
+        "the tabs are keyed on the live link rather than on having ever "
+        "connected, so they would flicker away with the link"
+    )
+    assert "(data.pairedEnclosures || []).length" in render, (
+        "the latch is session-only, so quitting mid-guide and reopening with "
+        "the enclosure switched off would take the navigation away again"
+    )
+
+
+def test_the_simulator_steps_can_be_left_for_later():
+    """These two need a simulator running; nothing else in the app does."""
+
+    wizard = wizard_source()
+    blocked = [
+        block for block in wizard.split("if(")
+        if ("!sim.connected" in block or "!sim.ready" in block)
+    ]
+    assert len(blocked) == 2, "expected the open and test steps, found {}".format(len(blocked))
+    for block in blocked:
+        assert "wizFinish" in block, (
+            "a step that needs a running simulator has no way past it: {}"
+            .format(block[:90])
+        )
+
+
+def test_finishing_later_is_not_offered_once_setup_is_done():
+    """present() is the settled view; there is nothing left to finish."""
+
+    settled = PAGE.split("function present(")[1].split("\nfunction ")[0]
+    assert "Finish later" not in settled
 
 
 def test_the_wizard_is_skipped_once_setup_is_done():
