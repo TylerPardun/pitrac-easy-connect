@@ -153,3 +153,86 @@ def test_removed_browser_options_are_rejected():
         parser.parse_args(["--no-browser"])
     with pytest.raises(SystemExit):
         parser.parse_args(["--window"])
+
+
+# --- The shape of the window -----------------------------------------------
+#
+# The window opened at 480x900: a tall narrow strip, the shape of a phone. On a
+# desktop it wastes most of the screen and forces every pane into one column,
+# which is what pushed the range and the shot history behind a tab bar instead
+# of being visible. The size is part of what the app is, so it is pinned here.
+
+#: A 1280x800 laptop is the smallest screen this is expected to run on, and the
+#: window has to fit inside it with room for the menu bar and the dock.
+SMALLEST_SCREEN = (1280, 800)
+
+
+def _geometry_used(**overrides):
+    """The width, height and minimum the window is actually created with."""
+
+    captured = {}
+
+    class FakeWindow:
+        uid = "main-window"
+        events = type("Events", (), {"shown": type("Slot", (), {
+            "__iadd__": lambda self, other: self,
+        })()})()
+
+    class FakeWebview:
+        settings = {}
+
+        @staticmethod
+        def create_window(title, url, width, height, min_size):
+            captured.update(title=title, url=url, width=width, height=height,
+                            min_size=min_size)
+            return FakeWindow()
+
+        @staticmethod
+        def start(*_args, **_kwargs):
+            return None
+
+    import sys as _sys
+
+    saved = _sys.modules.get("webview")
+    _sys.modules["webview"] = FakeWebview
+    try:
+        window.run_native("http://127.0.0.1:1", **overrides)
+    finally:
+        if saved is None:
+            _sys.modules.pop("webview", None)
+        else:
+            _sys.modules["webview"] = saved
+    return captured
+
+
+def test_the_window_opens_in_a_desktop_shape_not_a_phone_shape():
+    used = _geometry_used()
+    assert used["width"] > used["height"], (
+        "the window opens taller than it is wide ({}x{}), which is a phone, "
+        "not a desktop application".format(used["width"], used["height"])
+    )
+
+
+def test_the_window_is_wide_enough_for_more_than_one_column():
+    used = _geometry_used()
+    assert used["width"] >= 1024, (
+        "a {}px window cannot show a dashboard beside anything else"
+        .format(used["width"])
+    )
+
+
+def test_the_window_still_fits_the_smallest_screen_it_supports():
+    used = _geometry_used()
+    screen_w, screen_h = SMALLEST_SCREEN
+    assert used["width"] <= screen_w and used["height"] <= screen_h, (
+        "a {}x{} window does not fit a {}x{} laptop"
+        .format(used["width"], used["height"], screen_w, screen_h)
+    )
+
+
+def test_the_minimum_size_does_not_trap_a_small_screen():
+    """A minimum larger than the screen makes the window unusable."""
+
+    minimum = _geometry_used()["min_size"]
+    screen_w, screen_h = SMALLEST_SCREEN
+    assert minimum[0] <= screen_w and minimum[1] <= screen_h

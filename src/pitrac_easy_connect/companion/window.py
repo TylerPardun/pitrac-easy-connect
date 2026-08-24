@@ -14,8 +14,15 @@ def _describe(exc: BaseException) -> str:
 def run_native(
     url: str,
     title: str = "PiTrac Easy-Connect",
-    width: int = 480,
-    height: int = 900,
+    # A desktop window, not a phone. 480x900 was taller than a 1280x800 laptop
+    # screen, so it opened partly off the display, and 480px of width left room
+    # for exactly one column -- which is why the range and the shot history
+    # ended up behind a tab bar rather than being visible.
+    #
+    # 1180x720 fits inside 1280x800 with the menu bar and the title bar, which
+    # is the smallest screen this is expected to run on.
+    width: int = 1180,
+    height: int = 720,
     on_created: Optional[Callable[[], None]] = None,
     on_activation_ready: Optional[Callable[[Callable[[], None]], None]] = None,
     on_close_ready: Optional[Callable[[Callable[[], None]], None]] = None,
@@ -42,7 +49,9 @@ def run_native(
         # accidentally requests a new window.
         webview.settings["OPEN_EXTERNAL_LINKS_IN_BROWSER"] = False
         native_window = webview.create_window(
-            title, url, width=width, height=height, min_size=(380, 560)
+            # The minimum is the width the wide layout needs; below it the
+            # panes fall back to the single column they use today.
+            title, url, width=width, height=height, min_size=(900, 600)
         )
 
         def shown() -> None:
