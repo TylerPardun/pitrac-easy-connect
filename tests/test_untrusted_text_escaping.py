@@ -129,3 +129,37 @@ def test_the_policy_actually_reaches_the_browser():
 
     source = pathlib.Path(web.__file__).read_text()
     assert 'send_header("Content-Security-Policy", CONTENT_SECURITY_POLICY)' in source
+
+
+def test_the_policy_does_not_allow_eval():
+    """Blocking eval also blocks pywebview's evaluate_js, deliberately.
+
+    Nothing in this project drives the page from Python, so the cost is a
+    test harness that has to observe the window from the server side rather
+    than ask the page questions. What it buys is that script which got into
+    the page cannot eval more.
+    """
+
+    from pitrac_easy_connect.companion.web import CONTENT_SECURITY_POLICY
+
+    assert "'unsafe-eval'" not in CONTENT_SECURITY_POLICY
+
+
+def test_nothing_in_the_app_depends_on_evaluating_js_from_python():
+    """If it did, the policy above would break it."""
+
+    import re
+
+    # A call, not the word: the first version of this matched the comment in
+    # web.py explaining why eval is refused, which is documentation rather
+    # than a dependency on it.
+    call = re.compile(r"\.evaluate_js\s*\(")
+    root = pathlib.Path(__file__).resolve().parent.parent / "src" / "pitrac_easy_connect"
+    offenders = [
+        path.relative_to(root).as_posix()
+        for path in root.rglob("*.py")
+        if call.search(path.read_text(encoding="utf-8"))
+    ]
+    assert not offenders, (
+        "these drive the page from Python, which the CSP refuses: {}".format(offenders)
+    )

@@ -39,6 +39,14 @@ _ALLOWED_HOST = re.compile(r"^(localhost|127(\.\d+){3}|\[::1\])(:\d+)?$")
 #:
 #: script-src has to allow inline because the page is inline, so this cannot
 #: stop an injected handler on its own. Escaping does that.
+#:
+#: One consequence worth knowing before it surprises somebody: allowing
+#: inline without 'unsafe-eval' means eval() is refused, and pywebview's
+#: evaluate_js is built on eval. Nothing here drives the page from Python
+#: -- window.py only opens a window at a URL and listens for native
+#: events -- so this costs the app nothing today, and it is a property
+#: worth keeping: script that got in cannot eval more. Anything that
+#: later wants evaluate_js has to weigh that against loosening this.
 CONTENT_SECURITY_POLICY = (
     "default-src 'none'; "
     "style-src 'unsafe-inline'; "
