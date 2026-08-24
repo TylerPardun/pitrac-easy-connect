@@ -209,7 +209,17 @@ async function api(path, body){
   if(!response.ok){const e=new Error((data.error&&data.error.failed)||"That did not work");e.info=data.error;throw e;}
   return data;
 }
-function esc(v){const d=document.createElement("div");d.textContent=v==null?"":String(v);return d.innerHTML;}
+function esc(v){
+  // Quotes as well as angle brackets. The old version set textContent and
+  // read innerHTML back, which escapes & < > and leaves quotes alone -- so
+  // every value dropped into a quoted attribute below could close that
+  // attribute and add its own. A Wi-Fi name and a discovery reply are both
+  // written by whoever is in range, and a device id of
+  // x" autofocus onfocus="..." produced a button carrying a live handler.
+  return String(v==null?"":v)
+    .replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;")
+    .replace(/"/g,"&quot;").replace(/'/g,"&#39;");
+}
 function showError(error){
   if(!error){$("err").innerHTML="";return;}
   const info=error.info||{};
@@ -315,7 +325,7 @@ function modelsView(){
 function countryPicker(){
   return `<label class="field" for="country">Country</label>
     <select id="country">${COUNTRIES.map(([c,n])=>
-      `<option value="${c}">${esc(n)}</option>`).join("")}</select>`;
+      `<option value="${esc(c)}">${esc(n)}</option>`).join("")}</select>`;
 }
 
 function networkView(){

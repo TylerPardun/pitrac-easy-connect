@@ -12,6 +12,7 @@ enclosure still requires a pairing.
 """
 
 import json
+import re
 import errno
 import ipaddress
 import socket
@@ -357,12 +358,27 @@ def _port(value: Any, default: int = 0) -> Optional[int]:
     return number if 0 <= number <= 65535 else None
 
 
+#: What a device id may contain. Discovery is unauthenticated -- anything on
+#: the network can answer a probe and claim to be an enclosure -- and the id it
+#: claims is used as a dictionary key and written into an element attribute by
+#: both pages. A reply claiming an id of ``x" autofocus onfocus="..."`` was
+#: confirmed to produce a button carrying a live event handler.
+#:
+#: The pages escape their output now, and this is the second lock: a
+#: deliberately loose shape, so a future id format is not rejected here, but
+#: nothing that could ever be markup.
+_SAFE_DEVICE_ID = re.compile(r"^[A-Za-z0-9-]{1,64}$")
+
+
 def _parse(data: bytes, address: str) -> Optional[FoundEnclosure]:
     try:
         payload = json.loads(data.decode("utf-8"))
     except (UnicodeDecodeError, ValueError):
         return None
     if not isinstance(payload, dict) or not payload.get("deviceId"):
+        return None
+    if not _SAFE_DEVICE_ID.match(str(payload.get("deviceId", ""))):
+        # Not an enclosure this program is willing to talk about.
         return None
     link_port = _port(payload.get("linkPort"))
     portal_port = _port(payload.get("portalPort"), default=80)

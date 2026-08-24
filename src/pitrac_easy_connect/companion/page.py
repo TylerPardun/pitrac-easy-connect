@@ -455,7 +455,17 @@ async function apiDownload(path){
   document.body.appendChild(anchor); anchor.click(); anchor.remove();
   setTimeout(()=>URL.revokeObjectURL(objectUrl), 1000);
 }
-function esc(v){const d=document.createElement("div");d.textContent=v==null?"":String(v);return d.innerHTML;}
+function esc(v){
+  // Quotes as well as angle brackets. The old version set textContent and
+  // read innerHTML back, which escapes & < > and leaves quotes alone -- so
+  // every value dropped into a quoted attribute below could close that
+  // attribute and add its own. A Wi-Fi name and a discovery reply are both
+  // written by whoever is in range, and a device id of
+  // x" autofocus onfocus="..." produced a button carrying a live handler.
+  return String(v==null?"":v)
+    .replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;")
+    .replace(/"/g,"&quot;").replace(/'/g,"&#39;");
+}
 
 function showError(error, deviceId){
   // Clearing it while the refusal panel is up would leave that panel with no
@@ -2073,7 +2083,7 @@ function renderShots(log){
     <tbody>${summary.map(row=>`<tr><td>${esc(row.club)}</td>
       <td class="num">${row.shots}</td>
       <td class="num">${row.speed==null?"-":row.speed+" mph"}</td>
-      <td class="num" title="${row.worstSpeed==null?"":"from "+row.worstSpeed+" to "+row.bestSpeed+" mph"}">${
+      <td class="num" title="${esc(row.worstSpeed==null?"":"from "+row.worstSpeed+" to "+row.bestSpeed+" mph")}">${
         row.spread==null?"-":"&plusmn;"+(row.spread/2).toFixed(1)}</td>
       <td class="num">${row.launch==null?"-":row.launch+"&deg;"}</td>
       <td class="num">${row.backSpin==null?"-":row.backSpin}</td></tr>`).join("")}
