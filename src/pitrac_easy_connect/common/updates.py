@@ -28,6 +28,8 @@ Three rules shape all of it:
 
 import hashlib
 import json
+
+from . import jsontext
 import os
 import platform
 import re
@@ -411,7 +413,7 @@ class Updater:
             url, headers={"Accept": "application/vnd.github+json", "User-Agent": "PiTrac"}
         )
         with urllib.request.urlopen(request, timeout=CHECK_TIMEOUT) as response:
-            return json.loads(response.read().decode("utf-8"))
+            return jsontext.loads(response.read().decode("utf-8"))
 
     # --- Applying ---------------------------------------------------------
 
@@ -755,7 +757,7 @@ class DesktopReleaseUpdater:
             url, headers={"Accept": "application/vnd.github+json", "User-Agent": "PiTrac"}
         )
         with urllib.request.urlopen(request, timeout=CHECK_TIMEOUT) as response:
-            return json.loads(response.read().decode("utf-8"))
+            return jsontext.loads(response.read().decode("utf-8"))
 
     # --- Downloading and verifying --------------------------------------
 
@@ -1152,7 +1154,7 @@ class ArchiveUpdater:
             headers={"Accept": "application/vnd.github+json", "User-Agent": "PiTrac"},
         )
         with urllib.request.urlopen(request, timeout=CHECK_TIMEOUT) as response:
-            return json.loads(response.read().decode("utf-8"))
+            return jsontext.loads(response.read().decode("utf-8"))
 
     @staticmethod
     def _archive_url(release: Dict[str, Any], tag: str = "") -> str:

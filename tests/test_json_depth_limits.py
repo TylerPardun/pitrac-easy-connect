@@ -20,6 +20,7 @@ device on the same network making the enclosure fail.
 """
 
 import json
+import pathlib
 import socket
 import tempfile
 import threading
@@ -103,28 +104,31 @@ def test_a_reasonable_backup_is_still_accepted(portal):
     assert status in (200, 400)
 
 
-def test_discovery_cannot_be_sent_a_payload_deep_enough_to_break_it():
-    """Discovery is safe because of its size cap, so the cap is what is pinned.
+def test_discovery_refuses_a_reply_that_is_nested_too_deeply():
+    """This test was wrong first, and CI is what said so.
 
-    A datagram is read at most MAX_REPLY_BYTES, and two bytes buy one level of
-    nesting, so the deepest reply anyone can deliver is far short of the depth
-    that unwinds the parser. This test exists so that raising the cap without
-    thinking is caught here rather than in the field.
+    It originally asserted that discovery was safe *by arithmetic*: a reply is
+    read at most MAX_REPLY_BYTES, two bytes buy one level, so the deepest
+    deliverable reply could not reach the depth that unwinds the parser. That
+    held on Python 3.12 on macOS, where the parser manages about 9998 levels.
+    It does not hold on Python 3.9, or on Windows, where the limit is lower --
+    and the version of this test that asserted "the deepest deliverable reply
+    still parses" duly raised RecursionError on all four of those runners.
+
+    The arithmetic was the mistake: how deep the parser can go is not a
+    constant of the language. Discovery goes through the same bounded parser
+    as every other boundary now, and this asserts the same thing they do.
     """
 
-    deepest_deliverable = discovery.MAX_REPLY_BYTES // 2
-    assert deepest_deliverable < 9998, (
-        "MAX_REPLY_BYTES is now {} bytes, which lets a reply nest {} deep -- "
-        "past the point the JSON parser gives up"
-        .format(discovery.MAX_REPLY_BYTES, deepest_deliverable)
-    )
-
-    # And the deepest that does fit still parses rather than raising.
-    filler = nested(deepest_deliverable - 60)
     payload = ('{"deviceId":"AAAA1111","linkPort":1,"portalPort":80,"x":'
-               + filler + "}").encode()
-    assert len(payload) <= discovery.MAX_REPLY_BYTES
-    discovery._parse(payload, "10.0.0.5")   # must not raise
+               + nested(TOO_DEEP) + "}").encode()
+    assert discovery._parse(payload, "10.0.0.5") is None
+
+
+def test_a_reply_nested_within_reason_is_still_accepted():
+    payload = b'{"deviceId":"AAAA1111","linkPort":39877,"portalPort":80,"x":{"y":[1,2]}}'
+    found = discovery._parse(payload, "10.0.0.201")
+    assert found is not None and found.device_id == "AAAA1111"
 
 
 def test_a_link_frame_that_is_too_deep_is_a_link_error_not_a_crash():
@@ -170,3 +174,26 @@ def test_the_desktop_app_also_answers_a_deeply_nested_body(tmp_path):
 def test_a_normal_link_frame_still_decodes():
     frame = link._decode(b'{"type":"shot","data":{"speed":120.0}}')
     assert frame["type"] == "shot"
+
+
+def test_every_json_parsed_off_the_network_goes_through_the_bounded_parser():
+    """The rule, so the next boundary does not have to be reasoned about.
+
+    Working out case by case whether a given parse site can be reached with
+    enough nesting is what produced the mistake above. Anything reading JSON
+    that came off a socket uses jsontext; the plain parser is for files this
+    program wrote itself.
+    """
+
+    import re
+
+    root = Path(__file__).resolve().parent.parent / "src" / "pitrac_easy_connect"
+    reads_network = re.compile(r"json\.loads\(\s*(?:response|error|data|line)\b")
+    offenders = []
+    for path in root.rglob("*.py"):
+        for number, text in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            if reads_network.search(text):
+                offenders.append("{}:{}".format(path.relative_to(root).as_posix(), number))
+    assert not offenders, (
+        "these parse network JSON with the unbounded parser: {}".format(offenders)
+    )

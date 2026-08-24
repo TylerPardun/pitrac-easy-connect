@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 from .. import __version__
+from ..common import jsontext
 from ..common import discovery, link
 from ..common import pairing_exchange as exchange
 from ..common.configstore import ConfigStore
@@ -1718,7 +1719,7 @@ class CompanionService:
             return {"available": False, "message": "Not connected to PiTrac."}
         try:
             with urllib.request.urlopen(base + "/api/cameras/detect", timeout=8) as response:
-                detected = json.loads(response.read().decode("utf-8"))
+                detected = jsontext.loads(response.read().decode("utf-8"))
         except (urllib.error.URLError, ValueError, OSError) as exc:
             return {"available": False, "message": "PiTrac did not answer: {}".format(exc)}
         detected["available"] = True
@@ -1748,10 +1749,10 @@ def _post(url: str, body: Optional[Dict[str, Any]], timeout: float = 10.0) -> Di
     )
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
-            return json.loads(response.read().decode("utf-8"))
+            return jsontext.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as error:
         try:
-            payload = json.loads(error.read().decode("utf-8"))
+            payload = jsontext.loads(error.read().decode("utf-8"))
         except Exception:
             payload = {}
         info = payload.get("error") or {}

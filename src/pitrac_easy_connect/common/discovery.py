@@ -12,6 +12,8 @@ enclosure still requires a pairing.
 """
 
 import json
+
+from . import jsontext
 import re
 import errno
 import ipaddress
@@ -372,7 +374,7 @@ _SAFE_DEVICE_ID = re.compile(r"^[A-Za-z0-9-]{1,64}$")
 
 def _parse(data: bytes, address: str) -> Optional[FoundEnclosure]:
     try:
-        payload = json.loads(data.decode("utf-8"))
+        payload = jsontext.loads(data.decode("utf-8"))
     except (UnicodeDecodeError, ValueError):
         return None
     if not isinstance(payload, dict) or not payload.get("deviceId"):

@@ -33,6 +33,7 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 from .. import __version__
+from ..common import jsontext
 from ..common.configstore import ConfigStore, atomic_write_bytes
 from .pitrac import SIMULATOR_KEYS
 from ..common.errors import (
@@ -236,7 +237,7 @@ class BackupManager:
                 raise EasyConnectError(CFG_BACKUP_INVALID, "that file is not a backup") from exc
         if isinstance(data, str):
             try:
-                data = json.loads(data)
+                data = jsontext.loads(data)
             except ValueError as exc:
                 raise EasyConnectError(CFG_BACKUP_INVALID, "that file is not a backup") from exc
         if not isinstance(data, dict):

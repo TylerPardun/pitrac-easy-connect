@@ -7,6 +7,7 @@ import threading
 from pathlib import Path
 
 from .. import __version__
+from ..common import jsontext
 from ..common import discovery
 from ..models import Simulator
 from .service import CompanionService
@@ -261,7 +262,7 @@ def _running_instance(port: int) -> str:
             headers={"X-PiTrac-App": "1"},
         )
         with urllib.request.urlopen(request, timeout=2) as response:
-            body = json.loads(response.read().decode("utf-8"))
+            body = jsontext.loads(response.read().decode("utf-8"))
     except (urllib.error.URLError, OSError, ValueError):
         return ""
     if body.get("application") != "PiTrac Easy-Connect":
@@ -284,7 +285,7 @@ def _activate_running(port: int, instance_token: str) -> bool:
     )
     try:
         with urllib.request.urlopen(request, timeout=3) as response:
-            body = json.loads(response.read().decode("utf-8"))
+            body = jsontext.loads(response.read().decode("utf-8"))
     except (urllib.error.URLError, OSError, ValueError):
         return False
     return bool(body.get("activated") or body.get("queued"))
