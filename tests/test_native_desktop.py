@@ -48,6 +48,26 @@ def test_native_is_reported_only_after_the_creation_callback(tmp_path, monkeypat
         service.close()
 
 
+def test_restart_acknowledgement_waits_until_native_window_is_shown(tmp_path, monkeypatch):
+    service = CompanionService(config_path=tmp_path / "c.json", discovery_port=0)
+    seen = []
+
+    def create(_url, on_created, on_activation_ready, on_close_ready, on_started):
+        seen.append("creating")
+        on_created()
+        seen.append("shown")
+
+    monkeypatch.setattr(window, "run_native", create)
+    try:
+        assert app._show_native(
+            service, "http://127.0.0.1:1", on_ready=lambda: seen.append("acknowledged")
+        ) == 0
+        assert seen == ["creating", "acknowledged", "shown"]
+        assert service.window_state()["state"] == "native"
+    finally:
+        service.close()
+
+
 def test_native_start_failure_is_visible_retained_and_unsuccessful(tmp_path, monkeypatch):
     service = CompanionService(config_path=tmp_path / "c.json", discovery_port=0)
     messages = []

@@ -17,6 +17,7 @@ LINUX = sys.platform.startswith("linux")
 # SPECPATH is injected by PyInstaller and is the directory holding this file.
 # Paths are derived from it so the build works from any working directory.
 ROOT = os.path.dirname(SPECPATH)
+SOURCE_ROOT = os.environ.get("PITRAC_SOURCE_ROOT", os.path.join(ROOT, "src"))
 
 # The package is the one place a version is written. build-app.sh passes it in;
 # this reads it directly when the spec is run on its own.
@@ -24,7 +25,7 @@ def _version():
     if os.environ.get("PITRAC_VERSION"):
         return os.environ["PITRAC_VERSION"]
     import re as _re
-    source = open(os.path.join(ROOT, "src", "pitrac_easy_connect", "__init__.py")).read()
+    source = open(os.path.join(SOURCE_ROOT, "pitrac_easy_connect", "__init__.py")).read()
     return _re.search(r'__version__ = "([^"]+)"', source).group(1)
 
 VERSION = _version()
@@ -69,7 +70,7 @@ elif LINUX:
 
 analysis = Analysis(
     [os.path.join(SPECPATH, "app_entry.py")],
-    pathex=[os.path.join(ROOT, "src")],
+    pathex=[SOURCE_ROOT],
     binaries=[],
     # The native builds bundle third-party code, so they carry its licences.
     # NOTICE.md says so; this is what makes that true.
@@ -92,6 +93,7 @@ analysis = Analysis(
         "pitrac_easy_connect.companion.flight",
         "pitrac_easy_connect.companion.rangeplay",
         "pitrac_easy_connect.companion.window",
+        "pitrac_easy_connect.companion.self_update",
         "pitrac_easy_connect.common.discovery",
         "pitrac_easy_connect.common.pairing_exchange",
         "pitrac_easy_connect.common.updates",

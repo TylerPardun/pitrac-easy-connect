@@ -1,6 +1,7 @@
 """Entry point for the native PiTrac Easy-Connect desktop application."""
 
 import argparse
+import os
 import sys
 import threading
 from pathlib import Path
@@ -33,27 +34,112 @@ def build_parser() -> argparse.ArgumentParser:
         "--smoke-test", action="store_true",
         help="exercise guarded page requests in the real native window (release validation)",
     )
+    # Internal restart proof. The helper supplies all four arguments; a normal
+    # launch supplies none. They are deliberately not useful independently.
+    parser.add_argument("--post-update-journal", type=Path, default=None, help=argparse.SUPPRESS)
+    parser.add_argument("--post-update-token", default="", help=argparse.SUPPRESS)
+    parser.add_argument("--post-update-helper-pid", type=int, default=0, help=argparse.SUPPRESS)
+    parser.add_argument("--post-update-helper-path", type=Path, default=None, help=argparse.SUPPRESS)
+    parser.add_argument("--version-probe-output", type=Path, default=None, help=argparse.SUPPRESS)
     parser.add_argument("--version", action="version", version=__version__)
     return parser
 
 
 def main(argv=None) -> int:
+    argv = list(sys.argv[1:] if argv is None else argv)
     args = build_parser().parse_args(argv)
+    if args.version_probe_output is not None:
+        from . import self_update
+        try:
+            self_update.write_version_probe(args.version_probe_output, __version__)
+        except self_update.SelfUpdateError:
+            return 1
+        return 0
+    if not args.post_update_journal:
+        # If power/process interruption happened after promotion but before
+        # the helper-provided restart arguments arrived, a manual launch from
+        # the exact final path can still complete the recorded acknowledgement.
+        from . import self_update
+        self_update.recover_pending_restart(version=__version__, executable=Path(sys.executable))
+    relaunch_arguments = [
+        "--port", str(args.port),
+        "--gspro-port", str(args.gspro_port),
+        "--e6-port", str(args.e6_port),
+        "--simulator-host", str(args.simulator_host),
+        "--discovery-port", str(args.discovery_port),
+    ]
+    if args.config is not None:
+        relaunch_arguments.extend(["--config", str(args.config)])
+    if args.computer_name:
+        relaunch_arguments.extend(["--computer-name", str(args.computer_name)])
+    if args.headless:
+        # Packaged update/rollback tests deliberately run without a desktop.
+        # A normal user launch never carries this flag, so production restarts
+        # still reopen the native window.
+        relaunch_arguments.append("--headless")
     service = CompanionService(
         config_path=args.config,
         simulator_ports={Simulator.GSPRO: args.gspro_port, Simulator.E6: args.e6_port},
         simulator_host=args.simulator_host,
         discovery_port=args.discovery_port,
         computer_name=args.computer_name,
+        desktop_relaunch_arguments=relaunch_arguments,
     )
     try:
         server = CompanionHTTPServer(("127.0.0.1", args.port), service)
     except OSError as exc:
         return _handle_busy_port(args, service, exc)
-    return _run(args, service, server)
+    restart_ready = None
+    if args.post_update_journal:
+        from . import self_update
+        try:
+            if os.environ.get("PITRAC_FAILURE_INJECT_NO_ACK") == "1":
+                journal = self_update.load_journal(args.post_update_journal)
+                if journal["phase"] in (
+                    "current-promoted", "awaiting-restart-verification"
+                ):
+                    raise self_update.SelfUpdateError(
+                        "restart acknowledgement failure injected by packaged CI"
+                    )
+            # Validate immediately, but a GUI restart must not acknowledge
+            # until pywebview has actually shown the native window. Otherwise
+            # the helper could delete the rollback copy after a bound port but
+            # before discovering that the desktop backend cannot start.
+            self_update.validate_restart(
+                args.post_update_journal,
+                args.post_update_token,
+                version=__version__,
+                executable=Path(sys.executable),
+            )
+
+            def restart_ready():
+                self_update.acknowledge_restart(
+                    args.post_update_journal,
+                    args.post_update_token,
+                    version=__version__,
+                    executable=Path(sys.executable),
+                )
+                if args.post_update_helper_pid and args.post_update_helper_path:
+                    self_update.cleanup_independent_helper(
+                        args.post_update_helper_pid, args.post_update_helper_path
+                    )
+
+            if args.headless:
+                restart_ready()
+                restart_ready = None
+        except self_update.SelfUpdateError as exc:
+            service.close()
+            server.server_close()
+            message = "The updated application could not verify its restart.\n\n{}".format(exc)
+            if args.headless:
+                print(message, file=sys.stderr)
+            else:
+                _say_it_failed(message)
+            return 1
+    return _run(args, service, server, on_ready=restart_ready)
 
 
-def _run(args, service, server) -> int:
+def _run(args, service, server, on_ready=None) -> int:
     url = "http://127.0.0.1:{}".format(server.server_port)
     print("PiTrac Easy-Connect {} is running at {}".format(__version__, url))
     if service.store.get("activeDeviceId"):
@@ -68,7 +154,7 @@ def _run(args, service, server) -> int:
 
         if args.smoke_test:
             url += "?pitracSmoke=1"
-        return _show_native(service, url, serve=server.serve_forever)
+        return _show_native(service, url, serve=server.serve_forever, on_ready=on_ready)
     except KeyboardInterrupt:
         return 0
     finally:
@@ -80,14 +166,14 @@ def _run(args, service, server) -> int:
         service.close()
 
 
-def _show_native(service: CompanionService, url: str, serve=None) -> int:
+def _show_native(service: CompanionService, url: str, serve=None, on_ready=None) -> int:
     from .window import NativeWindowError, run_native
 
     service.set_window_state("starting")
     try:
         run_native(
             url,
-            on_created=lambda: service.set_window_state("native"),
+            on_created=lambda: _on_window_created(service, on_ready=on_ready),
             on_activation_ready=service.register_window_activator,
             on_close_ready=service.register_window_closer,
             on_started=serve,
@@ -100,6 +186,25 @@ def _show_native(service: CompanionService, url: str, serve=None) -> int:
         )
         return 1
     return 0
+
+
+def _on_window_created(service: CompanionService, on_ready=None) -> None:
+    """The window is actually usable now, not merely under construction.
+
+    A fresh update check fired here, on top of the one already started when
+    the service was built, is what guarantees "shortly after the window
+    becomes usable" regardless of exactly when the earlier one happened to
+    land relative to window startup -- it is a cache hit and a no-op if the
+    earlier one already finished, and the first real check if it had not.
+    """
+
+    service.set_window_state("native")
+    if on_ready is not None:
+        on_ready()
+    try:
+        service.trigger_update_check()
+    except Exception:
+        pass
 
 
 def _handle_busy_port(args, service, failure: OSError) -> int:

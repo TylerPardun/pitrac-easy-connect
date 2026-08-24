@@ -117,11 +117,20 @@ PAGE = r"""<!doctype html>
     background:var(--panel);display:flex;gap:12px;align-items:center;justify-content:space-between}
   .update span{color:var(--muted);font-size:.87rem}
   .update button{width:auto;padding:8px 14px;font-size:.84rem;flex:none}
+  .update-actions{display:flex;gap:8px;flex:none}
+
+  /* The one thing that stays visible after the update card above is
+     dismissed -- small on purpose, so "I'll deal with it later" never
+     means "I can no longer find it." */
+  .update-pill{margin-top:10px;padding:7px 12px;border-radius:20px;border:1px solid var(--line);
+    background:var(--panel);display:flex;gap:8px;align-items:center;font-size:.8rem;
+    color:var(--muted);cursor:pointer;width:fit-content}
+  .update-pill.bad{border-color:var(--red);color:var(--red)}
 
   /* Pairing: only ever seen once. */
   .pick{margin-top:22px;display:flex;flex-direction:column;gap:8px}
   body.pairing .status,body.pairing #do,body.pairing #pick,
-  body.pairing #update,body.pairing .adv{display:none}
+  body.pairing #update,body.pairing #updateIndicator,body.pairing .adv{display:none}
   /* --- practice range --- */
   /* Scoped to .on. An unscoped #pane-range beats .pane{display:none} on
      specificity, which left the range rendering underneath every other tab
@@ -265,6 +274,9 @@ PAGE = r"""<!doctype html>
 
   <div class="do" id="do"></div>
 
+  <!-- Stays put once an update matters, whether or not the card below has
+       been dismissed -- see renderUpdateIndicator(). -->
+  <div class="update-pill hidden" id="updateIndicator"></div>
   <div id="update"></div>
 
   <div class="pick hidden" id="pick"></div>
@@ -305,7 +317,7 @@ PAGE = r"""<!doctype html>
       <div id="bkPreview"></div>
 
       <h3>PiTrac's software</h3>
-      <button class="quiet" id="checkPiUpdate">Check PiTrac for updates</button>
+      <button class="quiet" id="checkPiUpdate">Check desktop and PiTrac for updates</button>
       <div id="piUpdate"></div>
 
       <h3>What PiTrac sent</h3>
@@ -696,14 +708,161 @@ function doAction(id, button){
   if(id==="setup") return showPane("setup");
 }
 
+//: Which desktop.state values mean "there is something the persistent
+//: indicator should keep saying," as opposed to a routine idle/checking/
+//: up-to-date answer that is correctly shown by staying silent.
+const DESKTOP_UPDATE_VISIBLE_STATES=new Set([
+  "checking","available","downloading","cancelled","verifying","staging",
+  "ready-to-restart","preflight-failed","installing","awaiting-restart-verification",
+  "rollback","rolled-back","restart-required","check-failed","download-failed",
+  "verify-failed","install-failed",
+]);
+const DESKTOP_UPDATE_BAD_STATES=new Set([
+  "preflight-failed","rolled-back","check-failed","download-failed","verify-failed","install-failed",
+]);
+//: Which available version the prominent card has already been shown for
+//: once. Comparing against this, not against "have we ever shown a card,"
+//: is what lets a second, newer release re-open the notice even if an
+//: earlier one had been dismissed.
+let updateNoticeShownFor="", updateNoticeDismissed=false;
+
+function updateIndicatorText(state, desktop){
+  const version=desktop.availableVersion||desktop.stagedTargetVersion||"";
+  const withVersion=text=>version?text+" ("+version+")":text;
+  switch(state){
+    case "checking": return "Checking for desktop updates…";
+    case "available": return withVersion("Desktop update available");
+    case "downloading": return "Downloading the desktop update…";
+    case "cancelled": return "Desktop update cancelled";
+    case "verifying": return "Verifying the desktop update…";
+    case "staging": return "Validating and preparing the desktop update…";
+    case "ready-to-restart": return withVersion("Desktop update ready to install");
+    case "installing": return "Installing the desktop update…";
+    case "awaiting-restart-verification": return "Verifying the restarted desktop app…";
+    case "rollback": return "Restoring the previous desktop version…";
+    case "rolled-back": return "The previous desktop version was restored";
+    case "preflight-failed": return "Automatic installation was safely refused";
+    case "restart-required": return "Update installed — start PiTrac Easy-Connect again";
+    case "check-failed": return "Could not check for a desktop update";
+    case "download-failed": return "The desktop update download failed";
+    case "verify-failed": return "The desktop update failed verification";
+    case "install-failed": return "The desktop update could not be installed";
+    default: return "";
+  }
+}
+
+function renderUpdateIndicator(desktop){
+  const indicator=$("updateIndicator");
+  const state=(desktop&&desktop.state)||"idle";
+  if(!DESKTOP_UPDATE_VISIBLE_STATES.has(state)){
+    indicator.classList.add("hidden");
+    indicator.onclick=null;
+    return;
+  }
+  indicator.classList.remove("hidden");
+  indicator.classList.toggle("bad", DESKTOP_UPDATE_BAD_STATES.has(state));
+  indicator.textContent=updateIndicatorText(state, desktop);
+  // Bringing the card back is the only thing dismissing it ever does --
+  // never hides the update itself, only the interruption.
+  indicator.onclick=()=>{ updateNoticeDismissed=false; if(status) render(status); };
+}
+
+function renderDesktopUpdateCard(host, desktop, plan){
+  const state=desktop.state||"idle";
+
+  if(state==="available"){
+    const version=desktop.availableVersion||plan.targetVersion||"";
+    if(updateNoticeShownFor!==version){
+      // A newer (or first-seen) version is due its own notice even if an
+      // older one had already been waved off.
+      updateNoticeShownFor=version;
+      updateNoticeDismissed=false;
+    }
+    if(updateNoticeDismissed){ host.innerHTML=""; return; }
+    host.innerHTML='<div class="update"><span>Desktop update available: PiTrac Easy-Connect '+
+      esc(version)+' (this computer has '+esc(desktop.installedVersion||"")+').</span>'+
+      '<span class="update-actions">'+
+      '<button class="quiet" id="remindLater">Remind me later</button>'+
+      '<button class="primary" id="updateNow">Update now</button></span></div>';
+    $("updateNow").addEventListener("click",e=>run(e.target, async()=>{
+      await api("/api/update/download",{});
+    }));
+    $("remindLater").addEventListener("click",()=>{
+      updateNoticeDismissed=true;
+      host.innerHTML="";
+    });
+    return;
+  }
+
+  if(state==="downloading" || state==="verifying" || state==="staging"){
+    const progress=(desktop.downloadTotalBytes&&state==="downloading")
+      ? " ("+Math.floor((desktop.downloadProgress||0)*100)+"%)" : "";
+    host.innerHTML='<div class="update"><span>'+esc(desktop.detail||
+      (state==="downloading"?"Downloading the update…":"Verifying the update…"))+esc(progress)+'</span>'+
+      (desktop.canCancel?'<button class="quiet" id="cancelUpdate">Cancel</button>':'')+'</div>';
+    const cancel=$("cancelUpdate");
+    if(cancel) cancel.addEventListener("click",e=>run(e.target,()=>api("/api/update/cancel",{})));
+    return;
+  }
+
+  if(state==="ready-to-restart"){
+    host.innerHTML='<div class="update"><span>'+esc(desktop.detail||"The update is ready.")+
+      '</span><button class="primary" id="restartNow">Restart and install</button></div>';
+    $("restartNow").addEventListener("click",e=>run(e.target, async()=>{
+      const result=await api("/api/update/apply",{});
+      host.innerHTML='<div class="update"><span>'+esc(result.detail||"")+'</span></div>';
+    }));
+    return;
+  }
+
+  if(state==="installing"){
+    host.innerHTML='<div class="update"><span>Installing and restarting…</span></div>';
+    return;
+  }
+
+  if(state==="restart-required"){
+    host.innerHTML='<div class="update"><span>'+esc(desktop.detail||
+      "The update finished. Start PiTrac Easy-Connect again to use it.")+'</span></div>';
+    return;
+  }
+
+  if(state==="cancelled" || state==="preflight-failed" || state==="rolled-back" ||
+     state==="download-failed" || state==="verify-failed" || state==="install-failed"){
+    host.innerHTML='<div class="update"><span>'+esc(desktop.detail||
+      "That update could not be completed.")+'</span>'+
+      '<span class="update-actions">'+
+      '<button class="quiet" id="retryUpdate">Try again</button>'+
+      '<button class="quiet" id="getUpdate">Manual instructions</button></span></div>';
+    $("retryUpdate").addEventListener("click",e=>run(e.target, async()=>{
+      await api("/api/update/download",{});
+    }));
+    wireDesktopDownload(host, desktop.savedPackagePath||plan.downloadUrl, plan.targetVersion,
+      !!desktop.savedPackagePath);
+    return;
+  }
+
+  // idle/checking/up-to-date/check-failed but the coordination plan still
+  // says a desktop update is required (a source-style service too old to
+  // send desktop.state, or a check that has not landed yet) -- always leave
+  // something actionable rather than a blank banner.
+  host.innerHTML='<div class="update"><span>'+esc(plan.detail||desktop.detail||"")+'</span>'+
+    '<button class="quiet" id="getUpdate">Get desktop update</button></div>';
+  wireDesktopDownload(host, plan.downloadUrl, plan.targetVersion);
+}
+
 function renderUpdate(update){
   const host=$("update");
-  if(!update){ host.innerHTML=""; return; }
+  if(!update){
+    host.innerHTML="";
+    renderUpdateIndicator(null);
+    return;
+  }
   const plan=update.coordination||{};
+  const desktop=update.desktop||{};
+  renderUpdateIndicator(desktop);
+
   if(plan.phase==="desktop-update-required"){
-    host.innerHTML='<div class="update"><span>'+esc(plan.detail||update.detail||"")+'</span>'+
-      '<button class="quiet" id="getUpdate">Get desktop update</button></div>';
-    wireDesktopDownload(host,plan.downloadUrl||update.downloadUrl,plan.targetVersion);
+    renderDesktopUpdateCard(host, desktop, plan);
     return;
   }
   if(plan.phase==="pi-update-required"){
@@ -738,7 +897,7 @@ function renderUpdate(update){
   if(get) wireDesktopDownload(host,update.downloadUrl);
 }
 
-function wireDesktopDownload(host,url,target){
+function wireDesktopDownload(host,url,target,isLocalPackage){
   const get=$("getUpdate");
   if(!get) return;
   get.addEventListener("click",e=>run(e.target,async()=>{
@@ -751,7 +910,9 @@ function wireDesktopDownload(host,url,target){
         return;
       }
     }
-    host.innerHTML='<div class="update"><span>Copy this release address and open it when ready:<br>'+
+    host.innerHTML='<div class="update"><span>'+esc(isLocalPackage
+      ? "Automatic replacement was refused before the app closed. Extract the saved package into a dedicated PiTrac Easy-Connect application folder, then start that copy:"
+      : "Copy this release address and open it when ready:")+'<br>'+
       '<code>'+esc(url)+'</code></span>'+
       '<button class="quiet" id="copyUpdate">Copy address</button></div>';
     $("copyUpdate").addEventListener("click",async e=>{

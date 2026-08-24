@@ -5,7 +5,7 @@ import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-TARGETS = [ROOT / "src" / "pitrac_easy_connect" / "companion", ROOT / "packaging" / "app_entry.py"]
+TARGETS = [ROOT / "src" / "pitrac_easy_connect", ROOT / "packaging" / "app_entry.py"]
 FORBIDDEN = {
     r"\bwebbrowser\b": "Python browser launcher",
     r"\bopen_in_browser\b": "legacy browser launcher",

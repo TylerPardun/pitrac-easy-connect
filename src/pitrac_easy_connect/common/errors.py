@@ -404,3 +404,12 @@ CFG_BACKUP_WRONG_DEVICE = _define(
     "Your current settings and calibration were not touched.",
     "Restoring calibration from another enclosure would give wrong shot data. Use this enclosure's own backup.",
 )
+
+# Desktop self-update --------------------------------------------------------
+
+UPD_UNSUPPORTED_PLATFORM = _define(
+    "PT-UPD-001",
+    "This computer's operating system or processor is not one PiTrac Easy-Connect publishes a build for.",
+    "Nothing was downloaded and nothing was changed.",
+    "Check for a manual download at the project's release page from a supported computer.",
+)

@@ -13,7 +13,9 @@ Everything the Companion stores about an enclosure is scoped to that enclosure's
 device ID, so a second PiTrac is a second entry rather than a conflict.
 """
 
+import os
 import platform
+import sys
 import threading
 import time
 from pathlib import Path
@@ -37,14 +39,45 @@ from ..common.errors import (
     lookup,
 )
 from ..common.states import State
-from ..common.updates import Updater, coordinate_update
+from ..common.updates import (
+    DEVELOPMENT,
+    SOURCE,
+    DesktopReleaseUpdater,
+    DesktopUpdateState,
+    UpdateStatus,
+    Updater,
+    coordinate_update,
+)
 from ..common.versions import compare
 from ..models import TEST_SHOT, Simulator
+from . import self_update
 from .link_client import CompanionLinkClient
 from . import shotlog
 from .rangeplay import RangeSession
 from .shotlog import ShotLog
 from .simulator_session import SimulatorSession
+
+#: Desktop update states a passive background/status check may move between.
+#: Once a real download/install is under way (or has finished, successfully
+#: or not), only that operation's own code may change the state -- a stale
+#: background check landing mid-download must not overwrite "downloading"
+#: back to "available."
+_PASSIVE_DESKTOP_UPDATE_STATES = frozenset(
+    {
+        DesktopUpdateState.IDLE,
+        DesktopUpdateState.CHECKING,
+        DesktopUpdateState.UP_TO_DATE,
+        DesktopUpdateState.AVAILABLE,
+        DesktopUpdateState.CHECK_FAILED,
+    }
+)
+
+#: How often the background thread re-checks while the app stays open, on
+#: top of the passive cache-expiry-on-poll that already happens whenever
+#: /api/status is read after the cache window elapses. Having both means the
+#: periodic check the requirements ask for does not depend on the window
+#: being actively polled.
+PERIODIC_DESKTOP_UPDATE_CHECK_SECONDS = 20 * 60
 
 
 def default_config_path() -> Path:
@@ -94,8 +127,12 @@ class CompanionService:
         search_seconds: float = 2.0,
         research_seconds: float = 3.0,
         discovery_targets: Optional[List[str]] = None,
+        periodic_update_check_seconds: float = PERIODIC_DESKTOP_UPDATE_CHECK_SECONDS,
+        startup_update_check: bool = True,
+        desktop_relaunch_arguments: Optional[List[str]] = None,
     ):
         self.version = version
+        self._desktop_relaunch_arguments = list(desktop_relaunch_arguments or [])
         self.simulator_host = simulator_host
         self.discovery_port = discovery_port
         #: How long a search listens for enclosures announcing themselves, and
@@ -136,6 +173,9 @@ class CompanionService:
                 # its exact target here lets the new desktop copy continue the
                 # same transaction instead of chasing a newer release midway.
                 "updateTarget": "",
+                "updateTag": "",
+                "updateTransactionId": "",
+                "updateAssetSha256": "",
                 #: Set once the owner has been walked through setup. Until then
                 #: the app leads them a step at a time instead of presenting a
                 #: window full of things to click.
@@ -179,9 +219,51 @@ class CompanionService:
             (config_path or default_config_path()).with_name("shots.json")
         )
         self.updates = Updater(version)
+        # Determined once: whether this process is a git checkout does not
+        # change while it runs, and re-deriving it on every status poll would
+        # mean a git subprocess call every few seconds. DEVELOPMENT is
+        # grouped with SOURCE, not treated as packaged: a dirty checkout must
+        # stay left alone (Updater already refuses to touch it), not be
+        # offered a packaged build to install over itself.
+        self._install_kind = self.updates.kind()
+        self._uses_git_updater = self._install_kind in (SOURCE, DEVELOPMENT)
+        self.desktop_updates: Optional[DesktopReleaseUpdater] = (
+            None if self._uses_git_updater else DesktopReleaseUpdater(version)
+        )
+        self._desktop_update_state = DesktopUpdateState.IDLE
+        self._desktop_update_detail = ""
+        self._desktop_update_available_version = ""
+        self._last_desktop_status = UpdateStatus(
+            version, self._install_kind, detail="Update check has not finished yet."
+        )
+        self._staged_install: Optional[self_update.InstalledApp] = None
+        self._staged_target_version = ""
+        self._desktop_transaction_root: Optional[Path] = None
+        self._desktop_journal_path: Optional[Path] = None
+        self._desktop_archive_path: Optional[Path] = None
+        self._desktop_asset_digest = ""
+        self._desktop_asset_name = ""
+        self._desktop_release_tag = ""
+        self._desktop_downloaded_bytes = 0
+        self._desktop_download_total: Optional[int] = None
+        self._desktop_cancel = threading.Event()
+        self._update_check_in_progress = False
+        self._check_last_install_result()
+        self._update_check_stop = threading.Event()
         # Off the startup path, and silent on failure: a GitHub outage must not
-        # stop anyone playing golf.
-        self.updates.check_in_background()
+        # stop anyone playing golf. Checked once immediately and then on a
+        # timer for as long as the app stays open -- the immediate check
+        # alone is what a v0.4.4 process left running would have relied on,
+        # and it goes stale the moment a new release ships while it is idle.
+        if startup_update_check:
+            self._schedule_update_check()
+        if not self._uses_git_updater:
+            if periodic_update_check_seconds > 0:
+                threading.Thread(
+                    target=self._periodic_update_check_loop,
+                    args=(periodic_update_check_seconds,),
+                    daemon=True,
+                ).start()
 
     # --- Simulator selection ---------------------------------------------
 
@@ -1125,8 +1207,349 @@ class CompanionService:
             "shots": shots,
         }
 
+    # --- Desktop self-update ------------------------------------------
+
+    def _active_desktop_updater(self):
+        """Which checker owns the desktop-version half of the coordinated
+        plan: the git-pull path for a source or development checkout, or
+        the packaged release checker for everything else."""
+
+        return self.updates if self._uses_git_updater else self.desktop_updates
+
+    def _periodic_update_check_loop(self, interval: float) -> None:
+        wait_for = interval
+        while not self._update_check_stop.wait(wait_for):
+            self._schedule_update_check()
+            failed = bool(self.desktop_updates and self.desktop_updates.last_check_failed)
+            wait_for = min(interval, 5 * 60) if failed else interval
+
+    def _schedule_update_check(self, force: bool = False) -> bool:
+        """Schedule the only network-capable check path and return immediately."""
+        with self._lock:
+            if self._update_check_in_progress:
+                return False
+            self._update_check_in_progress = True
+            if self._desktop_update_state in _PASSIVE_DESKTOP_UPDATE_STATES:
+                self._desktop_update_state = DesktopUpdateState.CHECKING
+                self._desktop_update_detail = "Checking for updates…"
+
+        def work() -> None:
+            try:
+                status = self._active_desktop_updater().check(force=force)
+                self._on_desktop_update_checked(status)
+            finally:
+                with self._lock:
+                    self._update_check_in_progress = False
+
+        threading.Thread(target=work, daemon=True).start()
+        return True
+
+    def _on_desktop_update_checked(self, status: UpdateStatus) -> None:
+        with self._lock:
+            self._last_desktop_status = status
+            self._desktop_update_available_version = status.latest
+            if self._desktop_update_state not in _PASSIVE_DESKTOP_UPDATE_STATES:
+                # A download, verification, or install is in progress (or
+                # just finished) -- a background check landing in the middle
+                # of that must not stomp on it.
+                return
+            if status.available:
+                self._desktop_update_state = DesktopUpdateState.AVAILABLE
+            elif self.desktop_updates is not None and self.desktop_updates.last_check_failed:
+                self._desktop_update_state = DesktopUpdateState.CHECK_FAILED
+            else:
+                self._desktop_update_state = DesktopUpdateState.UP_TO_DATE
+            self._desktop_update_detail = status.detail
+
+    def _check_last_install_result(self) -> None:
+        """Read once at startup: did the process that just exited hand off
+        to a helper that installed and relaunched this one?"""
+
+        if self.desktop_updates is None:
+            return
+        result = self_update.read_and_clear_last_result()
+        if result is None:
+            return
+        detail = str(result.get("detail") or "")
+        if not result.get("success"):
+            self._desktop_update_state = (
+                DesktopUpdateState.ROLLED_BACK
+                if result.get("rolledBack") else DesktopUpdateState.INSTALL_FAILED
+            )
+            self._desktop_update_detail = detail or "The update could not be installed."
+        elif "could not restart" in detail:
+            self._desktop_update_state = DesktopUpdateState.RESTART_REQUIRED
+            self._desktop_update_detail = detail
+        else:
+            self._desktop_update_state = DesktopUpdateState.UP_TO_DATE
+            self._desktop_update_detail = "Updated to {}.".format(self.version)
+
+    def _desktop_update_payload(self) -> Dict[str, Any]:
+        with self._lock:
+            return {
+                "state": self._desktop_update_state.value,
+                "installedVersion": self.version,
+                "availableVersion": self._desktop_update_available_version,
+                "detail": self._desktop_update_detail,
+                "stagedReady": self._staged_install is not None,
+                "stagedTargetVersion": self._staged_target_version,
+                "transactionId": (
+                    self._desktop_transaction_root.name.removeprefix("transaction-")
+                    if self._desktop_transaction_root else str(self.store.get("updateTransactionId", "") or "")
+                ),
+                "downloadedBytes": self._desktop_downloaded_bytes,
+                "downloadTotalBytes": self._desktop_download_total,
+                "downloadProgress": (
+                    self._desktop_downloaded_bytes / self._desktop_download_total
+                    if self._desktop_download_total else None
+                ),
+                "canCancel": self._desktop_update_state in (
+                    DesktopUpdateState.DOWNLOADING,
+                    DesktopUpdateState.VERIFYING,
+                    DesktopUpdateState.STAGING,
+                ),
+                "savedPackagePath": str(self._desktop_archive_path or ""),
+            }
+
+    def trigger_update_check(self) -> None:
+        """A fresh, non-blocking check, safe to call whenever it is useful --
+        at startup once the window is actually usable, in particular, so a
+        check that raced ahead of the window is not the only one that ever
+        runs. A cache hit makes this a no-op; force is deliberately not used
+        here, so this never fights a check already legitimately in flight."""
+
+        self._schedule_update_check()
+
+    def download_desktop_update(self) -> Dict[str, Any]:
+        """Start the background download-verify-stage sequence.
+
+        Returns immediately; progress is read back from status()'s
+        ``update.desktop`` object, the same way the rest of the app already
+        polls for everything else.
+        """
+
+        if self.desktop_updates is None:
+            return {
+                "started": False,
+                "detail": "This copy updates itself with git pull; there is nothing to download.",
+            }
+        with self._lock:
+            if self._desktop_update_state in (
+                DesktopUpdateState.DOWNLOADING,
+                DesktopUpdateState.VERIFYING,
+                DesktopUpdateState.STAGING,
+                DesktopUpdateState.INSTALLING,
+            ):
+                return {"started": False, "detail": "An update is already being prepared."}
+            self._desktop_update_state = DesktopUpdateState.DOWNLOADING
+            self._desktop_update_detail = "Preparing the exact selected release…"
+            self._desktop_downloaded_bytes = 0
+            self._desktop_download_total = None
+            self._desktop_cancel = threading.Event()
+        threading.Thread(target=self._download_desktop_update_worker, daemon=True).start()
+        return {"started": True}
+
+    def cancel_desktop_update(self) -> Dict[str, Any]:
+        with self._lock:
+            if self._desktop_update_state not in (
+                DesktopUpdateState.DOWNLOADING,
+                DesktopUpdateState.VERIFYING,
+                DesktopUpdateState.STAGING,
+            ):
+                return {"cancelled": False, "detail": "No desktop update is being prepared."}
+            self._desktop_cancel.set()
+            self._desktop_update_detail = "Cancelling the desktop update…"
+        return {"cancelled": True}
+
+    def _fail_desktop_update(self, state: DesktopUpdateState, detail: str) -> None:
+        with self._lock:
+            self._desktop_update_state = state
+            self._desktop_update_detail = detail
+
+    def _download_desktop_update_worker(self) -> None:
+        transaction_root = None
+        try:
+            checked = self.desktop_updates.cached_status()
+            if not checked.available:
+                checked = self.desktop_updates.check(force=True)
+            if not checked.available:
+                state = (
+                    DesktopUpdateState.CHECK_FAILED
+                    if self.desktop_updates.last_check_failed
+                    else DesktopUpdateState.UP_TO_DATE
+                )
+                self._fail_desktop_update(state, checked.detail)
+                return
+            if not checked.can_apply:
+                self._fail_desktop_update(DesktopUpdateState.DOWNLOAD_FAILED, checked.detail)
+                return
+
+            tag = str(checked.latest or "")
+            release = self.desktop_updates.release_for_tag(tag)
+            asset = self.desktop_updates.asset_name()
+            url = self.desktop_updates.asset_download_url(release, asset)
+            if not url:
+                self._fail_desktop_update(
+                    DesktopUpdateState.DOWNLOAD_FAILED,
+                    "That release has no {} package to download.".format(asset),
+                )
+                return
+            expected = self.desktop_updates.expected_sha256(release, asset)
+            if not expected:
+                self._fail_desktop_update(
+                    DesktopUpdateState.VERIFY_FAILED,
+                    "That release publishes no checksum for its package, so it was not downloaded.",
+                )
+                return
+
+            transaction_root = self_update.new_transaction_dir()
+            with self._lock:
+                self._desktop_transaction_root = transaction_root
+            try:
+                def progress(written, total):
+                    with self._lock:
+                        self._desktop_downloaded_bytes = written
+                        self._desktop_download_total = total
+                        self._desktop_update_detail = (
+                            "Downloaded {} of {} bytes.".format(written, total)
+                            if total else "Downloaded {} bytes.".format(written)
+                        )
+                path = self.desktop_updates.download(
+                    url, transaction_root, cancel_event=self._desktop_cancel, progress=progress
+                )
+            except InterruptedError:
+                self_update.clean_transaction(transaction_root)
+                with self._lock:
+                    self._desktop_transaction_root = None
+                self._fail_desktop_update(
+                    DesktopUpdateState.CANCELLED,
+                    "The download was cancelled. The installed application was not changed.",
+                )
+                return
+            except Exception as exc:
+                self._fail_desktop_update(
+                    DesktopUpdateState.DOWNLOAD_FAILED,
+                    "The download did not finish: {}".format(exc),
+                )
+                return
+
+            with self._lock:
+                self._desktop_update_state = DesktopUpdateState.VERIFYING
+                self._desktop_update_detail = "Verifying the release SHA-256…"
+                self._desktop_archive_path = path
+            if not self.desktop_updates.verify(path, expected):
+                self._fail_desktop_update(
+                    DesktopUpdateState.VERIFY_FAILED,
+                    "The download did not match the checksum this release publishes, "
+                    "so it was not installed.",
+                )
+                return
+
+            target_version = str(checked.latest or "").lstrip("v")
+            if self._desktop_cancel.is_set():
+                raise InterruptedError("the update was cancelled")
+            with self._lock:
+                self._desktop_update_state = DesktopUpdateState.STAGING
+                self._desktop_update_detail = "Validating the packaged application…"
+            try:
+                staged = self_update.stage_update(
+                    path, transaction_root, target_version,
+                    system=self.desktop_updates.system, machine=self.desktop_updates.machine,
+                )
+            except self_update.SelfUpdateError as exc:
+                self._fail_desktop_update(DesktopUpdateState.VERIFY_FAILED, str(exc))
+                return
+
+            # Persist the exact verified target before the desktop can exit.
+            txid = transaction_root.name.removeprefix("transaction-")
+            self._remember_update_target(
+                target_version, tag=tag, transaction_id=txid, asset_sha256=expected
+            )
+            try:
+                journal_path = self_update.prepare_transaction(
+                    archive_path=path,
+                    staged=staged,
+                    install_root=self_update.current_install_root(system=self.desktop_updates.system),
+                    installed_version=self.version,
+                    target_version=target_version,
+                    expected_tag=tag,
+                    asset_name=asset,
+                    asset_sha256=expected,
+                    transaction_root=transaction_root,
+                    system=self.desktop_updates.system,
+                    machine=self.desktop_updates.machine,
+                    running_executable=(Path(sys.executable) if getattr(sys, "frozen", False) else None),
+                    relaunch_arguments=self._desktop_relaunch_arguments,
+                )
+            except self_update.SelfUpdateError as exc:
+                self._fail_desktop_update(
+                    DesktopUpdateState.PREFLIGHT_FAILED,
+                    "Automatic installation was refused: {} The verified package is saved at {}."
+                    .format(exc, path),
+                )
+                return
+
+            with self._lock:
+                self._staged_install = staged
+                self._staged_target_version = target_version
+                self._desktop_journal_path = journal_path
+                self._desktop_asset_digest = expected
+                self._desktop_asset_name = asset
+                self._desktop_release_tag = tag
+                self._desktop_update_state = DesktopUpdateState.READY_TO_RESTART
+                self._desktop_update_detail = "Version {} is verified and ready to install.".format(
+                    target_version
+                )
+        except Exception as exc:
+            if isinstance(exc, InterruptedError):
+                if transaction_root is not None:
+                    try:
+                        self_update.clean_transaction(transaction_root)
+                    except Exception:
+                        pass
+                self._fail_desktop_update(
+                    DesktopUpdateState.CANCELLED,
+                    "The update was cancelled. The installed application was not changed.",
+                )
+                return
+            self._fail_desktop_update(
+                DesktopUpdateState.DOWNLOAD_FAILED, "The update could not be prepared: {}".format(exc)
+            )
+
+    def install_and_restart(self) -> Dict[str, Any]:
+        """Hand off to the helper, then exit so it can perform the swap.
+
+        The window close this triggers goes through the same path
+        ``/api/quit`` already uses -- there is no separate shutdown
+        mechanism to keep in sync.
+        """
+
+        with self._lock:
+            staged = self._staged_install
+            target = self._staged_target_version
+            journal_path = self._desktop_journal_path
+        if staged is None or journal_path is None:
+            return {"applied": False, "detail": "No verified update is ready to install yet."}
+
+        with self._lock:
+            self._desktop_update_state = DesktopUpdateState.INSTALLING
+        try:
+            self_update.load_journal(journal_path)
+            self_update.spawn_helper(journal_path, wait_pid=os.getpid())
+        except Exception as exc:
+            detail = "The installer could not be started: {}".format(exc)
+            self._fail_desktop_update(DesktopUpdateState.INSTALL_FAILED, detail)
+            return {"applied": False, "detail": detail}
+
+        threading.Timer(0.4, self.close_native_window).start()
+        return {
+            "applied": True,
+            "detail": "Installing {} and restarting.".format(target),
+            "needsRestart": True,
+        }
+
     def _update_status(self, force: bool = False) -> Dict[str, Any]:
-        """What is installed here and on the enclosure, and whether either is behind."""
+        """Return the last known state immediately; this never performs I/O."""
 
         with self._lock:
             linked = bool(self._link and self._link.connected)
@@ -1134,7 +1557,7 @@ class CompanionService:
             enclosure_version = (
                 (self._pi_status or {}).get("version", "") if linked else ""
             )
-        checked = self.updates.check(force=force)
+            checked = self._last_desktop_status
         status = checked.as_dict()
         status["enclosureVersion"] = enclosure_version
         # The two halves are meant to move together. Saying so is more useful
@@ -1144,21 +1567,27 @@ class CompanionService:
         )
         plan = coordinate_update(checked, enclosure_version, pending_target)
         status["coordination"] = plan.as_dict()
+        status["desktop"] = self._desktop_update_payload()
         if pending_target and plan.synchronized:
             self._remember_update_target("")
         return status
 
     def check_for_updates(self) -> Dict[str, Any]:
-        return self._update_status(force=True)
+        started = self._schedule_update_check(force=True)
+        status = self._update_status()
+        status["checkStarted"] = started
+        return status
 
     def apply_update(self) -> Dict[str, Any]:
-        return self.updates.apply()
+        if self._uses_git_updater:
+            return self.updates.apply()
+        return self.install_and_restart()
 
     def prepare_update(self, target_tag: str) -> Dict[str, Any]:
         """Persist the release selected before the desktop is replaced."""
 
         target = str(target_tag or "").strip().lstrip("v")
-        current = self._update_status(force=True)
+        current = self._update_status()
         plan = current.get("coordination") or {}
         if (
             plan.get("phase") != "desktop-update-required"
@@ -1179,16 +1608,22 @@ class CompanionService:
             ).format(target),
         }
 
-    def _remember_update_target(self, target: str) -> None:
+    def _remember_update_target(self, target: str, *, tag: str = "",
+                                transaction_id: str = "", asset_sha256: str = "") -> None:
         with self._lock:
             self._pending_update_target = str(target or "")
-        self.store.set("updateTarget", self._pending_update_target)
+        self.store.update({
+            "updateTarget": self._pending_update_target,
+            "updateTag": str(tag or "") if target else "",
+            "updateTransactionId": str(transaction_id or "") if target else "",
+            "updateAssetSha256": str(asset_sha256 or "") if target else "",
+        })
 
     def apply_pi_update(self, target_tag: str) -> Dict[str, Any]:
         """Start the Pi half only after the desktop is already at that release."""
 
         target = str(target_tag or "").strip().lstrip("v")
-        current = self._update_status(force=True)
+        current = self._update_status()
         plan = current.get("coordination") or {}
         if (
             plan.get("phase") != "pi-update-required"
@@ -1278,6 +1713,7 @@ class CompanionService:
         return detected
 
     def close(self) -> None:
+        self._update_check_stop.set()
         self.disconnect()
         with self._lock:
             session, self._session = self._session, None

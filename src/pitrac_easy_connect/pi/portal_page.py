@@ -307,8 +307,7 @@ function modelsView(){
         "non-commercial use, and you may not pass them on to anyone else \u2014 "+
         "including with this machine if you ever sell it.",
     body:`<div class="licence" id="licenceBox">Loading the terms\u2026</div>
-      <a class="linkbtn quiet" href="${LICENCE_PAGE}" target="_blank"
-         rel="noopener">Read them on PiTracLM's site</a>`,
+      <a class="linkbtn quiet" href="${LICENCE_PAGE}">Read them on PiTracLM's site</a>`,
     actions:[{label:"Accept and install", id:"acceptModels", primary:true},
              {label:"Not now", id:"declineModels", primary:false}]};
 }
@@ -417,8 +416,8 @@ function act(id, button){
   if(id==="donePairing") return run(button, async()=>{ await api("/api/pair-close",{}); view=null; });
   if(id==="openPairing") return run(button, async()=>{ await api("/api/pair-open",{}); });
   if(id==="keepWifi"){ view=null; chosen=null; return render(status); }
-  if(id==="dash" && status.dashboardUrl) window.open(status.dashboardUrl,"_blank","noopener");
-  if(id==="downloads") window.open("/companion","_blank","noopener");
+  if(id==="dash" && status.dashboardUrl) window.location.assign(status.dashboardUrl);
+  if(id==="downloads") window.location.assign("/companion");
 }
 
 function netRow(n){

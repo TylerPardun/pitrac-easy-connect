@@ -125,8 +125,12 @@ class RecoveryRig:
             version="0.4.4",
             search_seconds=0.2,
             research_seconds=0.2,
+            startup_update_check=False,
         )
         service.updates = ExactDesktopUpdater()
+        # Passive status is intentionally network-free; inject the deterministic
+        # result this integration fixture uses instead of making status call it.
+        service._last_desktop_status = service.updates.check()
         return service
 
     def restart_computer(self, key, name):

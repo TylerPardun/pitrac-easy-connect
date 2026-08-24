@@ -212,6 +212,7 @@ def test_the_companion_reports_update_state_without_being_asked(tmp_path):
 
     service = CompanionService(config_path=tmp_path / "c.json", computer_name="PC")
     service.updates = Updater("0.2.0", root=tmp_path, fetch=fake_release("v0.4.0"))
+    service._last_desktop_status = service.updates.check()
     try:
         update = service.status()["update"]
         assert update["available"] is True
@@ -229,6 +230,7 @@ def test_a_failed_check_still_produces_a_usable_status(tmp_path):
 
     service = CompanionService(config_path=tmp_path / "c.json", computer_name="PC")
     service.updates = Updater("0.2.0", root=tmp_path, fetch=explode)
+    service._last_desktop_status = service.updates.check()
     try:
         status = service.status()
         assert status["update"]["available"] is False
@@ -243,6 +245,7 @@ def test_mismatched_versions_between_the_two_halves_are_flagged(tmp_path):
 
     service = CompanionService(config_path=tmp_path / "c.json", computer_name="PC")
     service.updates = Updater("0.2.0", root=tmp_path, fetch=fake_release("v0.2.0"))
+    service._last_desktop_status = service.updates.check()
     service._link = SimpleNamespace(connected=True, stop=lambda: None)
     try:
         service._pi_status = {"version": "0.1.0"}
@@ -313,6 +316,7 @@ def test_companion_sends_the_same_exact_tag_to_check_and_apply(tmp_path, monkeyp
         config_path=tmp_path / "c.json", computer_name="PC", version="0.5.0"
     )
     service.updates = Updater("0.5.0", root=tmp_path, fetch=fake_release("v0.5.0"))
+    service._last_desktop_status = service.updates.check()
     service._pi_status = {"version": "0.3.0"}
     link = SimpleNamespace(connected=True, stop=lambda: None)
     service._link = link
@@ -349,6 +353,7 @@ def test_companion_refuses_to_touch_pi_while_desktop_is_behind(tmp_path, monkeyp
         config_path=tmp_path / "c.json", computer_name="PC", version="0.4.2"
     )
     service.updates = Updater("0.4.2", root=tmp_path, fetch=fake_release("v0.5.0"))
+    service._last_desktop_status = service.updates.check()
     service._pi_status = {"version": "0.3.0"}
     service._link = SimpleNamespace(connected=True, stop=lambda: None)
     touched = []
@@ -369,6 +374,7 @@ def test_update_target_survives_desktop_restart_and_latest_release_changing(tmp_
     config = tmp_path / "c.json"
     old = CompanionService(config_path=config, computer_name="PC", version="0.4.2")
     old.updates = Updater("0.4.2", root=tmp_path, fetch=fake_release("v0.5.0"))
+    old._last_desktop_status = old.updates.check()
     old._link = SimpleNamespace(connected=True, stop=lambda: None)
     old._pi_status = {"version": "0.3.0"}
     try:
@@ -382,6 +388,7 @@ def test_update_target_survives_desktop_restart_and_latest_release_changing(tmp_
     # desktop. The in-flight transaction must still put both sides on 0.5.0.
     current = CompanionService(config_path=config, computer_name="PC", version="0.5.0")
     current.updates = Updater("0.5.0", root=tmp_path, fetch=fake_release("v0.5.1"))
+    current._last_desktop_status = current.updates.check()
     current._link = SimpleNamespace(connected=True, stop=lambda: None)
     current._pi_status = {"version": "0.3.0"}
     try:

@@ -269,11 +269,15 @@ def test_the_pi_archive_is_not_a_browser_or_desktop_entry_point():
 
 
 def test_the_release_notes_warn_about_the_unsigned_builds():
-    workflow = read(
-        Path(__file__).resolve().parent.parent / ".github" / "workflows" / "build.yml"
-    )
-    assert "Run anyway" in workflow, "Windows users need to be told about SmartScreen"
-    assert "right-click" in workflow.lower(), "macOS users need to be told about Gatekeeper"
+    # Version-specific prose used to be embedded in build.yml, so every
+    # release silently retained the previous version's notes. The workflow now
+    # names a versioned source; validate the actual published body instead.
+    root = Path(__file__).resolve().parent.parent
+    workflow = read(root / ".github" / "workflows" / "build.yml")
+    assert "body_path: .github/release-notes/v0.4.6.md" in workflow
+    notes = read(root / ".github" / "release-notes" / "v0.4.6.md")
+    assert "Run anyway" in notes, "Windows users need to be told about SmartScreen"
+    assert "right-click" in notes.lower(), "macOS users need to be told about Gatekeeper"
 
 
 def test_the_app_calls_itself_one_thing():

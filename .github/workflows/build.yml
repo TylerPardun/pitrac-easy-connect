@@ -108,30 +108,59 @@ jobs:
         run: python packaging/collect-licences.py
 
       - name: Build the app
-        run: python -m PyInstaller --noconfirm --clean --distpath dist --workpath build packaging/PiTrac-Easy-Connect.spec
+        run: |
+          python -m PyInstaller --noconfirm --clean --distpath dist --workpath build/app packaging/PiTrac-Easy-Connect.spec
+          python -m PyInstaller --noconfirm --clean --distpath dist-helper --workpath build/helper packaging/PiTrac-Updater.spec
+
+      - name: Build a disposable v0.4.5 application for the N to N+1 updater test
+        shell: bash
+        run: |
+          OLD_SOURCE="$RUNNER_TEMP/pitrac-old-source"
+          mkdir -p "$OLD_SOURCE"
+          cp -R src/pitrac_easy_connect "$OLD_SOURCE/"
+          OLD_INIT="$OLD_SOURCE/pitrac_easy_connect/__init__.py"
+          python - "$OLD_INIT" <<'PY'
+          import pathlib, re, sys
+          path = pathlib.Path(sys.argv[1])
+          path.write_text(re.sub(r'__version__ = "[^"]+"', '__version__ = "0.4.5"', path.read_text()))
+          PY
+          PITRAC_SOURCE_ROOT="$OLD_SOURCE" PITRAC_VERSION=0.4.5 \
+            python -m PyInstaller --noconfirm --clean --distpath dist-old \
+            --workpath build/old packaging/PiTrac-Easy-Connect.spec
 
       # A .app is a directory, and uploading it directly loses the executable
       # bit, which leaves a download that cannot be opened.
       - name: Package the macOS app
         if: runner.os == 'macOS'
         run: |
-          # The licences travel beside the app as well as inside its supported
-          # onedir bundle, where they remain directly inspectable.
+          VERSION=$(PYTHONPATH=src python -c 'import pitrac_easy_connect; print(pitrac_easy_connect.__version__)')
+          case "${{ matrix.path }}" in
+            *apple-silicon*) WANT=arm64 ;;
+            *intel*)         WANT=x86_64 ;;
+          esac
+          mkdir -p "dist/PiTrac Easy-Connect.app/Contents/Helpers"
+          cp "dist-helper/PiTrac Updater" "dist/PiTrac Easy-Connect.app/Contents/Helpers/"
+          chmod +x "dist/PiTrac Easy-Connect.app/Contents/Helpers/PiTrac Updater"
+          python packaging/write-install-manifest.py \
+            "dist/PiTrac Easy-Connect.app/Contents/Resources/pitrac-install.json" \
+            --version "$VERSION" --system Darwin --arch "$WANT"
+          # Adding the separately-built helper changes the bundle, so refresh
+          # the ad-hoc signature before packaging and verify it immediately.
+          codesign --force --deep --sign - "dist/PiTrac Easy-Connect.app"
+          codesign --verify --deep --strict "dist/PiTrac Easy-Connect.app"
+
+          # The archive has one .app at its root plus deterministic legal files.
           mkdir -p dist/payload
           cp -R "dist/PiTrac Easy-Connect.app" dist/payload/
           cp LICENSE NOTICE.md dist/payload/
           cp THIRD-PARTY-LICENCES.txt dist/payload/
-          ditto -c -k --keepParent dist/payload "${{ matrix.path }}"
+          ditto -c -k --norsrc --noextattr dist/payload/ "${{ matrix.path }}"
 
           # The architecture is the whole reason there are two of these, so it
           # is worth failing the build rather than shipping the wrong one under
           # the right name.
           BUILT=$(lipo -archs "dist/PiTrac Easy-Connect.app/Contents/MacOS/PiTrac Easy-Connect")
           echo "built for: $BUILT"
-          case "${{ matrix.path }}" in
-            *apple-silicon*) WANT=arm64 ;;
-            *intel*)         WANT=x86_64 ;;
-          esac
           if [ "$BUILT" != "$WANT" ]; then
             echo "::error::${{ matrix.artifact }} should be $WANT but is $BUILT"
             exit 1
@@ -144,7 +173,14 @@ jobs:
           APP=$(find dist/unpacked -maxdepth 3 -name "*.app" | head -1)
           BIN="$APP/Contents/MacOS/$(basename "$APP" .app)"
           EXPECTED=$(PYTHONPATH=src python -c 'import pitrac_easy_connect; print(pitrac_easy_connect.__version__)')
+          case "${{ matrix.path }}" in
+            *apple-silicon*) WANT=arm64 ;;
+            *intel*)         WANT=x86_64 ;;
+          esac
           test -x "$BIN" || { echo "::error::the app executable bit was lost"; exit 1; }
+          test -x "$APP/Contents/Helpers/PiTrac Updater" || { echo "::error::the helper is missing"; exit 1; }
+          python packaging/check-release-archive.py "${{ matrix.path }}" \
+            --system Darwin --arch "$WANT" --version "$EXPECTED"
           /usr/libexec/PlistBuddy -c 'Print :NSLocalNetworkUsageDescription' "$APP/Contents/Info.plist"
           /usr/libexec/PlistBuddy -c 'Print :NSAppTransportSecurity:NSAllowsLocalNetworking' "$APP/Contents/Info.plist" | grep -q true
           /usr/libexec/PlistBuddy -c 'Print :LSMultipleInstancesProhibited' "$APP/Contents/Info.plist" | grep -q true
@@ -233,16 +269,46 @@ jobs:
           cat /tmp/mac-window.log /tmp/mac-second.log || true
           echo "the exact macOS zip passed native page, single-instance, and browser checks"
 
+      - name: Run a real packaged macOS v0.4.5 to candidate update transaction
+        if: runner.os == 'macOS'
+        run: |
+          FIXTURE="$RUNNER_TEMP/pitrac-update-fixture"
+          mkdir -p "$FIXTURE"
+          cp -R "dist-old/PiTrac Easy-Connect.app" "$FIXTURE/"
+          OLD_APP="$FIXTURE/PiTrac Easy-Connect.app"
+          mkdir -p "$OLD_APP/Contents/Helpers"
+          cp "dist-helper/PiTrac Updater" "$OLD_APP/Contents/Helpers/"
+          chmod +x "$OLD_APP/Contents/Helpers/PiTrac Updater"
+          case "${{ matrix.path }}" in
+            *apple-silicon*) WANT=arm64 ;;
+            *intel*)         WANT=x86_64 ;;
+          esac
+          python packaging/write-install-manifest.py \
+            "$OLD_APP/Contents/Resources/pitrac-install.json" \
+            --version 0.4.5 --system Darwin --arch "$WANT"
+          codesign --force --deep --sign - "$OLD_APP"
+          TARGET=$(PYTHONPATH=src python -c 'import pitrac_easy_connect; print(pitrac_easy_connect.__version__)')
+          ASSET=$(basename "${{ matrix.path }}")
+          python packaging/packaged-update-smoke.py \
+            --old-root "$OLD_APP" --archive "${{ matrix.path }}" \
+            --old-version 0.4.5 --target-version "$TARGET" \
+            --system Darwin --arch "$WANT" --asset "$ASSET"
+
       # A bare .exe cannot carry a licence file, so it travels in a zip with one.
       - name: Package the Windows app
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force -Path dist/payload | Out-Null
-          Copy-Item "dist/PiTrac Easy-Connect.exe" dist/payload/
-          Copy-Item LICENSE, NOTICE.md dist/payload/
-          Copy-Item THIRD-PARTY-LICENCES.txt dist/payload/
-          Compress-Archive -Path dist/payload/* -DestinationPath dist/PiTrac-Easy-Connect-windows.zip -Force
+          $root = "dist/payload/PiTrac Easy-Connect"
+          New-Item -ItemType Directory -Force -Path $root | Out-Null
+          Copy-Item "dist/PiTrac Easy-Connect.exe" $root/
+          Copy-Item "dist-helper/PiTrac Updater.exe" $root/
+          Copy-Item LICENSE, NOTICE.md $root/
+          Copy-Item THIRD-PARTY-LICENCES.txt $root/
+          $version = python -c "import sys;sys.path.insert(0,'src');import pitrac_easy_connect;print(pitrac_easy_connect.__version__)"
+          python packaging/write-install-manifest.py "$root/pitrac-install.json" `
+            --version $version --system Windows --arch x86_64
+          Compress-Archive -Path $root -DestinationPath dist/PiTrac-Easy-Connect-windows.zip -Force
 
       # Unpack the exact zip that gets published and use its normal launch path.
       # What it asserts is that WebView2 started: the runtime runs as msedge
@@ -258,8 +324,11 @@ jobs:
         run: |
           Expand-Archive -Path dist/PiTrac-Easy-Connect-windows.zip `
             -DestinationPath dist/unpacked -Force
-          $exe = Get-ChildItem dist/unpacked -Recurse -Filter "*.exe" | Select-Object -First 1
+          $exe = Get-ChildItem dist/unpacked -Recurse -Filter "PiTrac Easy-Connect.exe" | Select-Object -First 1
           if (-not $exe) { Write-Error "no executable inside the release zip"; exit 1 }
+          $expected = python -c "import sys;sys.path.insert(0,'src');import pitrac_easy_connect;print(pitrac_easy_connect.__version__)"
+          python packaging/check-release-archive.py dist/PiTrac-Easy-Connect-windows.zip `
+            --system Windows --arch x86_64 --version $expected
           Write-Host "launching $($exe.FullName)"
 
           $app = Start-Process -FilePath $exe.FullName `
@@ -413,23 +482,47 @@ jobs:
           }
           Write-Host "the exact Windows zip passed native page and single-instance checks"
 
+      - name: Run a real packaged Windows v0.4.5 to candidate update transaction
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $fixture = "$env:RUNNER_TEMP\pitrac-update-fixture\PiTrac Easy-Connect"
+          New-Item -ItemType Directory -Force -Path $fixture | Out-Null
+          Copy-Item "dist-old/PiTrac Easy-Connect.exe" $fixture/
+          Copy-Item "dist-helper/PiTrac Updater.exe" $fixture/
+          Copy-Item LICENSE, NOTICE.md, THIRD-PARTY-LICENCES.txt $fixture/
+          python packaging/write-install-manifest.py "$fixture/pitrac-install.json" `
+            --version 0.4.5 --system Windows --arch x86_64
+          $target = python -c "import sys;sys.path.insert(0,'src');import pitrac_easy_connect;print(pitrac_easy_connect.__version__)"
+          python packaging/packaged-update-smoke.py `
+            --old-root $fixture --archive dist/PiTrac-Easy-Connect-windows.zip `
+            --old-version 0.4.5 --target-version $target --system Windows `
+            --arch x86_64 --asset PiTrac-Easy-Connect-windows.zip
+
       - name: Package the Linux app
         if: runner.os == 'Linux'
         run: |
-          mkdir -p dist/payload
-          cp "dist/PiTrac Easy-Connect" dist/payload/
-          cp LICENSE NOTICE.md THIRD-PARTY-LICENCES.txt dist/payload/
-          chmod +x "dist/payload/PiTrac Easy-Connect"
-          (cd dist/payload && zip -r ../PiTrac-Easy-Connect-linux-x86_64.zip .)
+          ROOT="dist/payload/PiTrac Easy-Connect"
+          mkdir -p "$ROOT"
+          cp "dist/PiTrac Easy-Connect" "$ROOT/"
+          cp "dist-helper/PiTrac Updater" "$ROOT/"
+          cp LICENSE NOTICE.md THIRD-PARTY-LICENCES.txt "$ROOT/"
+          chmod +x "$ROOT/PiTrac Easy-Connect" "$ROOT/PiTrac Updater"
+          VERSION=$(PYTHONPATH=src python -c 'import pitrac_easy_connect; print(pitrac_easy_connect.__version__)')
+          python packaging/write-install-manifest.py "$ROOT/pitrac-install.json" \
+            --version "$VERSION" --system Linux --arch x86_64
+          (cd dist/payload && zip -yr ../PiTrac-Easy-Connect-linux-x86_64.zip "PiTrac Easy-Connect")
 
       - name: Check the Linux release opens a WebKitGTK window
         if: runner.os == 'Linux'
         run: |
           mkdir -p dist/unpacked-linux
           unzip -q dist/PiTrac-Easy-Connect-linux-x86_64.zip -d dist/unpacked-linux
-          BIN="dist/unpacked-linux/PiTrac Easy-Connect"
+          BIN="dist/unpacked-linux/PiTrac Easy-Connect/PiTrac Easy-Connect"
           test -x "$BIN" || { echo "::error::the Linux executable bit was lost"; exit 1; }
           EXPECTED=$(PYTHONPATH=src python -c 'import pitrac_easy_connect; print(pitrac_easy_connect.__version__)')
+          python packaging/check-release-archive.py dist/PiTrac-Easy-Connect-linux-x86_64.zip \
+            --system Linux --arch x86_64 --version "$EXPECTED"
           BROWSERS_BEFORE=$(pgrep -x 'firefox|chromium|google-chrome' 2>/dev/null | sort || true)
           # Both launches must share one desktop session. Wrapping only the
           # first process in xvfb-run leaves the second with no DISPLAY, so it
@@ -516,6 +609,23 @@ jobs:
           kill $XVFB_PID 2>/dev/null || true
           wait $XVFB_PID 2>/dev/null || true
           cat linux-window.log linux-second.log xvfb.log || true
+
+      - name: Run a real packaged Linux v0.4.5 to candidate update transaction
+        if: runner.os == 'Linux'
+        run: |
+          FIXTURE="$RUNNER_TEMP/pitrac-update-fixture/PiTrac Easy-Connect"
+          mkdir -p "$FIXTURE"
+          cp "dist-old/PiTrac Easy-Connect" "$FIXTURE/"
+          cp "dist-helper/PiTrac Updater" "$FIXTURE/"
+          cp LICENSE NOTICE.md THIRD-PARTY-LICENCES.txt "$FIXTURE/"
+          chmod +x "$FIXTURE/PiTrac Easy-Connect" "$FIXTURE/PiTrac Updater"
+          python packaging/write-install-manifest.py "$FIXTURE/pitrac-install.json" \
+            --version 0.4.5 --system Linux --arch x86_64
+          TARGET=$(PYTHONPATH=src python -c 'import pitrac_easy_connect; print(pitrac_easy_connect.__version__)')
+          xvfb-run -a python packaging/packaged-update-smoke.py \
+            --old-root "$FIXTURE" --archive dist/PiTrac-Easy-Connect-linux-x86_64.zip \
+            --old-version 0.4.5 --target-version "$TARGET" --system Linux \
+            --arch x86_64 --asset PiTrac-Easy-Connect-linux-x86_64.zip
 
       - name: Check NOTICE.md credits everything the build bundles
         run: python packaging/bundled-licences.py --check
@@ -620,85 +730,7 @@ jobs:
         with:
           files: release/*
           generate_release_notes: true
-          # What the signing does and does not do, said where people download.
-          body: |
-            Download the build for your computer.
-
-            **Windows** — `PiTrac-Easy-Connect-windows.zip`. Unzip it, then Windows will warn that
-            it does not recognise the program; choose **More info**, then
-            **Run anyway**.
-
-            **macOS** — `PiTrac-Easy-Connect-macos-apple-silicon.zip` for an
-            M1 or later, `PiTrac-Easy-Connect-macos-intel.zip` for an Intel
-            Mac. **Apple menu → About This Mac** says which you have, and the
-            two are not interchangeable. Unzip, then right-click the app and
-            choose **Open** the first time.
-
-            **Linux x86-64** — `PiTrac-Easy-Connect-linux-x86_64.zip`. Install
-            WebKitGTK 4.1 from your distribution, unzip it, and run
-            `PiTrac Easy-Connect`.
-
-            `PiTrac-Easy-Connect-<version>.pyz` is the verified
-            Raspberry Pi service-update payload used by Easy-Connect. It is
-            not a desktop application or a Linux desktop download.
-
-            ### v0.4.5
-
-            - A wiped or replaced Pi reachable at a previously-saved address
-              is no longer mistaken for the enclosure that address used to
-              belong to. The desktop checks the device it is talking to
-              before sending saved pairing credentials, and stops retrying
-              automatically once it is clear those credentials cannot work
-              here.
-            - Link authentication failures and new-pairing attempts are
-              rate-limited separately, so a stale saved pairing retrying in
-              the background can no longer lock a new computer out of
-              pairing with its own enclosure.
-            - Opening a pairing window for a second computer, removing a
-              trusted computer, resetting Wi-Fi, restoring a backup, and
-              powering the enclosure off or down now require real proof of
-              ownership — the enclosure's own setup network, an
-              already-authenticated computer's link, or the owner-card
-              password — rather than only the header a browser preflight
-              would refuse.
-            - The desktop shows distinct states for "not paired," "this
-              computer's access was revoked," "PiTrac appears to have been
-              reset or replaced," and "another computer is connected,"
-              instead of a single generic setup-required message.
-
-            Existing users must replace and restart the desktop app first.
-            Let that desktop app update the enclosure afterward; it pins
-            both halves of the update to this exact release.
-
-            Hardware readiness is separate. Missing cameras, calibration,
-            models, or measurement operation still report `RECOVERY REQUIRED`;
-            this release does not claim those components are operational.
-
-            ### Checking what you downloaded
-
-            Every file here is signed at build time, and `SHA256SUMS.txt`
-            lists the checksums. To confirm a download came from this
-            repository's own build, with the [GitHub CLI](https://cli.github.com):
-
-            ```
-            gh attestation verify PiTrac-Easy-Connect-windows.zip --repo TylerPardun/pitrac-easy-connect
-            ```
-
-            That reports the workflow, the commit, and the run that produced
-            the file. To check the bytes alone, compare against
-            `SHA256SUMS.txt` — `sha256sum -c SHA256SUMS.txt` on Linux,
-            `shasum -a 256 -c SHA256SUMS.txt` on macOS, or
-            `Get-FileHash` on Windows.
-
-            This is not a code-signing certificate, so Windows and macOS still
-            warn about the app as described above. Those warnings need a paid
-            certificate from Microsoft's and Apple's programmes; the signing
-            here proves where the file came from, which is the part that can
-            be done without one.
-
-            The enclosure checks the same thing for itself: it refuses an
-            update whose bytes do not match the checksum this release
-            publishes.
+          body_path: .github/release-notes/v0.4.6.md
 
   pages:
     if: github.ref == 'refs/heads/main'

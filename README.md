@@ -18,7 +18,7 @@ includes PiTrac's dashboard, shot history, and a practice range.
 A five-step guide walks you through the first setup. If you move the enclosure to another home, you only need to choose the new Wi-Fi network. You do not need to reconfigure PiTrac.
 
 - **Download:** <https://tylerpardun.github.io/pitrac-easy-connect/>
-- **Version:** 0.4.5
+- **Version:** 0.4.6
 - **License:** [MIT](LICENSE)
 
 ![The practice range](media/range.png)
@@ -145,6 +145,12 @@ operating systems warn the first time:
 | macOS | Right-click the app and choose **Open** rather than double-clicking |
 | Windows | Choose **More info**, then **Run anyway** |
 
+On Windows and Linux, keep the extracted `PiTrac Easy-Connect` directory
+together and start the executable inside it. A loose executable copied to
+Downloads, Desktop, Documents, a home directory, or another unrelated folder
+will run, but automatic replacement is deliberately refused because that
+folder is not a disposable application installation.
+
 On Linux, install WebKitGTK 4.1 first. The package is commonly named
 `libwebkit2gtk-4.1-0` on Debian/Ubuntu, `webkit2gtk4.1` on Fedora, and
 `webkit2gtk-4.1` on Arch. Unzip the download and run `PiTrac Easy-Connect`.
@@ -182,6 +188,10 @@ may ask the enclosure to install the exact same release tag. The app reports
 success only after the enclosure reconnects and both sides report that version.
 The versioned `.pyz` attached to each release is this verified Pi-service
 payload; it is not a Linux desktop application.
+
+Version 0.4.5 predates the safe desktop updater, so moving from v0.4.5 to
+v0.4.6 is manual. Version 0.4.6 establishes the updater foundation; the first
+normal automatic desktop update will be v0.4.6 to v0.4.7.
 
 Open the app and follow five steps: find the enclosure, choose your simulator,
 open it, send a test shot, and play. The guide does not appear again after

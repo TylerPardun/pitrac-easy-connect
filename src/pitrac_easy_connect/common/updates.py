@@ -29,6 +29,8 @@ Three rules shape all of it:
 import hashlib
 import json
 import os
+import platform
+import re
 import shutil
 import tempfile
 import subprocess
@@ -39,9 +41,11 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
+from enum import Enum
 from pathlib import Path
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, Optional, Tuple
 
+from .errors import UPD_UNSUPPORTED_PLATFORM, EasyConnectError
 from .versions import compare, is_newer, parse
 
 #: Where releases are published. Overridable so the update path can be
@@ -440,6 +444,428 @@ class Updater:
             "detail": "Updated. Restart PiTrac Easy-Connect to use the new version.",
             "needsRestart": True,
         }
+
+
+# --- The desktop's own packaged release -------------------------------
+#
+# A packaged desktop build has no repository to pull, but unlike the git
+# checkout it *can* replace itself -- there is a real, platform-specific
+# package published for it. Checking, downloading, and verifying that
+# package lives here, next to the other release-facing code, so there is one
+# place that knows how a release is shaped. Actually replacing the running
+# application is a companion-only concern (process handling, install-path
+# discovery, restart handoff) and lives in companion.self_update instead.
+
+
+class DesktopUpdateState(str, Enum):
+    IDLE = "idle"
+    CHECKING = "checking"
+    UP_TO_DATE = "up-to-date"
+    AVAILABLE = "available"
+    DOWNLOADING = "downloading"
+    CANCELLED = "cancelled"
+    VERIFYING = "verifying"
+    STAGING = "staging"
+    READY_TO_RESTART = "ready-to-restart"
+    PREFLIGHT_FAILED = "preflight-failed"
+    INSTALLING = "installing"
+    AWAITING_RESTART_VERIFICATION = "awaiting-restart-verification"
+    ROLLBACK = "rollback"
+    ROLLED_BACK = "rolled-back"
+    SYNCHRONIZED = "synchronized"
+    RESTART_REQUIRED = "restart-required"
+    CHECK_FAILED = "check-failed"
+    DOWNLOAD_FAILED = "download-failed"
+    VERIFY_FAILED = "verify-failed"
+    INSTALL_FAILED = "install-failed"
+
+
+#: Every filename here is produced deterministically by build.yml's build
+#: matrix (see the EXPECTED array in its release job) -- reused verbatim,
+#: never reconstructed from a version number, so a naming change in the
+#: workflow is a naming change here too rather than a silent mismatch.
+PLATFORM_ASSET_NAMES: Dict[Tuple[str, str], str] = {
+    ("Darwin", "arm64"): "PiTrac-Easy-Connect-macos-apple-silicon.zip",
+    ("Darwin", "x86_64"): "PiTrac-Easy-Connect-macos-intel.zip",
+    ("Windows", "x86_64"): "PiTrac-Easy-Connect-windows.zip",
+    ("Linux", "x86_64"): "PiTrac-Easy-Connect-linux-x86_64.zip",
+}
+
+_ARCH_ALIASES = {
+    "arm64": "arm64",
+    "aarch64": "arm64",
+    "x86_64": "x86_64",
+    "amd64": "x86_64",
+}
+
+
+def normalize_arch(machine: str) -> str:
+    """The same processor reported under whatever name this platform uses."""
+
+    return _ARCH_ALIASES.get(str(machine or "").strip().lower(), str(machine or ""))
+
+
+def select_desktop_asset(system: Optional[str] = None, machine: Optional[str] = None) -> str:
+    """The one release asset built for this computer, or a refusal.
+
+    Never a fallback to a different platform's package: running an Apple
+    Silicon binary under Rosetta, or an x86 binary on ARM, is exactly the
+    kind of "it downloaded something, but not really for this computer"
+    failure this exists to prevent.
+    """
+
+    resolved_system = system if system is not None else platform.system()
+    resolved_machine = normalize_arch(machine if machine is not None else platform.machine())
+    name = PLATFORM_ASSET_NAMES.get((resolved_system, resolved_machine))
+    if name is None:
+        raise EasyConnectError(
+            UPD_UNSUPPORTED_PLATFORM,
+            "{} {} has no published PiTrac Easy-Connect build".format(
+                resolved_system, resolved_machine or "unknown"
+            ),
+        )
+    return name
+
+
+def _find_asset(release: Dict[str, Any], name: str) -> Optional[Dict[str, Any]]:
+    for asset in release.get("assets") or []:
+        if str(asset.get("name") or "") == name:
+            return asset
+    return None
+
+
+def _find_asset_url(release: Dict[str, Any], name: str) -> str:
+    asset = _find_asset(release, name)
+    return str(asset.get("browser_download_url") or "") if asset else ""
+
+
+#: Successful answers ("up to date," "available") are trusted longer than a
+#: failure, which is retried sooner on the assumption it was a transient
+#: network problem rather than a considered answer.
+RECHECK_SECONDS_OK = 20 * 60
+RECHECK_SECONDS_FAILED = 5 * 60
+
+#: A real desktop package is tens of megabytes; anything wildly outside this
+#: range did not actually arrive.
+MIN_PACKAGE_BYTES = 200 * 1024
+MAX_PACKAGE_BYTES = 200 * 1024 * 1024
+DOWNLOAD_TIMEOUT = 30.0
+
+
+class DesktopReleaseUpdater:
+    """Checks for, downloads, and verifies the desktop's own packaged build.
+
+    This never touches the running application -- it only ever produces a
+    checked, verified file on disk. Installing it is companion.self_update's
+    job, kept separate because it needs to know about running processes and
+    install paths, neither of which belongs in this network/crypto layer.
+    """
+
+    def __init__(
+        self,
+        installed: str,
+        repository: str = REPOSITORY,
+        api_base: Optional[str] = None,
+        system: Optional[str] = None,
+        machine: Optional[str] = None,
+        allow_prerelease: bool = False,
+        fetch_json: Optional[Callable[[str], Dict[str, Any]]] = None,
+        clock: Callable[[], float] = time.time,
+    ):
+        self.installed = installed
+        self.repository = repository
+        self._api = (api_base or API_BASE).rstrip("/")
+        self._system = system
+        self._machine = machine
+        self.allow_prerelease = allow_prerelease
+        self._fetch_json = fetch_json or self._fetch_release_json
+        self._clock = clock
+        self._lock = threading.Lock()
+        self._last: Optional[UpdateStatus] = None
+        self._last_failed = False
+        self._selected_releases: Dict[str, Dict[str, Any]] = {}
+
+    def asset_name(self) -> str:
+        return select_desktop_asset(self._system, self._machine)
+
+    @property
+    def system(self) -> str:
+        """The platform this checker selects and verifies packages for --
+        the real host by default, injectable so a test (or, one day, a
+        cross-compile tool) can exercise another platform's logic without
+        needing to run on it."""
+
+        return self._system if self._system is not None else platform.system()
+
+    @property
+    def machine(self) -> str:
+        return normalize_arch(self._machine if self._machine is not None else platform.machine())
+
+    @property
+    def last_check_failed(self) -> bool:
+        """Whether the most recent check could not reach the release
+        service at all, as opposed to reaching it and getting a real
+        answer (up to date, available, unsupported platform, and so on)."""
+
+        with self._lock:
+            return self._last_failed
+
+    def cached_status(self) -> UpdateStatus:
+        """Return immediately without touching the network."""
+
+        with self._lock:
+            if self._last is not None:
+                return self._last
+        return UpdateStatus(self.installed, PACKAGED, detail="Update check has not finished yet.")
+
+    # --- Checking -----------------------------------------------------
+
+    def check(self, force: bool = False) -> UpdateStatus:
+        """The full check, holding the lock throughout.
+
+        A finer-grained lock (guarding only the cache, not the network call)
+        would let two callers arriving together both reach GitHub. Holding it
+        for the whole check instead means a second, concurrent caller simply
+        waits a moment and reuses the first call's fresh answer -- one
+        request, not two, whatever asked for it or how many times.
+        """
+
+        requested_at = self._clock()
+        with self._lock:
+            if self._last is not None:
+                # A check that finished after this call started waiting for
+                # the lock is a concurrent one, not a stale one -- reusing it
+                # is what stops a second caller (the periodic timer landing
+                # on top of a manual force-check, for instance) from firing
+                # its own redundant network request, whether or not either
+                # call asked to force a recheck.
+                answered_concurrently = self._last.checked_at >= requested_at
+                window = RECHECK_SECONDS_FAILED if self._last_failed else RECHECK_SECONDS_OK
+                cache_is_fresh = not force and self._clock() - self._last.checked_at < window
+                if answered_concurrently or cache_is_fresh:
+                    return self._last
+            status, failed = self._check_now()
+            if failed and self._last is not None and self._last.latest:
+                # A transient outage does not erase the last verified release
+                # selection. The detail and last_check_failed flag still make
+                # the failed latest attempt explicit.
+                status.latest = self._last.latest
+                status.available = self._last.available
+                status.can_apply = self._last.can_apply
+                status.download_url = self._last.download_url
+            # Stamped after the network call finishes, not when it started --
+            # a check that took a while must not look, to a concurrent
+            # caller, as if it had already gone stale before it even
+            # returned.
+            status.checked_at = self._clock()
+            self._last = status
+            self._last_failed = failed
+            return status
+
+    def check_in_background(self, done: Optional[Callable[[UpdateStatus], None]] = None) -> None:
+        def work():
+            try:
+                status = self.check()
+            except Exception:
+                return
+            if done is not None:
+                try:
+                    done(status)
+                except Exception:
+                    pass
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _check_now(self) -> Tuple[UpdateStatus, bool]:
+        now = self._clock()
+        try:
+            asset = self.asset_name()
+        except EasyConnectError as exc:
+            return UpdateStatus(self.installed, PACKAGED, detail=str(exc), checked_at=now), True
+
+        try:
+            release = self._fetch_json(self._releases_url())
+        except Exception:
+            return (
+                UpdateStatus(self.installed, PACKAGED, detail="Could not check for updates.", checked_at=now),
+                True,
+            )
+
+        tag = str(release.get("tag_name") or "")
+        if tag:
+            # Bind the selected metadata to this exact tag. Download work
+            # reuses this immutable snapshot instead of asking "latest" a
+            # second time and potentially changing transactions mid-flight.
+            self._selected_releases[tag] = json.loads(json.dumps(release))
+
+        if not self.allow_prerelease and (release.get("draft") or release.get("prerelease")):
+            return UpdateStatus(self.installed, PACKAGED, detail="Up to date.", checked_at=now), False
+
+        if not tag or not is_newer(tag, self.installed):
+            return (
+                UpdateStatus(
+                    self.installed, PACKAGED, latest=tag or self.installed, detail="Up to date.",
+                    checked_at=now,
+                ),
+                False,
+            )
+
+        if not _find_asset_url(release, asset):
+            return (
+                UpdateStatus(
+                    self.installed, PACKAGED, latest=tag, available=True, can_apply=False,
+                    detail="Version {} is available, but no {} package was published for "
+                    "this computer.".format(tag, asset),
+                    download_url=str(release.get("html_url") or ""),
+                    checked_at=now,
+                ),
+                False,
+            )
+
+        return (
+            UpdateStatus(
+                self.installed, PACKAGED, latest=tag, available=True, can_apply=True,
+                detail="Version {} is ready to download.".format(tag),
+                download_url=str(release.get("html_url") or ""),
+                checked_at=now,
+            ),
+            False,
+        )
+
+    def _releases_url(self, tag: Optional[str] = None) -> str:
+        if tag:
+            return "{}/repos/{}/releases/tags/{}".format(
+                self._api, self.repository, urllib.parse.quote(tag, safe="")
+            )
+        return "{}/repos/{}/releases/latest".format(self._api, self.repository)
+
+    @staticmethod
+    def _fetch_release_json(url: str) -> Dict[str, Any]:
+        request = urllib.request.Request(
+            url, headers={"Accept": "application/vnd.github+json", "User-Agent": "PiTrac"}
+        )
+        with urllib.request.urlopen(request, timeout=CHECK_TIMEOUT) as response:
+            return json.loads(response.read().decode("utf-8"))
+
+    # --- Downloading and verifying --------------------------------------
+
+    def latest_release(self) -> Dict[str, Any]:
+        """The raw release listing, for asset/checksum lookups after ``check``."""
+
+        return self._fetch_json(self._releases_url())
+
+    def release_for_tag(self, tag: str) -> Dict[str, Any]:
+        """Return the exact release selected by checking, never a new latest."""
+
+        exact = str(tag or "")
+        with self._lock:
+            cached = self._selected_releases.get(exact)
+            if cached is not None:
+                return json.loads(json.dumps(cached))
+        release = self._fetch_json(self._releases_url(exact))
+        if str(release.get("tag_name") or "") != exact:
+            raise ValueError("the release service returned a different tag")
+        with self._lock:
+            self._selected_releases[exact] = json.loads(json.dumps(release))
+        return release
+
+    def asset_download_url(self, release: Dict[str, Any], asset_name: str) -> str:
+        return _find_asset_url(release, asset_name)
+
+    def expected_sha256(self, release: Dict[str, Any], asset_name: str) -> Optional[str]:
+        """The checksum this release publishes for one asset, if it publishes one.
+
+        GitHub's own ``digest`` field on the asset is preferred -- it comes
+        from the same listing as the download URL, so trusting it does not
+        add a second host to the chain of trust. SHA256SUMS.txt, itself just
+        another release asset, is the fallback when a listing has no digest
+        field. Neither present is a hard refusal, never a silent skip.
+        """
+
+        asset = _find_asset(release, asset_name)
+        if asset:
+            digest = str(asset.get("digest") or "")
+            if digest.startswith("sha256:"):
+                value = digest[7:]
+                return value.lower() if re.fullmatch(r"[0-9a-fA-F]{64}", value) else None
+        sums_url = _find_asset_url(release, "SHA256SUMS.txt")
+        if not sums_url:
+            return None
+        try:
+            text = self._fetch_text(sums_url)
+        except Exception:
+            return None
+        for line in text.splitlines():
+            parts = line.split(None, 1)
+            if len(parts) == 2 and parts[1].strip() == asset_name:
+                value = parts[0].strip()
+                return value.lower() if re.fullmatch(r"[0-9a-fA-F]{64}", value) else None
+        return None
+
+    @staticmethod
+    def _fetch_text(url: str) -> str:
+        request = urllib.request.Request(url, headers={"User-Agent": "PiTrac"})
+        with urllib.request.urlopen(request, timeout=CHECK_TIMEOUT) as response:
+            return response.read(1024 * 1024).decode("utf-8", errors="replace")
+
+    def download(
+        self,
+        url: str,
+        dest_dir: Path,
+        *,
+        max_bytes: int = MAX_PACKAGE_BYTES,
+        timeout: float = DOWNLOAD_TIMEOUT,
+        cancel_event: Optional[threading.Event] = None,
+        progress: Optional[Callable[[int, Optional[int]], None]] = None,
+    ) -> Path:
+        """Stream a package into ``dest_dir``, never into the running app.
+
+        ``dest_dir`` is always a staging location outside any application
+        bundle or install directory -- the caller (companion.self_update)
+        decides where that is; this only ever writes inside it.
+        """
+
+        dest_dir = Path(dest_dir)
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        destination = dest_dir / "download.part"
+        request = urllib.request.Request(url, headers={"User-Agent": "PiTrac"})
+        written = 0
+        try:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                length = response.headers.get("Content-Length")
+                expected_length = int(length) if length is not None else None
+                if expected_length is not None and expected_length > max_bytes:
+                    raise ValueError("the published package is larger than expected")
+                with open(destination, "wb") as handle:
+                    while True:
+                        if cancel_event is not None and cancel_event.is_set():
+                            raise InterruptedError("the download was cancelled")
+                        chunk = response.read(65536)
+                        if not chunk:
+                            break
+                        written += len(chunk)
+                        if written > max_bytes:
+                            raise ValueError("the download is larger than expected")
+                        handle.write(chunk)
+                        if progress is not None:
+                            progress(written, expected_length)
+        except Exception:
+            destination.unlink(missing_ok=True)
+            raise
+        if written < MIN_PACKAGE_BYTES:
+            destination.unlink(missing_ok=True)
+            raise ValueError("the downloaded file is too small to be a real package")
+        return destination
+
+    @staticmethod
+    def verify(path: Path, expected_sha256: str) -> bool:
+        if not re.fullmatch(r"[0-9a-fA-F]{64}", str(expected_sha256 or "")):
+            return False
+        digest = hashlib.sha256()
+        with open(path, "rb") as handle:
+            for chunk in iter(lambda: handle.read(65536), b""):
+                digest.update(chunk)
+        return digest.hexdigest() == expected_sha256
 
 
 # --- Updating an installation that came from an archive --------------------

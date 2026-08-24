@@ -149,6 +149,8 @@ class CompanionHandler(BaseHTTPRequestHandler):
             "/api/shots/clear": lambda body: service.clear_shots(),
             "/api/cameras": lambda body: service.cameras(),
             "/api/update/check": lambda body: service.check_for_updates(),
+            "/api/update/download": lambda body: service.download_desktop_update(),
+            "/api/update/cancel": lambda body: service.cancel_desktop_update(),
             "/api/update/prepare": lambda body: service.prepare_update(
                 str(body.get("targetTag", ""))
             ),

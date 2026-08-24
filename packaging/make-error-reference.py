@@ -29,6 +29,7 @@ FAMILIES = [
     ("PT-PI", "The enclosure itself"),
     ("PT-SIM", "The golf simulator"),
     ("PT-CFG", "Settings and backups"),
+    ("PT-UPD", "Desktop updates"),
 ]
 
 
