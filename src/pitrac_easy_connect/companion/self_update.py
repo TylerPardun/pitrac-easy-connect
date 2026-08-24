@@ -787,6 +787,28 @@ def _terminate_process_tree(pid: int) -> None:
             process.kill()
         except Exception:
             pass
+    if alive:
+        # A killed Windows PyInstaller/WebView2 process can retain image or
+        # directory handles briefly. Do not begin rollback until the kernel
+        # has actually reaped the processes we had to kill.
+        try:
+            psutil.wait_procs(alive, timeout=5)
+        except Exception:
+            pass
+
+
+def _replace_transaction_path(source: Path, destination: Path, *, timeout: float = 10) -> None:
+    """Atomically rename an exact transaction path, tolerating brief Windows locks."""
+
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            os.replace(str(source), str(destination))
+            return
+        except PermissionError:
+            if time.monotonic() >= deadline:
+                raise
+            time.sleep(0.1)
 
 
 def _write_result(journal: Dict[str, Any], success: bool, detail: str,
@@ -858,16 +880,11 @@ def run_helper(journal_path: Path, wait_pid: int, *, timeout: float = HELPER_EXI
                               expected_version=journal["targetVersion"], allow_transaction_name=True)
         if previous.exists():
             raise SelfUpdateError("the recovery path is already occupied")
-        os.replace(str(install), str(previous))
+        _replace_transaction_path(install, previous)
         _fsync_dir(install.parent)
         _write_journal(journal_path, journal, "previous-moved")
-        try:
-            os.replace(str(prepared), str(install))
-            _fsync_dir(install.parent)
-        except Exception:
-            if not install.exists() and previous.exists():
-                os.replace(str(previous), str(install))
-            raise
+        _replace_transaction_path(prepared, install)
+        _fsync_dir(install.parent)
         _write_journal(journal_path, journal, "current-promoted")
         new_app = validate_install_root(install, system=system, machine=journal["architecture"],
                                         expected_version=journal["targetVersion"])
@@ -909,9 +926,9 @@ def run_helper(journal_path: Path, wait_pid: int, *, timeout: float = HELPER_EXI
                 if install.exists():
                     if broken.exists():
                         _remove_tree(broken, allowed_parent=install.parent)
-                    os.replace(str(install), str(broken))
+                    _replace_transaction_path(install, broken)
                 if previous.exists():
-                    os.replace(str(previous), str(install))
+                    _replace_transaction_path(previous, install)
                 _fsync_dir(install.parent)
                 old = validate_install_root(install, system=system, machine=journal["architecture"],
                                             expected_version=journal["installedVersion"])

@@ -349,6 +349,28 @@ def test_windows_helper_cleanup_retries_a_transient_file_lock(monkeypatch, tmp_p
     assert not helper_dir.exists()
 
 
+def test_second_promotion_rename_failure_restores_the_previous_install(monkeypatch, tmp_path):
+    _state, current, journal = stage_fixture(tmp_path, monkeypatch)
+    real_replace = su._replace_transaction_path
+    promoted_attempts = []
+
+    def fail_prepared_promotion(source, destination, *, timeout=10):
+        if Path(source).name.startswith(".pitrac-prepared-"):
+            promoted_attempts.append(1)
+            raise PermissionError("candidate promotion stayed locked")
+        return real_replace(source, destination, timeout=timeout)
+
+    monkeypatch.setattr(su, "_replace_transaction_path", fail_prepared_promotion)
+    result = su.run_helper(journal, 999999)
+    data = su.load_journal(journal)
+    assert result == 1
+    assert promoted_attempts == [1]
+    assert data["phase"] == "rolled-back"
+    assert su.executable_path(current, system="Linux").read_text().find("0.4.5") >= 0
+    assert not Path(data["previousInstallPath"]).exists()
+    assert not Path(data["brokenInstallPath"]).exists()
+
+
 def test_tampered_journal_is_rejected_before_mutation(tmp_path, monkeypatch):
     _state, current, journal = stage_fixture(tmp_path, monkeypatch)
     value = json.loads(journal.read_text())
