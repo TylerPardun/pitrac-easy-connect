@@ -1009,10 +1009,17 @@ def cleanup_independent_helper(helper_pid: int, helper_file: Path) -> None:
         deadline = time.monotonic() + 120
         while _process_tree_alive(int(helper_pid), set()) and time.monotonic() < deadline:
             time.sleep(0.25)
-        try:
-            _remove_tree(helper.parent, allowed_parent=helpers_root)
-        except Exception:
-            pass
+        # Windows's one-file outer bootloader can retain the helper executable
+        # briefly after its inner process exits. Retry the narrowly validated
+        # helper directory instead of swallowing that first sharing violation
+        # and leaking the helper forever.
+        cleanup_deadline = time.monotonic() + 120
+        while time.monotonic() < cleanup_deadline:
+            try:
+                _remove_tree(helper.parent, allowed_parent=helpers_root)
+                return
+            except Exception:
+                time.sleep(0.25)
     threading.Thread(target=work, daemon=True).start()
 
 

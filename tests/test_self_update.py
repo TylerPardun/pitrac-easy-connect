@@ -323,6 +323,32 @@ def test_old_process_tree_wait_excludes_only_the_independent_helper(monkeypatch,
     assert known == {7000, 7002}
 
 
+def test_windows_helper_cleanup_retries_a_transient_file_lock(monkeypatch, tmp_path):
+    state = tmp_path / "state"
+    monkeypatch.setenv("PITRAC_UPDATE_STATE_DIR", str(state))
+    helper_dir = state / "helpers" / "transaction-helper"
+    helper_dir.mkdir(parents=True)
+    helper = helper_dir / "PiTrac Updater.exe"
+    helper.write_bytes(b"locked")
+    monkeypatch.setattr(su, "_process_tree_alive", lambda _pid, _known: False)
+    real_remove = su._remove_tree
+    attempts = []
+
+    def sharing_violation_then_remove(path, *, allowed_parent):
+        attempts.append(1)
+        if len(attempts) < 3:
+            raise PermissionError("the bootloader still holds the executable")
+        return real_remove(path, allowed_parent=allowed_parent)
+
+    monkeypatch.setattr(su, "_remove_tree", sharing_violation_then_remove)
+    su.cleanup_independent_helper(999999, helper)
+    deadline = time.monotonic() + 2
+    while helper_dir.exists() and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert len(attempts) >= 3
+    assert not helper_dir.exists()
+
+
 def test_tampered_journal_is_rejected_before_mutation(tmp_path, monkeypatch):
     _state, current, journal = stage_fixture(tmp_path, monkeypatch)
     value = json.loads(journal.read_text())

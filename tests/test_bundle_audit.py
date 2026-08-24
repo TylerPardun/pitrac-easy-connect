@@ -96,3 +96,16 @@ def test_a_credited_package_passes_the_check(audit, monkeypatch):
 def test_a_check_with_no_build_to_read_is_a_failure(audit, monkeypatch):
     monkeypatch.setattr(audit.sys, "argv", ["bundled-licences.py", "--check"])
     assert audit.main() == 1
+
+
+def test_the_ci_manifest_path_can_be_supplied_explicitly(audit, monkeypatch):
+    toc = audit.ROOT / "build" / "app" / "PiTrac-Easy-Connect" / "Analysis-00.toc"
+    toc.parent.mkdir(parents=True)
+    toc.write_text(manifest(("webview", "PYMODULE")))
+    audit.NOTICE.write_text("| Component | License |\n|---|---|\n| pywebview | BSD-3-Clause |\n")
+    monkeypatch.setattr(
+        audit.sys, "argv",
+        ["bundled-licences.py", "--check", "--toc",
+         "build/app/PiTrac-Easy-Connect/Analysis-00.toc"],
+    )
+    assert audit.main() == 0

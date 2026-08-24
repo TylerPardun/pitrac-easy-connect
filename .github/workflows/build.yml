@@ -628,7 +628,7 @@ jobs:
             --arch x86_64 --asset PiTrac-Easy-Connect-linux-x86_64.zip
 
       - name: Check NOTICE.md credits everything the build bundles
-        run: python packaging/bundled-licences.py --check
+        run: python packaging/bundled-licences.py --check --toc build/app/PiTrac-Easy-Connect/Analysis-00.toc
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:

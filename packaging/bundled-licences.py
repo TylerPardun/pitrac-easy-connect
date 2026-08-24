@@ -97,8 +97,8 @@ def _standard_library_names():
 _STDLIB = _standard_library_names()
 
 
-def bundled():
-    text = TOC.read_text()
+def bundled(toc=None):
+    text = pathlib.Path(toc or TOC).read_text()
     found = collections.Counter()
     for name, _source, kind in re.findall(
         r"\('([^']+)',\s*'([^']*)',\s*'(PYMODULE|EXTENSION|BINARY)'\)", text
@@ -165,14 +165,27 @@ def credited():
 
 
 def main() -> int:
-    if not TOC.exists():
-        print("No build manifest at {}.".format(TOC.relative_to(ROOT)))
+    toc = TOC
+    if "--toc" in sys.argv:
+        try:
+            toc = pathlib.Path(sys.argv[sys.argv.index("--toc") + 1])
+        except (IndexError, ValueError):
+            print("--toc requires a PyInstaller Analysis-00.toc path.")
+            return 1
+        if not toc.is_absolute():
+            toc = ROOT / toc
+    if not toc.exists():
+        try:
+            shown = toc.relative_to(ROOT)
+        except ValueError:
+            shown = toc
+        print("No build manifest at {}.".format(shown))
         print("Run ./packaging/build-app.sh first.")
         # --check used to pass here, so a build with nothing to verify
         # reported success. A check that cannot check has failed.
         return 1
 
-    found = bundled()
+    found = bundled(toc)
     notice = credited()
     missing = [name for name in found if name.lower() not in notice]
 
