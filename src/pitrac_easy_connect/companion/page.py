@@ -39,11 +39,16 @@ PAGE = r"""<!doctype html>
   .pane.frame{overflow:hidden}
   .pane iframe{width:100%;height:100%;border:0;display:block;background:var(--bg)}
   .centre{min-height:100%;display:flex;align-items:center;justify-content:center}
-  main{width:min(440px,calc(100% - 40px));padding:40px 0}
+  /* The window is at least 900px wide (see window.py), so this is the
+     settled width, not a phone column that happens to be centred. The
+     cap keeps a line of text short enough to read; the guide below
+     stays narrow because one question at a time reads better that way. */
+  main{width:min(820px,calc(100% - 64px));padding:40px 0}
+  body.guiding main{width:min(440px,calc(100% - 40px))}
   .framehint{padding:14px 18px;color:var(--faint);font-size:.85rem;text-align:center}
 
   /* Shots: a table you can actually read, not a dashboard. */
-  .shots{width:min(560px,calc(100% - 40px));margin-inline:auto;padding:26px 0 40px}
+  .shots{width:min(1040px,calc(100% - 64px));margin-inline:auto;padding:26px 0 40px}
   .clubrow{display:flex;gap:12px;align-items:center;flex-wrap:wrap}
   .clublabel{color:var(--muted);font-size:.88rem;font-weight:650}
   .shots select{flex:1;min-width:150px;padding:11px 13px;border-radius:10px;
@@ -94,6 +99,11 @@ PAGE = r"""<!doctype html>
   .why{color:var(--faint);font-size:.88rem;margin-top:10px;line-height:1.45}
 
   .do{margin-top:26px;display:flex;flex-direction:column;gap:10px}
+  /* Buttons fill their container, which is right in a narrow column and
+     wrong in a wide one: a primary action stretched across 820px reads
+     as a banner rather than something to press. The list beside it is
+     cards, which do want the width, so this caps the actions only. */
+  body:not(.guiding) .do{max-width:380px}
   button,.linkbtn{font:inherit;width:100%;text-align:center;border-radius:11px;
     padding:14px 18px;font-weight:700;cursor:pointer;border:1px solid transparent;
     text-decoration:none;display:block}
@@ -684,6 +694,9 @@ function render(data){
   // Once setup is done the tabs stay, whether or not PiTrac is connected now.
   // Hiding them on a dropped link strands whoever was reading their numbers.
   $("tabs").classList.toggle("hidden", guiding);
+  // The guide is one question at a time and reads better in a narrow
+  // column; everything after it is a desktop window with work in it.
+  document.body.classList.toggle("guiding", guiding);
   // The tabs go away when the link does, so anyone left on a pane that frames
   // the enclosure would be looking at an empty window with nothing to press.
   // The range and the shot history are not that: they are this session's own
