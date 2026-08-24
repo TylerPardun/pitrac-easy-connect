@@ -5,6 +5,7 @@ import json
 import os
 import platform
 import plistlib
+import posixpath
 import re
 import secrets
 import shutil
@@ -323,7 +324,10 @@ def _validated_members(archive: zipfile.ZipFile, *, system: str) -> Iterable[Tup
                 raise SelfUpdateError("the package contains an unreadable link: {}".format(exc))
             if not link_target or link_target.startswith("/") or re.match(r"^[A-Za-z]:", link_target):
                 raise SelfUpdateError("the package contains an absolute link")
-            target = PurePosixPath(os.path.normpath(str(member.parent / link_target)))
+            # ZIP paths are POSIX paths on every host. os.path.normpath uses
+            # backslashes on Windows and would misclassify a valid macOS
+            # in-bundle link when CI inspects that archive there.
+            target = PurePosixPath(posixpath.normpath(str(member.parent / link_target)))
             app = APP_NAME + ".app"
             try:
                 app_index = member.parts.index(app)

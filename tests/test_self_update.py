@@ -128,7 +128,7 @@ def stage_fixture(tmp_path, monkeypatch, *, old="0.4.5", new="0.4.6",
     downloaded = transaction / "candidate.zip"
     downloaded.write_bytes(archive.read_bytes())
     staged = su.stage_update(downloaded, transaction, new, system="Linux",
-                             machine="x86_64")
+                             machine="x86_64", probe=lambda _executable: new)
     journal = su.prepare_transaction(
         archive_path=downloaded, staged=staged, install_root=current,
         installed_version=old, target_version=new, expected_tag="v" + new,
@@ -145,7 +145,7 @@ def test_linux_archive_contract_has_one_dedicated_root(tmp_path):
     make_archive(archive, source)
     extracted = su.extract_safely(archive, tmp_path / "out", system="Linux")
     app = su.validate_structure(extracted, "0.4.6", system="Linux",
-                                machine="x86_64")
+                                machine="x86_64", probe=lambda _executable: "0.4.6")
     assert app.install_root.name == su.APP_NAME
     assert app.manifest["applicationId"] == su.APPLICATION_ID
 
@@ -159,7 +159,10 @@ def test_macos_archive_preserves_safe_internal_symlinks(tmp_path):
     archive = tmp_path / "mac.zip"
     make_archive(archive, source, system="Darwin")
     extracted = su.extract_safely(archive, tmp_path / "out", system="Darwin")
-    app = su.validate_structure(extracted, "0.4.6", system="Darwin", machine="x86_64")
+    app = su.validate_structure(
+        extracted, "0.4.6", system="Darwin", machine="x86_64",
+        probe=lambda _executable: "0.4.6",
+    )
     assert (app.install_root / "Contents/Frameworks/Versions/Current").is_symlink()
 
 
