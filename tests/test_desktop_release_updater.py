@@ -204,6 +204,32 @@ def test_two_concurrent_checks_make_exactly_one_network_call():
     assert results[0].latest == results[1].latest == "v0.4.5"
 
 
+def test_cached_status_does_not_wait_for_a_network_check():
+    started = threading.Event()
+    release_call = threading.Event()
+
+    def slow(_url):
+        started.set()
+        release_call.wait(timeout=5)
+        return {"tag_name": "v0.4.5"}
+
+    updater = DesktopReleaseUpdater(
+        "0.4.4", system="Linux", machine="x86_64", fetch_json=slow
+    )
+    checker = threading.Thread(target=updater.check)
+    checker.start()
+    assert started.wait(timeout=2)
+
+    returned = threading.Event()
+    reader = threading.Thread(target=lambda: (updater.cached_status(), returned.set()))
+    reader.start()
+    assert returned.wait(timeout=1), "cached status blocked behind network I/O"
+
+    release_call.set()
+    checker.join(timeout=5)
+    reader.join(timeout=5)
+
+
 def test_draft_and_prerelease_are_ignored_by_default():
     updater = DesktopReleaseUpdater(
         "0.4.4", system="Linux", machine="x86_64",

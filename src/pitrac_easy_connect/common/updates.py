@@ -581,6 +581,8 @@ class DesktopReleaseUpdater:
         self._fetch_json = fetch_json or self._fetch_release_json
         self._clock = clock
         self._lock = threading.Lock()
+        self._check_condition = threading.Condition(self._lock)
+        self._checking = False
         self._last: Optional[UpdateStatus] = None
         self._last_failed = False
         self._selected_releases: Dict[str, Dict[str, Any]] = {}
@@ -621,30 +623,35 @@ class DesktopReleaseUpdater:
     # --- Checking -----------------------------------------------------
 
     def check(self, force: bool = False) -> UpdateStatus:
-        """The full check, holding the lock throughout.
+        """Return one checked result without holding the cache lock on I/O.
 
-        A finer-grained lock (guarding only the cache, not the network call)
-        would let two callers arriving together both reach GitHub. Holding it
-        for the whole check instead means a second, concurrent caller simply
-        waits a moment and reuses the first call's fresh answer -- one
-        request, not two, whatever asked for it or how many times.
+        An explicit in-progress condition makes concurrent callers reuse the
+        owner call. This avoids both duplicate network requests and timestamp
+        heuristics that fail on clocks with coarse resolution.
         """
 
-        requested_at = self._clock()
-        with self._lock:
+        with self._check_condition:
+            if self._checking:
+                while self._checking:
+                    self._check_condition.wait()
+                if self._last is not None:
+                    return self._last
             if self._last is not None:
-                # A check that finished after this call started waiting for
-                # the lock is a concurrent one, not a stale one -- reusing it
-                # is what stops a second caller (the periodic timer landing
-                # on top of a manual force-check, for instance) from firing
-                # its own redundant network request, whether or not either
-                # call asked to force a recheck.
-                answered_concurrently = self._last.checked_at >= requested_at
                 window = RECHECK_SECONDS_FAILED if self._last_failed else RECHECK_SECONDS_OK
                 cache_is_fresh = not force and self._clock() - self._last.checked_at < window
-                if answered_concurrently or cache_is_fresh:
+                if cache_is_fresh:
                     return self._last
+            self._checking = True
+
+        try:
             status, failed = self._check_now()
+        except Exception:
+            with self._check_condition:
+                self._checking = False
+                self._check_condition.notify_all()
+            raise
+
+        with self._check_condition:
             if failed and self._last is not None and self._last.latest:
                 # A transient outage does not erase the last verified release
                 # selection. The detail and last_check_failed flag still make
@@ -660,6 +667,8 @@ class DesktopReleaseUpdater:
             status.checked_at = self._clock()
             self._last = status
             self._last_failed = failed
+            self._checking = False
+            self._check_condition.notify_all()
             return status
 
     def check_in_background(self, done: Optional[Callable[[UpdateStatus], None]] = None) -> None:
@@ -696,7 +705,8 @@ class DesktopReleaseUpdater:
             # Bind the selected metadata to this exact tag. Download work
             # reuses this immutable snapshot instead of asking "latest" a
             # second time and potentially changing transactions mid-flight.
-            self._selected_releases[tag] = json.loads(json.dumps(release))
+            with self._lock:
+                self._selected_releases[tag] = json.loads(json.dumps(release))
 
         if not self.allow_prerelease and (release.get("draft") or release.get("prerelease")):
             return UpdateStatus(self.installed, PACKAGED, detail="Up to date.", checked_at=now), False
