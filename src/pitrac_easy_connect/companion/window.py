@@ -94,9 +94,16 @@ def _post_windows_close(native_window, post_message=None) -> None:
         return
     handle = int(instance.Handle.ToInt64())
     if post_message is None:
-        from ctypes import windll
+        from ctypes import windll, wintypes
 
         post_message = windll.user32.PostMessageW
+        post_message.argtypes = [
+            wintypes.HWND,
+            wintypes.UINT,
+            wintypes.WPARAM,
+            wintypes.LPARAM,
+        ]
+        post_message.restype = wintypes.BOOL
     if not post_message(handle, 0x0010, 0, 0):  # WM_CLOSE
         raise OSError("Windows refused the native close message")
 
