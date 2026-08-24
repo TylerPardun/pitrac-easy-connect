@@ -55,7 +55,7 @@ def run_native(
             if on_activation_ready is not None:
                 on_activation_ready(lambda: _bring_to_front(native_window))
             if on_close_ready is not None:
-                on_close_ready(native_window.destroy)
+                on_close_ready(lambda: _close_native(native_window))
             # On macOS, start the HTTP serving loop from pywebview's managed
             # worker after AppKit has initialized. Starting it before AppKit
             # enters its run loop leaves the listener bound but its Python
@@ -68,6 +68,37 @@ def run_native(
         raise NativeWindowError(
             "the native window could not be created ({})".format(_describe(exc))
         ) from exc
+
+
+def _close_native(native_window) -> None:
+    """Close without blocking a Windows request thread on WinForms.
+
+    pywebview's Windows ``destroy`` wrapper uses synchronous ``Control.Invoke``.
+    Calling that wrapper from the updater's timer can leave the form blank but
+    keep both the WinForms process and the HTTP request alive. Posting the same
+    ``WM_CLOSE`` message produced by Alt-F4 is asynchronous and lets the native
+    UI thread own its normal shutdown sequence.
+    """
+
+    import sys
+
+    if sys.platform == "win32":
+        _post_windows_close(native_window)
+        return
+    native_window.destroy()
+
+
+def _post_windows_close(native_window, post_message=None) -> None:
+    instance = native_window.gui.BrowserView.instances.get(native_window.uid)
+    if instance is None:
+        return
+    handle = int(instance.Handle.ToInt64())
+    if post_message is None:
+        from ctypes import windll
+
+        post_message = windll.user32.PostMessageW
+    if not post_message(handle, 0x0010, 0, 0):  # WM_CLOSE
+        raise OSError("Windows refused the native close message")
 
 
 def _bring_to_front(native_window) -> None:

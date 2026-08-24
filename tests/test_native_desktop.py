@@ -126,6 +126,27 @@ def test_linux_activation_queues_directly_on_gtk(monkeypatch):
     assert calls == [("restore", "main-window"), ("show", "main-window")]
 
 
+def test_windows_close_posts_the_normal_nonblocking_window_message():
+    calls = []
+
+    class Handle:
+        def ToInt64(self):
+            return 12345
+
+    instance = type("Instance", (), {"Handle": Handle()})()
+    browser_view = type("BrowserView", (), {"instances": {"main-window": instance}})
+    gui = type("Gui", (), {"BrowserView": browser_view})()
+    native = type("Native", (), {"uid": "main-window", "gui": gui})()
+
+    window._post_windows_close(
+        native, post_message=lambda handle, message, wparam, lparam: calls.append(
+            (handle, message, wparam, lparam)
+        ) or 1,
+    )
+
+    assert calls == [(12345, 0x0010, 0, 0)]
+
+
 def test_removed_browser_options_are_rejected():
     parser = app.build_parser()
     with pytest.raises(SystemExit):
