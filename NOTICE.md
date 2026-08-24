@@ -43,6 +43,7 @@ window. Each component remains licensed by its respective author.
 | [packaging](https://pypi.org/project/packaging/) (Windows) | Apache-2.0 OR BSD-2-Clause | Required by setuptools |
 | [typing-extensions](https://pypi.org/project/typing-extensions/) | PSF-2.0 | Required by pywebview |
 | [psutil](https://pypi.org/project/psutil/) | BSD-3-Clause | Enumerates active IPv4 interfaces and their directed broadcast addresses |
+| [certifi](https://pypi.org/project/certifi/) | MPL-2.0 | Supplies the Mozilla CA certificate store used for HTTPS by the packaged application |
 | [PyGObject](https://pygobject.gnome.org/) (Linux) | LGPL-2.1-or-later | Connects pywebview to GTK and WebKitGTK |
 | [pycairo](https://pycairo.readthedocs.io/) (Linux) | LGPL-2.1-only OR MPL-1.1 | Cairo bindings required by PyGObject |
 | [GLib](https://gitlab.gnome.org/GNOME/glib) (Linux) | LGPL-2.1-or-later | GObject, GIO, module loading, and introspection libraries bundled by the GTK backend |

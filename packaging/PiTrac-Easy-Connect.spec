@@ -10,6 +10,8 @@
 import os
 import sys
 
+import certifi
+
 WINDOWS = sys.platform == "win32"
 MACOS = sys.platform == "darwin"
 LINUX = sys.platform.startswith("linux")
@@ -80,6 +82,10 @@ analysis = Analysis(
         # Not optional. A bundled component without its licence text is a
         # compliance problem, so the build stops rather than shipping without.
         (_require_licences(), "."),
+        # setup-python's OpenSSL default names a CA path in the ephemeral
+        # Actions tool cache. Put a stable Mozilla CA bundle beside certifi in
+        # the frozen app; app_entry.py selects it before any application import.
+        (certifi.where(), "certifi"),
     ],
     # PyInstaller cannot see these through the runtime lookups in the service,
     # so they are named explicitly.
@@ -100,6 +106,7 @@ analysis = Analysis(
         "pitrac_easy_connect.common.versions",
         "pitrac_easy_connect.pi.pairing",
         "pitrac_easy_connect.pi.pitrac",
+        "certifi",
     ] + WINDOW_IMPORTS,
     hookspath=[],
     hooksconfig={},

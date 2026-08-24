@@ -9,6 +9,10 @@ pyinstaller==6.22.2
 pywebview==6.2.1
 pillow==12.3.0
 psutil==7.2.2
+# The actions/setup-python OpenSSL default points into the runner tool cache,
+# which does not exist on an owner's machine. The packaged entry point selects
+# this bundled CA store for every HTTPS request instead.
+certifi==2026.7.22
 
 # PyInstaller's own dependencies.
 altgraph==0.17.5

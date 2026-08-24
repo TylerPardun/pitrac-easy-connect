@@ -21,6 +21,7 @@ OUTPUT = ROOT / "THIRD-PARTY-LICENCES.txt"
 #: Everything the build bundles, and where its licence lives in site-packages.
 #: Names are the import names PyInstaller records, mapped to distributions.
 BUNDLED = {
+    "certifi": ["certifi"],
     "pywebview": ["webview"],
     "pyobjc-core": ["objc"],
     "pyobjc-framework-Cocoa": ["AppKit", "Foundation", "CoreFoundation"],
