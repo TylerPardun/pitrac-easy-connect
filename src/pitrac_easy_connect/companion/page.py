@@ -104,6 +104,20 @@ PAGE = r"""<!doctype html>
      as a banner rather than something to press. The list beside it is
      cards, which do want the width, so this caps the actions only. */
   body:not(.guiding) .do{max-width:380px}
+
+  .board{margin-top:30px;display:grid;gap:12px;
+    /* 280 rather than 236: in an 820px column the smaller minimum fits
+       three across, which left the fourth card alone on a row of its
+       own. Two by two is balanced at every width the window allows. */
+    grid-template-columns:repeat(auto-fit,minmax(280px,1fr))}
+  .board.hidden{display:none}
+  .board button{text-align:left;padding:16px 18px;background:var(--card);
+    border-color:var(--line);border-radius:14px;font-weight:400}
+  .board button:hover:not(:disabled){border-color:var(--accent)}
+  .board button:disabled{cursor:default;opacity:.55}
+  .board .t{font-weight:700;font-size:1rem;color:var(--text);display:block}
+  .board .d{font-size:.85rem;color:var(--muted);margin-top:4px;display:block;
+    line-height:1.4}
   button,.linkbtn{font:inherit;width:100%;text-align:center;border-radius:11px;
     padding:14px 18px;font-weight:700;cursor:pointer;border:1px solid transparent;
     text-decoration:none;display:block}
@@ -283,6 +297,11 @@ PAGE = r"""<!doctype html>
   </details>
 
   <div class="do" id="do"></div>
+
+  <!-- Where to go next, shown once setup is done. The tab bar says the
+       same thing in five words; this says it with the state of each
+       place attached, which is what tells you which one you wanted. -->
+  <div class="board hidden" id="board"></div>
 
   <!-- Stays put once an update matters, whether or not the card below has
        been dismissed -- see renderUpdateIndicator(). -->
@@ -594,6 +613,41 @@ function wizardView(data){
     actions:[{label:"Finish", id:"wizFinish", primary:true}]};
 }
 
+//: The places the app can take you, and what each is doing right now. The
+//: enclosure's own pages need a live link -- the same rule that sends a pane
+//: back to Play when the link drops -- so those two say so rather than
+//: leading somewhere empty.
+function boardCards(data){
+  const linked=!!(data.link && data.link.connected);
+  const shots=((data.shotLog&&data.shotLog.shots)||[]).length;
+  const sim=data.simulatorStatus||{};
+  return [
+    {pane:"range", title:"Practice range",
+     detail:"Ball flight, distances and shot patterns. No simulator needed."},
+    {pane:"shots", title:"Shot history",
+     detail:shots ? shots+(shots===1?" shot recorded":" shots recorded")
+                  : "Every shot, with the club it was hit with."},
+    {pane:"pitrac", title:"PiTrac dashboard", needsLink:true,
+     detail:linked ? (sim.connected ? "Connected to "+esc(data.simulatorLabel)
+                                    : "Cameras, calibration and shot images.")
+                   : "Connect to PiTrac to open this."},
+    {pane:"setup", title:"Enclosure setup", needsLink:true,
+     detail:linked ? "Wi-Fi, backups, updates and ownership."
+                   : "Connect to PiTrac to open this."},
+  ].map(card=>Object.assign(card, {disabled: !!card.needsLink && !linked}));
+}
+
+function renderBoard(data, guiding){
+  const board=$("board");
+  board.classList.toggle("hidden", guiding);
+  if(guiding){ board.innerHTML=""; return; }
+  board.innerHTML=boardCards(data).map(card=>
+    `<button data-pane="${esc(card.pane)}"${card.disabled?" disabled":""}>
+       <span class="t">${esc(card.title)}</span>
+       <span class="d">${esc(card.detail)}</span>
+     </button>`).join("");
+}
+
 function renderWizard(view){
   const showing=!!(view && view.step!==undefined);
   $("wiz").classList.toggle("hidden", !showing || !view.step);
@@ -719,6 +773,7 @@ function render(data){
   // The guide is one question at a time and reads better in a narrow
   // column; everything after it is a desktop window with work in it.
   document.body.classList.toggle("guiding", guiding);
+  renderBoard(data, guiding);
   // The tabs go away when the link does, so anyone left on a pane that frames
   // the enclosure would be looking at an empty window with nothing to press.
   // The range and the shot history are not that: they are this session's own
@@ -1280,6 +1335,12 @@ function showPane(name){
 }
 document.querySelectorAll("#tabs button").forEach(button=>
   button.addEventListener("click",()=>showPane(button.dataset.pane)));
+// The board is rebuilt on every refresh, so this is delegated rather than
+// bound to buttons that will not be the same objects a second later.
+document.addEventListener("click",function(event){
+  const card=event.target.closest && event.target.closest("#board button[data-pane]");
+  if(card && !card.disabled) showPane(card.dataset.pane);
+});
 
 // --- the practice range --------------------------------------------------
 //

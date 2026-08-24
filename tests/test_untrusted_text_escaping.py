@@ -91,3 +91,41 @@ def test_a_real_device_id_is_still_accepted():
     payload = b'{"deviceId":"59MN8H7P","linkPort":39877,"portalPort":80}'
     found = discovery._parse(payload, "10.0.0.201")
     assert found is not None and found.device_id == "59MN8H7P"
+
+
+# --- The second lock on the same defect ------------------------------------
+
+
+def test_the_desktop_window_sends_a_content_security_policy():
+    """The enclosure's portal has had one from the start; this window had none.
+
+    It cannot stop an injected inline handler -- the page is inline script, so
+    script-src has to allow inline, and escaping is what stops that. What it
+    does stop is the step after: script that got in cannot load more script
+    from anywhere, and cannot post what it found to another host.
+    """
+
+    from pitrac_easy_connect.companion.web import CONTENT_SECURITY_POLICY
+
+    policy = CONTENT_SECURITY_POLICY
+    assert "default-src 'none'" in policy
+    assert "connect-src 'self'" in policy, (
+        "without this, injected script can post whatever it reads to any host"
+    )
+    assert "frame-ancestors 'none'" in policy
+    assert "base-uri 'none'" in policy
+    # Verified in a running window: an external script and an external fetch
+    # were both refused, while an image and a frame from the enclosure loaded.
+    assert "img-src" in policy and "http:" in policy, (
+        "the enclosure's address is whatever the router gave it, so its images "
+        "and frames cannot be named here -- but they must still load"
+    )
+
+
+def test_the_policy_actually_reaches_the_browser():
+    """A policy that is never sent is a policy that never applies."""
+
+    from pitrac_easy_connect.companion import web
+
+    source = pathlib.Path(web.__file__).read_text()
+    assert 'send_header("Content-Security-Policy", CONTENT_SECURITY_POLICY)' in source

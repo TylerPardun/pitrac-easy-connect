@@ -24,6 +24,33 @@ GUARD_HEADER = "X-PiTrac-App"
 #: Loopback only, by name or address. Anything else is somebody pointing
 #: their own hostname at this machine.
 _ALLOWED_HOST = re.compile(r"^(localhost|127(\.\d+){3}|\[::1\])(:\d+)?$")
+#: The enclosure's portal has had one of these from the start; this window did
+#: not, which mattered when a discovery reply could put an event handler into
+#: the page (see tests/test_untrusted_text_escaping.py). The escaping is the
+#: fix for that; this is the second lock.
+#:
+#: What it can pin down, it pins: no script may be loaded from anywhere, and
+#: connect-src 'self' means injected script cannot post what it finds to
+#: another host. What it cannot pin down is the enclosure, whose address is
+#: whatever the router gave it, so images and frames have to allow http at
+#: large. That leaves an image URL as an exfiltration channel, which is the
+#: reason to serve those pictures through this program rather than straight
+#: from the enclosure -- worth doing, and a bigger change than this one.
+#:
+#: script-src has to allow inline because the page is inline, so this cannot
+#: stop an injected handler on its own. Escaping does that.
+CONTENT_SECURITY_POLICY = (
+    "default-src 'none'; "
+    "style-src 'unsafe-inline'; "
+    "script-src 'unsafe-inline'; "
+    "connect-src 'self'; "
+    "img-src 'self' data: http:; "
+    "frame-src http:; "
+    "form-action 'none'; "
+    "frame-ancestors 'none'; "
+    "base-uri 'none'"
+)
+
 MAX_BODY_BYTES = 64 * 1024
 MAX_RESTORE_BYTES = 9 * 1024 * 1024
 
@@ -360,6 +387,7 @@ class CompanionHandler(BaseHTTPRequestHandler):
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("X-Frame-Options", "DENY")
         self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header("Content-Security-Policy", CONTENT_SECURITY_POLICY)
         self.end_headers()
 
     def _html(self, markup: str) -> None:
