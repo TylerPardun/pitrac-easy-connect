@@ -354,6 +354,9 @@ def test_second_promotion_rename_failure_restores_the_previous_install(monkeypat
     real_replace = su._replace_transaction_path
     promoted_attempts = []
 
+    class RelaunchedPreviousApp:
+        pid = 999999
+
     def fail_prepared_promotion(source, destination, *, timeout=10):
         if Path(source).name.startswith(".pitrac-prepared-"):
             promoted_attempts.append(1)
@@ -361,6 +364,9 @@ def test_second_promotion_rename_failure_restores_the_previous_install(monkeypat
         return real_replace(source, destination, timeout=timeout)
 
     monkeypatch.setattr(su, "_replace_transaction_path", fail_prepared_promotion)
+    # This test covers filesystem restoration, not platform executable format.
+    # Windows CI cannot execute the intentionally POSIX fixture after rollback.
+    monkeypatch.setattr(su, "_spawn_detached", lambda _arguments: RelaunchedPreviousApp())
     result = su.run_helper(journal, 999999)
     data = su.load_journal(journal)
     assert result == 1
