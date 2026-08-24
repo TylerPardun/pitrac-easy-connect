@@ -143,16 +143,20 @@ def test_packaged_architecture_follows_the_manifest_not_the_host(tmp_path, monke
     root = make_install(tmp_path, "0.4.6", system="Linux", machine="x86_64")
     executable = su.executable_path(root, system="Linux")
     monkeypatch.setattr(su.platform, "machine", lambda: "arm64")
+    monkeypatch.setattr(su, "current_install_root", lambda **_arguments: root)
 
     assert su.packaged_architecture(
         system="Linux", executable=executable, expected_version="0.4.6"
     ) == "x86_64"
 
 
-def test_packaged_architecture_rejects_a_manifest_not_bound_to_the_running_executable(tmp_path):
+def test_packaged_architecture_rejects_a_manifest_not_bound_to_the_running_executable(
+    tmp_path, monkeypatch
+):
     root = make_install(tmp_path, "0.4.6", system="Linux", machine="x86_64")
     other = root / "renamed-copy"
     other.write_text("copied executable")
+    monkeypatch.setattr(su, "current_install_root", lambda **_arguments: root)
 
     with pytest.raises(su.SelfUpdateError, match="running executable"):
         su.packaged_architecture(
