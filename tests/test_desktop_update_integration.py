@@ -21,6 +21,7 @@ import pytest
 from conftest import start_serving
 from pitrac_easy_connect.common.updates import DesktopUpdateState
 from pitrac_easy_connect.companion import self_update
+from pitrac_easy_connect.companion import service as service_module
 from pitrac_easy_connect.companion.service import CompanionService
 
 
@@ -147,6 +148,28 @@ def make_service(tmp_path, upstream, *, installed="0.4.4"):
     )
     service._uses_git_updater = False
     return service
+
+
+def test_packaged_service_selects_assets_for_its_manifest_architecture(tmp_path, monkeypatch):
+    from pitrac_easy_connect.common.updates import PACKAGED
+
+    monkeypatch.setattr(service_module.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(service_module.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(service_module.Updater, "kind", lambda _self: PACKAGED)
+    monkeypatch.setattr(
+        self_update, "packaged_architecture", lambda **_arguments: "x86_64"
+    )
+    service = CompanionService(
+        config_path=tmp_path / "companion.json",
+        version="0.4.6",
+        periodic_update_check_seconds=0,
+        startup_update_check=False,
+    )
+    try:
+        assert service.desktop_updates.machine == "x86_64"
+        assert service.desktop_updates.asset_name() == "PiTrac-Easy-Connect-windows.zip"
+    finally:
+        service.close()
 
 
 def test_v044_finds_nothing_then_detects_v045_once_published(tmp_path, upstream):

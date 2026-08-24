@@ -139,6 +139,27 @@ def stage_fixture(tmp_path, monkeypatch, *, old="0.4.5", new="0.4.6",
     return state, current, journal
 
 
+def test_packaged_architecture_follows_the_manifest_not_the_host(tmp_path, monkeypatch):
+    root = make_install(tmp_path, "0.4.6", system="Linux", machine="x86_64")
+    executable = su.executable_path(root, system="Linux")
+    monkeypatch.setattr(su.platform, "machine", lambda: "arm64")
+
+    assert su.packaged_architecture(
+        system="Linux", executable=executable, expected_version="0.4.6"
+    ) == "x86_64"
+
+
+def test_packaged_architecture_rejects_a_manifest_not_bound_to_the_running_executable(tmp_path):
+    root = make_install(tmp_path, "0.4.6", system="Linux", machine="x86_64")
+    other = root / "renamed-copy"
+    other.write_text("copied executable")
+
+    with pytest.raises(su.SelfUpdateError, match="running executable"):
+        su.packaged_architecture(
+            system="Linux", executable=other, expected_version="0.4.6"
+        )
+
+
 def test_linux_archive_contract_has_one_dedicated_root(tmp_path):
     source = make_install(tmp_path / "source", "0.4.6")
     archive = tmp_path / "package.zip"

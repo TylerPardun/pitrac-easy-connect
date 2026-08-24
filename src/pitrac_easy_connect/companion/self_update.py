@@ -240,6 +240,47 @@ def current_install_root(*, system: Optional[str] = None,
     return Path(str(exe.parent))
 
 
+def packaged_architecture(*, system: Optional[str] = None,
+                          executable: Optional[Path] = None,
+                          expected_version: Optional[str] = None) -> str:
+    """Return the architecture declared by the package running this process.
+
+    ``platform.machine()`` describes the native operating system on Windows
+    ARM, even while the supported x86-64 package is running through Windows'
+    compatibility layer. Asset selection must follow the installed package,
+    because that is the executable the replacement has to match. This is a
+    read-only identity check; strict install-root and helper checks still run
+    immediately before any installation mutation.
+    """
+
+    system = system or platform.system()
+    running = Path(executable) if executable is not None else Path(sys.executable)
+    root = current_install_root(system=system, executable=running)
+    manifest = _read_json(manifest_path(root, system=system))
+    architecture = _architecture(str(manifest.get("architecture") or ""))
+    expected = package_manifest(
+        expected_version or str(manifest.get("version") or ""),
+        system=system,
+        machine=architecture,
+    )
+    for key in (
+        "applicationId",
+        "version",
+        "platform",
+        "architecture",
+        "executable",
+        "packageLayoutVersion",
+    ):
+        if str(manifest.get(key) or "") != str(expected.get(key) or ""):
+            raise SelfUpdateError(
+                "the running package manifest has the wrong {}".format(key)
+            )
+    expected_executable = executable_path(root, system=system)
+    if _resolved(running) != _resolved(expected_executable):
+        raise SelfUpdateError("the running executable does not match its package manifest")
+    return architecture
+
+
 def validate_install_root(root: Path, *, system: Optional[str] = None,
                           machine: Optional[str] = None,
                           expected_version: Optional[str] = None,

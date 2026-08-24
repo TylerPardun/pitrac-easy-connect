@@ -227,8 +227,21 @@ class CompanionService:
         # offered a packaged build to install over itself.
         self._install_kind = self.updates.kind()
         self._uses_git_updater = self._install_kind in (SOURCE, DEVELOPMENT)
+        desktop_machine = None
+        if not self._uses_git_updater and getattr(sys, "frozen", False):
+            try:
+                desktop_machine = self_update.packaged_architecture(
+                    executable=Path(sys.executable), expected_version=version
+                )
+            except self_update.SelfUpdateError:
+                # A loose copy or damaged manifest must not stop the app from
+                # opening. Strict preflight still refuses every mutation; host
+                # architecture is the best read-only check fallback available.
+                desktop_machine = None
         self.desktop_updates: Optional[DesktopReleaseUpdater] = (
-            None if self._uses_git_updater else DesktopReleaseUpdater(version)
+            None
+            if self._uses_git_updater
+            else DesktopReleaseUpdater(version, machine=desktop_machine)
         )
         self._desktop_update_state = DesktopUpdateState.IDLE
         self._desktop_update_detail = ""
