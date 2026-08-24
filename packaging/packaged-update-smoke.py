@@ -63,6 +63,8 @@ def _kill_tree(pid):
             process.kill()
         except psutil.Error:
             pass
+    if alive:
+        psutil.wait_procs(alive, timeout=10)
 
 
 def _ordinary_browsers():
