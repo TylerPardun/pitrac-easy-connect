@@ -15,6 +15,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Callable, Dict
 from urllib.parse import urlparse
 
+from ..common import jsontext
 from ..common.errors import EasyConnectError
 from .page import PAGE
 from .service import CompanionService
@@ -344,7 +345,7 @@ class CompanionHandler(BaseHTTPRequestHandler):
         if length <= 0:
             return {}
         try:
-            value = json.loads(self.rfile.read(length).decode("utf-8"))
+            value = jsontext.loads(self.rfile.read(length).decode("utf-8"))
         except (UnicodeDecodeError, ValueError) as exc:
             raise ValueError("The request was not valid JSON") from exc
         if not isinstance(value, dict):

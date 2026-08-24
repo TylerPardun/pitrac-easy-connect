@@ -21,6 +21,8 @@ cannot be replayed because the challenge is fresh every time.
 """
 
 import json
+
+from . import jsontext
 import socket
 import threading
 import time
@@ -127,7 +129,7 @@ class FrameStream:
 
 def _decode(line: bytes) -> Dict[str, Any]:
     try:
-        frame = json.loads(line.decode("utf-8"))
+        frame = jsontext.loads(line.decode("utf-8"))
     except (UnicodeDecodeError, ValueError) as exc:
         raise LinkError("the other side sent something that is not JSON") from exc
     if not isinstance(frame, dict):
