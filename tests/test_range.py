@@ -245,7 +245,20 @@ def test_the_opening_camera_is_one_a_button_can_reproduce():
         pathlib.Path(__file__).resolve().parent.parent
         / "src" / "pitrac_easy_connect" / "companion" / "page.py"
     ).read_text()
-    assert "orbit=Object.assign({}, VIEWS.behind)" in page
+    import re
+
+    # Which view the range opens on is a product decision and moved once
+    # already, from behind to down the line. What must not move is where the
+    # numbers come from: the opening camera has to be a copy of a VIEWS entry,
+    # and that entry has to be the view the range says it is opening on. This
+    # test named "behind" and so failed when the default changed, which is the
+    # test measuring the wrong thing rather than the code being wrong.
+    opening = re.search(r'let view="([a-z]+)", orbit=Object\.assign\(\{\}, VIEWS\.([a-z]+)\)', page)
+    assert opening, "the opening camera is no longer a copy of a VIEWS entry"
+    assert opening.group(1) == opening.group(2), (
+        "the range opens on {} but starts the camera at VIEWS.{}"
+        .format(opening.group(1), opening.group(2))
+    )
     setview = page.split("function setView(")[1].split("\n  }")[0]
     assert "VIEWS[name]" in setview
     assert "yaw:0.62" not in setview, "the numbers belong in VIEWS, once"

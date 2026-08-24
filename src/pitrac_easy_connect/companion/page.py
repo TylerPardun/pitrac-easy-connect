@@ -179,6 +179,13 @@ PAGE = r"""<!doctype html>
   .hudunit{font-size:.7rem;color:var(--faint)}
   .hudclub{margin-top:6px;font-size:.7rem;font-weight:700;letter-spacing:.08em;
     text-transform:uppercase;color:var(--green)}
+  .views{position:relative}
+  .viewmenu{position:absolute;bottom:calc(100% + 8px);left:0;z-index:5;
+    display:flex;flex-direction:column;gap:4px;padding:6px;
+    background:var(--card);border:1px solid var(--line);border-radius:12px;
+    box-shadow:0 10px 30px rgba(0,0,0,.45);min-width:150px}
+  .viewmenu.hidden{display:none}
+  .viewmenu .viewbtn{width:100%;text-align:left}
   .rangebar{position:absolute;left:0;right:0;bottom:0;display:flex;
     align-items:center;justify-content:space-between;gap:10px;padding:10px 12px;
     background:linear-gradient(to top,rgba(8,12,10,.92) 40%,rgba(8,12,10,.55) 75%,transparent)}
@@ -381,10 +388,14 @@ PAGE = r"""<!doctype html>
     </div>
 
     <div class="rangebar">
-      <div class="views" role="group" aria-label="Camera">
-        <button class="viewbtn on" data-view="behind">Behind</button>
-        <button class="viewbtn" data-view="down">Down the line</button>
-        <button class="viewbtn" data-view="top">Top down</button>
+      <div class="views">
+        <button class="viewbtn" id="viewToggle" aria-expanded="false"
+          aria-haspopup="true" aria-controls="viewMenu">Change view</button>
+        <div class="viewmenu hidden" id="viewMenu" role="menu" aria-label="Camera">
+          <button class="viewbtn on" data-view="down" role="menuitem">Down the line</button>
+          <button class="viewbtn" data-view="behind" role="menuitem">Behind</button>
+          <button class="viewbtn" data-view="top" role="menuitem">Top down</button>
+        </div>
       </div>
       <div class="rangeright">
         <span class="rangecount" id="rangeCount"></span>
@@ -774,6 +785,13 @@ function render(data){
   // column; everything after it is a desktop window with work in it.
   document.body.classList.toggle("guiding", guiding);
   renderBoard(data, guiding);
+  // A demo shot exists so the range can be seen before there is a
+  // launch monitor to fill it. Once the enclosure reports it can
+  // measure -- cameras attached, calibration present, its program
+  // running -- real shots are coming and a fake one is just a way to
+  // put a shot in the history that nobody hit.
+  const measuring=(data.chain||[]).find(s=>s.key==="pitrac");
+  $("rangeDemo").classList.toggle("hidden", !!(measuring && measuring.ok));
   // The tabs go away when the link does, so anyone left on a pane that frames
   // the enclosure would be looking at an empty window with nothing to press.
   // The range and the shot history are not that: they are this session's own
@@ -1365,7 +1383,9 @@ const RANGE = (function(){
     behind: {yaw:0.62, pitch:0.30, dist:205},
     down:   {yaw:0.0,  pitch:0.055, dist:120},
   };
-  let view="behind", orbit=Object.assign({}, VIEWS.behind), drag=null;
+  // Down the line is where the golfer stands, so it is what the range
+  // opens on: this is a first-person simulator, not a broadcast replay.
+  let view="down", orbit=Object.assign({}, VIEWS.down), drag=null;
   let animation=null, lastFrame=0;
 
   const reduced = window.matchMedia &&
@@ -2125,11 +2145,30 @@ async function refreshRange(){
   try{ RANGE.apply(await api("/api/range")); }catch(e){}
 }
 
+function closeViewMenu(){
+  $("viewMenu").classList.add("hidden");
+  $("viewToggle").setAttribute("aria-expanded","false");
+}
+$("viewToggle").addEventListener("click", function(event){
+  event.stopPropagation();
+  const menu=$("viewMenu"), opening=menu.classList.contains("hidden");
+  menu.classList.toggle("hidden", !opening);
+  $("viewToggle").setAttribute("aria-expanded", opening ? "true" : "false");
+});
+// Anywhere else, or Escape, puts it away again.
+document.addEventListener("click", function(event){
+  if(!event.target.closest || !event.target.closest(".views")) closeViewMenu();
+});
+document.addEventListener("keydown", function(event){
+  if(event.key==="Escape") closeViewMenu();
+});
+
 document.querySelectorAll(".viewbtn[data-view]").forEach(function(button){
   button.addEventListener("click", function(){
     document.querySelectorAll(".viewbtn[data-view]").forEach(b=>b.classList.remove("on"));
     button.classList.add("on");
     RANGE.setView(button.dataset.view);
+    closeViewMenu();
   });
 });
 $("rangeClear").addEventListener("click", e=>run(e.target, async()=>{
