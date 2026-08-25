@@ -36,9 +36,9 @@ A five-step guide walks you through the first setup. If you move the enclosure t
 | **First-time connection** | Before the enclosure is connected to your home Wi-Fi, it creates a temporary network of its own. This lets you complete setup from a phone or laptop |
 | **Connection recovery** | If a new Wi-Fi connection fails, the enclosure returns to the previous network within two and a half minutes. It can also recover if power is lost during the change |
 | **Find and connect** | The app finds the enclosure automatically. One click links the app and enclosure, and other computers cannot connect unless the owner allows them |
-| **Simulator connection** | Sends each measured shot to GSPro or E6 Connect |
+| **Simulator connection** | Sends each measured shot to GSPro or E6 Connect. PiTrac is pointed at Easy-Connect once, when the enclosure is set up, and never again — so a new router, a new address, or a move to another house does not break shot delivery. A **Simulator** page shows which one is selected, whether it is answering, and the steps to get it listening |
 | **Setup and system checks** | A five-step guide handles the first setup. The app also checks that the cameras, calibration, software, storage, and other essentials are ready, then explains anything that needs attention |
-| **Shot history and practice range** | Saves every shot with its club, and separately shows the recent shot images PiTrac has saved. The built-in range shows ball flight, distance, height, accuracy, and shot patterns without GSPro, E6 Connect, an account, or an internet connection |
+| **Shot history and practice range** | Every shot is saved with the club it was hit with, including shots played through GSPro or E6 Connect — the club is read from the simulator, so changing club there is enough. The same shots build the practice range, which shows ball flight, distance, height, accuracy, and shot patterns without GSPro, E6 Connect, an account, or an internet connection. Recent shot images PiTrac has saved are shown separately |
 | **Dashboard and settings** | Includes PiTrac's dashboard and tools to back up, restore, update, or reset the enclosure for a new owner |
 
 ### What it looks like
