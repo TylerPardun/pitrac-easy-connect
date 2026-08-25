@@ -135,7 +135,7 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 
 ------------------------------------------------------------------------
-pycparser 2.22
+pycparser 3.0
 ------------------------------------------------------------------------
 
 pycparser -- A C parser in Python

@@ -105,6 +105,15 @@ PAGE = r"""<!doctype html>
      cards, which do want the width, so this caps the actions only. */
   body:not(.guiding) .do{max-width:380px}
 
+  .simsteps{margin:18px 0 4px;padding:0;list-style:none;counter-reset:step}
+  .simsteps li{position:relative;padding:0 0 14px 30px;color:var(--muted);
+    font-size:.92rem;line-height:1.55;counter-increment:step}
+  .simsteps li::before{content:counter(step);position:absolute;left:0;top:0;
+    width:20px;height:20px;border-radius:50%;background:var(--raise);
+    color:var(--text);font-size:.72rem;font-weight:700;
+    display:flex;align-items:center;justify-content:center}
+  .simsteps li.done{color:var(--faint)}
+  .simsteps li.done::before{content:"\2713";background:var(--accent);color:#0b0b0b}
   .board{margin-top:30px;display:grid;gap:12px;
     /* 280 rather than 236: in an 820px column the smaller minimum fits
        three across, which left the fourth card alone on a row of its
@@ -115,6 +124,8 @@ PAGE = r"""<!doctype html>
     border-color:var(--line);border-radius:14px;font-weight:400}
   .board button:hover:not(:disabled){border-color:var(--accent)}
   .board button:disabled{cursor:default;opacity:.55}
+  /* An odd number of cards would leave the last one alone on half a row. */
+  .board button:last-child:nth-child(odd){grid-column:1/-1}
   .board .t{font-weight:700;font-size:1rem;color:var(--text);display:block}
   .board .d{font-size:.85rem;color:var(--muted);margin-top:4px;display:block;
     line-height:1.4}
@@ -272,6 +283,7 @@ PAGE = r"""<!doctype html>
 <body>
 <nav class="tabs hidden" id="tabs">
   <button data-pane="play" class="on">Play</button>
+  <button data-pane="simulator">Simulator</button>
   <button data-pane="range">Range</button>
   <button data-pane="shots">Shots</button>
   <button data-pane="pitrac">PiTrac</button>
@@ -407,6 +419,32 @@ PAGE = r"""<!doctype html>
 
   <div class="rangeclubs" id="rangeClubs"></div>
 </div>
+
+<div class="pane" id="pane-simulator"><div class="shots">
+  <h3 class="sech">Which simulator</h3>
+  <div class="row2">
+    <button class="quiet" data-sim="gspro">GSPro</button>
+    <button class="quiet" data-sim="e6">E6 Connect</button>
+  </div>
+
+  <h3 class="sech">Connection</h3>
+  <div class="status">
+    <div class="dot" id="simDot"></div>
+    <div style="flex:1">
+      <h1 id="simHead" style="font-size:1.15rem">Not connected</h1>
+      <div class="why" id="simWhy"></div>
+    </div>
+  </div>
+
+  <div class="simsteps" id="simSteps"></div>
+
+  <div class="row2">
+    <button class="quiet" id="simCheck">Check again</button>
+    <button class="quiet" id="simTest">Send a test shot</button>
+  </div>
+
+  <div class="why" id="simWhere"></div>
+</div></div>
 
 <div class="pane" id="pane-shots"><div class="shots">
   <div class="clubrow">
@@ -638,6 +676,10 @@ function boardCards(data){
   const shots=((data.shotLog&&data.shotLog.shots)||[]).length;
   const sim=data.simulatorStatus||{};
   return [
+    {pane:"simulator", title:"GSPro / E6 Connect",
+     detail:sim.ready ? "Ready to play through " + esc(data.simulatorLabel || "your simulator")
+            : sim.connected ? "Connected. One test shot proves the rest."
+            : "Connect " + esc(data.simulatorLabel || "your simulator") + " on this computer."},
     {pane:"range", title:"Practice range",
      detail:"Ball flight, distances and shot patterns. No simulator needed."},
     {pane:"shots", title:"Shot history",
@@ -651,6 +693,52 @@ function boardCards(data){
      detail:linked ? "Wi-Fi, backups, updates and ownership."
                    : "Connect to PiTrac to open this."},
   ].map(card=>Object.assign(card, {disabled: !!card.needsLink && !linked}));
+}
+
+//: Where the desktop dials each simulator. Shown because when this fails,
+//: "nothing is listening on 127.0.0.1:921" is the fact that identifies which
+//: side is wrong, and it is otherwise invisible.
+const SIM_WHERE = {
+  gspro: {port: 921, screen: "Open Connect",
+          how: "In GSPro, open the <strong>Open Connect</strong> screen so it is waiting for a device."},
+  e6:    {port: 2483, screen: "a session",
+          how: "In E6 Connect, <strong>start a session</strong> and step onto the tee."},
+};
+
+//: Deliberately not a wizard. Nothing here is ordered or gated: the steps are
+//: shown all at once, ticked off as they come true, and the page is safe to
+//: open at any time -- including with no enclosure, since this connection is
+//: between this computer and the simulator on it and needs no PiTrac at all.
+function renderSimulator(data){
+  const sim = data.simulatorStatus || {};
+  const which = data.simulator === "e6" ? "e6" : "gspro";
+  const where = SIM_WHERE[which];
+  const label = data.simulatorLabel || "your simulator";
+  const linked = !!(data.link && data.link.connected);
+
+  $("simDot").className = "dot " + (sim.ready ? "good" : sim.connected ? "busy" : "bad");
+  $("simHead").textContent = sim.ready ? "Ready to play"
+    : sim.connected ? "Connected, not proved yet" : "Not connected";
+  $("simWhy").textContent = sim.message
+    || (sim.ready ? label + " has accepted a shot from PiTrac."
+        : sim.connected ? "Connected to " + label + ". A test shot proves the rest of the path."
+        : label + " is not answering on this computer yet.");
+
+  const steps = [
+    {done: true, text: "Choose " + esc(label) + " above."},
+    {done: !!sim.connected, text: "Open " + esc(label) + " on this computer. " + where.how},
+    {done: !!sim.ready, text: "Send a test shot. This proves the whole path, "
+                             + "from the launch monitor to " + esc(label) + "."},
+  ];
+  $("simSteps").innerHTML = "<ol class='simsteps'>" + steps.map(s=>
+    `<li class="${s.done?"done":""}">${s.text}</li>`).join("") + "</ol>";
+
+  $("simWhere").innerHTML =
+    "Easy-Connect looks for " + esc(label) + " on <strong>this computer</strong> at "
+    + "<strong>127.0.0.1:" + where.port + "</strong>. "
+    + (linked ? "" : "PiTrac is not connected, so a test shot is not available yet — "
+                     + "but the connection above can still be checked.");
+  $("simTest").disabled = !linked || !sim.connected;
 }
 
 function renderBoard(data, guiding){
@@ -796,6 +884,7 @@ function render(data){
   // column; everything after it is a desktop window with work in it.
   document.body.classList.toggle("guiding", guiding);
   renderBoard(data, guiding);
+  renderSimulator(data);
   // A demo shot exists so the range can be seen before there is a
   // launch monitor to fill it. Once the enclosure reports it can
   // measure -- cameras attached, calibration present, its program
@@ -807,7 +896,10 @@ function render(data){
   // the enclosure would be looking at an empty window with nothing to press.
   // The range and the shot history are not that: they are this session's own
   // data, still worth looking at with PiTrac unplugged, so they stay put.
-  if(!linkedNow && pane!=="play" && pane!=="range" && pane!=="shots") showPane("play");
+  // simulator is in this list because that connection is between this
+  // computer and the software on it; it needs no enclosure at all.
+  if(!linkedNow && pane!=="play" && pane!=="range" && pane!=="shots"
+     && pane!=="simulator") showPane("play");
   loadFrames();
   document.querySelectorAll("[data-sim]").forEach(b=>{
     b.classList.toggle("primary", b.dataset.sim===data.simulator);
@@ -2182,6 +2274,8 @@ document.querySelectorAll(".viewbtn[data-view]").forEach(function(button){
     closeViewMenu();
   });
 });
+$("simCheck").addEventListener("click", e=>doAction("check", e.target));
+$("simTest").addEventListener("click", e=>doAction("test", e.target));
 $("rangeClear").addEventListener("click", e=>run(e.target, async()=>{
   RANGE.apply(await api("/api/range-clear",{}));
 }));
