@@ -61,7 +61,11 @@ jobs:
         include:
           - os: windows-latest
             artifact: PiTrac-windows
-            path: dist/PiTrac-Easy-Connect-windows.zip
+            # Two files: the zip is what the updater fetches and replaces a
+            # directory from, the installer is what a person downloads.
+            path: |
+              dist/PiTrac-Easy-Connect-windows.zip
+              dist/PiTrac-Easy-Connect-windows-setup.exe
           # Two Mac builds, because a Mac cannot run the other one's. Rosetta
           # translates Intel code to run on Apple silicon, never the reverse,
           # so an Intel Mac given the arm64 build has no way to start it at all.
@@ -303,6 +307,53 @@ jobs:
           python packaging/write-install-manifest.py "$root/pitrac-install.json" `
             --version $version --system Windows --arch x86_64
           Compress-Archive -Path $root -DestinationPath dist/PiTrac-Easy-Connect-windows.zip -Force
+
+      # The zip stays: it is what the updater downloads, and self-update is
+      # built around replacing the directory inside it. The installer is for
+      # people, so that there is never a loose executable to drag out of that
+      # directory. Inno Setup is already on this image.
+      - name: Build the Windows installer
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $version = python -c "import sys;sys.path.insert(0,'src');import pitrac_easy_connect;print(pitrac_easy_connect.__version__)"
+          $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { Write-Error "Inno Setup is not on this runner"; exit 1 }
+          & $iscc "/DAppVersion=$version" packaging/windows-installer.iss
+          if ($LASTEXITCODE -ne 0) { Write-Error "the installer did not build"; exit 1 }
+          $setup = "dist/PiTrac-Easy-Connect-windows-setup.exe"
+          if (-not (Test-Path $setup)) { Write-Error "the installer was not produced"; exit 1 }
+          Write-Host ("installer: {0:N1} MB" -f ((Get-Item $setup).Length / 1MB))
+
+      # Installing for real, then checking the application landed where the
+      # updater will look for it. /VERYSILENT is Inno's unattended mode.
+      - name: Check the installer puts the app where updates can replace it
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $setup = "dist/PiTrac-Easy-Connect-windows-setup.exe"
+          $target = "$env:RUNNER_TEMP\installed-here"
+          Start-Process -FilePath $setup -ArgumentList `
+            "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART","/DIR=$target\PiTrac Easy-Connect" `
+            -Wait
+          $root = "$target\PiTrac Easy-Connect"
+          foreach ($needed in @("PiTrac Easy-Connect.exe","PiTrac Updater.exe",
+                                "pitrac-install.json","_internal")) {
+            if (-not (Test-Path "$root\$needed")) {
+              Write-Error "the installed application has no $needed"; exit 1
+            }
+          }
+          # The updater refuses anything that is not its own package layout,
+          # so the installed directory is put through that exact check.
+          python -c "
+          import sys
+          sys.path.insert(0, 'src')
+          from pitrac_easy_connect.companion import self_update
+          root = sys.argv[1]
+          app = self_update.validate_install_root(root, system='Windows', machine='x86_64')
+          print('the installed directory is a replaceable install:', app.install_root)
+          " "$root"
+          if ($LASTEXITCODE -ne 0) { Write-Error "the installed layout is not updatable"; exit 1 }
 
       - name: Package the disposable Windows physical-test fixture
         if: runner.os == 'Windows' && github.ref == 'refs/heads/main'
@@ -594,11 +645,13 @@ jobs:
       - name: Gather what is being released
         run: |
           mkdir -p release
-          find artifacts -type f \( -name '*.zip' -o -name '*.pyz' \) -exec cp {} release/ \;
+          find artifacts -type f \( -name '*.zip' -o -name '*.pyz' -o -name '*-setup.exe' \) \
+            -exec cp {} release/ \;
           EXPECTED=(
             PiTrac-Easy-Connect-macos-apple-silicon.zip
             PiTrac-Easy-Connect-macos-intel.zip
             PiTrac-Easy-Connect-windows.zip
+            PiTrac-Easy-Connect-windows-setup.exe
             "PiTrac-Easy-Connect-${GITHUB_REF_NAME#v}.pyz"
           )
           [ "$(find release -maxdepth 1 -type f | wc -l)" -eq "${#EXPECTED[@]}" ]
@@ -622,6 +675,7 @@ jobs:
           subject-path: |
             release/*.zip
             release/*.pyz
+            release/*-setup.exe
 
       # The notes for a release are the message on its own tag, which is
       # where they are written. This used to point at a file named for

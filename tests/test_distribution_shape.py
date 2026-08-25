@@ -95,3 +95,74 @@ def test_the_release_expects_exactly_what_is_built():
     assert "linux" not in expected.lower()
     for artifact in ("macos-apple-silicon", "macos-intel", "windows"):
         assert artifact in expected, "{} is not required at release time".format(artifact)
+
+
+# --- The Windows installer -------------------------------------------------
+
+
+def test_windows_ships_an_installer():
+    """A directory build has a loose executable people can move out of it.
+
+    That is what happened: the executable was dragged onto the Desktop and
+    then failed with "Failed to load Python DLL", which is accurate and
+    useless. An installer removes the choice -- there is nothing loose to
+    move, and the application lands in one known directory.
+    """
+
+    assert "PiTrac-Easy-Connect-windows-setup.exe" in FLOW, "no installer is built"
+    assert "windows-installer.iss" in FLOW, "the installer script is not used"
+    script = (ROOT / "packaging" / "windows-installer.iss")
+    assert script.is_file()
+
+
+def test_the_installer_needs_no_administrator():
+    """Elevation on install is a nuisance; elevation on every update is worse.
+
+    A per-user install means the running application can replace its own
+    directory without a prompt, which is the whole point of it being there.
+    """
+
+    script = (ROOT / "packaging" / "windows-installer.iss").read_text()
+    assert "PrivilegesRequired=lowest" in script
+    assert "{localappdata}" in script
+
+
+def test_the_installed_directory_is_named_for_the_app():
+    """validate_install_root refuses a root that is not."""
+
+    from pitrac_easy_connect.companion.self_update import APP_NAME
+
+    script = (ROOT / "packaging" / "windows-installer.iss").read_text()
+    default = [l for l in script.splitlines() if l.startswith("DefaultDirName=")][0]
+    assert default.rstrip().endswith(APP_NAME), (
+        "the install directory does not end with {}, so updating would refuse "
+        "it: {}".format(APP_NAME, default)
+    )
+
+
+def test_the_installer_has_a_fixed_identity():
+    """A changing AppId installs beside the old copy instead of replacing it."""
+
+    script = (ROOT / "packaging" / "windows-installer.iss").read_text()
+    assert "AppId=" in script and "Never change this" in script
+
+
+def test_the_zip_is_still_published_because_the_updater_needs_it():
+    """The updater downloads the zip by name; an installer cannot replace it."""
+
+    from pitrac_easy_connect.common import updates
+
+    wanted = updates.PLATFORM_ASSET_NAMES[("Windows", "x86_64")]
+    assert wanted.endswith(".zip"), wanted
+    assert wanted in FLOW, "the asset the updater downloads is no longer built"
+    expected = FLOW.split("EXPECTED=(", 1)[1].split(")", 1)[0]
+    assert wanted in expected, "the updater's asset is not required at release time"
+
+
+def test_ci_installs_the_installer_and_checks_the_result():
+    """Building an installer proves nothing about what it installs."""
+
+    assert "/VERYSILENT" in FLOW, "the installer is never actually run"
+    assert "validate_install_root" in FLOW, (
+        "what the installer produced is never put through the updater's own check"
+    )

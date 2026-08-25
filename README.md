@@ -129,7 +129,7 @@ Download the build for your computer from
 |---|---|
 | macOS 11+, Apple silicon (M1 or later) | [`PiTrac-Easy-Connect-macos-apple-silicon.zip`](https://github.com/TylerPardun/pitrac-easy-connect/releases/latest/download/PiTrac-Easy-Connect-macos-apple-silicon.zip) |
 | macOS 11+, Intel | [`PiTrac-Easy-Connect-macos-intel.zip`](https://github.com/TylerPardun/pitrac-easy-connect/releases/latest/download/PiTrac-Easy-Connect-macos-intel.zip) |
-| Windows 11 | [`PiTrac-Easy-Connect-windows.zip`](https://github.com/TylerPardun/pitrac-easy-connect/releases/latest/download/PiTrac-Easy-Connect-windows.zip) |
+| Windows 11 | [`PiTrac-Easy-Connect-windows-setup.exe`](https://github.com/TylerPardun/pitrac-easy-connect/releases/latest/download/PiTrac-Easy-Connect-windows-setup.exe) |
 
 The two Mac builds are not interchangeable. Rosetta translates Intel code to
 run on Apple silicon and never the other way, so an Intel Mac given the Apple
@@ -144,7 +144,7 @@ operating systems warn the first time:
 | macOS | Right-click the app and choose **Open** rather than double-clicking |
 | Windows | Choose **More info**, then **Run anyway** |
 
-On Windows, keep the extracted `PiTrac Easy-Connect` directory
+On Windows the installer places the application for you. On macOS, keep the `.app` whole and put it in Applications. The extracted `PiTrac Easy-Connect` directory
 together and start the executable inside it. A loose executable copied to
 Downloads, Desktop, Documents, a home directory, or another unrelated folder
 will run, but automatic replacement is deliberately refused because that
