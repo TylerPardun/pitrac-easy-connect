@@ -507,10 +507,14 @@ function esc(v){
     .replace(/"/g,"&quot;").replace(/'/g,"&#39;");
 }
 
-function showError(error, deviceId){
+function showError(error, deviceId, source){
+  // Which part of the app owns the message that is up. Without this, a
+  // background search cleared a connect error it had no business clearing:
+  // "another computer is already connected" vanished every fifteen seconds
+  // and came back on the next poll, which is the flicker this fixes.
   // Clearing it while the refusal panel is up would leave that panel with no
   // explanation of why it appeared.
-  if(!error){ if(!asking()) $("err").innerHTML=""; return; }
+  if(!error){ if(!asking()){ $("err").innerHTML=""; $("err").dataset.from=""; } return; }
   const info=error.info||{};
   // A saved pairing that can never succeed again (the enclosure was reset or
   // replaced) needs its own way out, distinct from every other recovery
@@ -521,6 +525,7 @@ function showError(error, deviceId){
     ${info.nextStep?`<p>${esc(info.nextStep)}</p>`:""}
     ${info.code?`<div class="code">${esc(info.code)}</div>`:""}
     ${stale?'<button class="quiet danger" id="removeStalePairing">Remove old pairing from this computer</button>':""}</div>`;
+  $("err").dataset.from = source || "action";
   if(stale){
     $("removeStalePairing").addEventListener("click",()=>run(null, async()=>{
       if(!confirm("Remove the old pairing for this PiTrac from this computer?\n\n"+
@@ -722,7 +727,13 @@ function render(data){
   // Surface it here, from status, rather than only from a caught exception.
   const linkError=data.link&&data.link.lastError;
   if(linkError&&!busy&&!asking()){
-    showError({info:linkError}, data.link.lastErrorDeviceId||data.activeDeviceId);
+    showError({info:linkError}, data.link.lastErrorDeviceId||data.activeDeviceId, "link");
+  }else if(!linkError&&!busy&&!asking()&&$("err").dataset.from==="link"){
+    // The connection this message described has since succeeded, or the
+    // attempt that failed is no longer the last word. Taking it down here is
+    // what lets a search stop doing it: render puts link errors up, so render
+    // is what removes them.
+    showError(null);
   }
   renderKnownPis(data);
 
@@ -1091,7 +1102,7 @@ async function findDevices(){
       const problem=data.problem;
       const failure=new Error(problem.message||"Discovery could not run.");
       failure.info={failed:problem.message, nextStep:problem.nextStep};
-      showError(failure);
+      showError(failure, "", "search");
     }
     if(!data.enclosures.length){
       host.classList.add("hidden");
@@ -1099,7 +1110,7 @@ async function findDevices(){
         const missing=new Error("No PiTrac was found.");
         missing.info={failed:"No PiTrac was found.",
           nextStep:"Check that PiTrac has power and is on this same network, then search again."};
-        showError(missing);
+        showError(missing, "", "search");
       }
       return;
     }
@@ -1107,7 +1118,7 @@ async function findDevices(){
     // earlier search left showing — "No PiTrac was found," a stale
     // discovery-permission message — no longer describes reality, so it
     // must not sit next to a device list that contradicts it.
-    if(!data.problem) showError(null);
+    if(!data.problem && $("err").dataset.from!=="link") showError(null);
     if(data.enclosures.length===1 && known.includes(data.enclosures[0].deviceId)){
       host.classList.add("hidden");
       await api("/api/connect",{deviceId:data.enclosures[0].deviceId});
