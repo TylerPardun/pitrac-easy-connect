@@ -332,14 +332,26 @@ jobs:
         shell: pwsh
         run: |
           $setup = "dist/PiTrac-Easy-Connect-windows-setup.exe"
-          $target = "$env:RUNNER_TEMP\installed-here"
-          Start-Process -FilePath $setup -ArgumentList `
-            "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART","/DIR=$target\PiTrac Easy-Connect" `
-            -Wait
-          $root = "$target\PiTrac Easy-Connect"
+          $root = "$env:RUNNER_TEMP\installed-here\PiTrac Easy-Connect"
+          $log = "$env:RUNNER_TEMP\install.log"
+          # The path contains a space, so the value has to carry its own
+          # quotes: an unquoted /DIR= was split at the space and the install
+          # went somewhere else entirely, reported only as a missing exe.
+          $arguments = @("/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART",
+                         ('/DIR="{0}"' -f $root), ('/LOG="{0}"' -f $log))
+          $run = Start-Process -FilePath $setup -ArgumentList $arguments -Wait -PassThru
+          Write-Host "installer exit code: $($run.ExitCode)"
+          if ($run.ExitCode -ne 0) {
+            Get-Content $log -Tail 30 -ErrorAction SilentlyContinue
+            Write-Error "the installer did not complete"; exit 1
+          }
           foreach ($needed in @("PiTrac Easy-Connect.exe","PiTrac Updater.exe",
                                 "pitrac-install.json","_internal")) {
             if (-not (Test-Path "$root\$needed")) {
+              Write-Host "installed into ${root}:"
+              Get-ChildItem $root -ErrorAction SilentlyContinue |
+                ForEach-Object { Write-Host "  $($_.Name)" }
+              Get-Content $log -Tail 30 -ErrorAction SilentlyContinue
               Write-Error "the installed application has no $needed"; exit 1
             }
           }
