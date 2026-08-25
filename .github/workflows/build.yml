@@ -80,6 +80,9 @@ jobs:
       # Pinned. Unpinned, the packaged app changes between builds and the
       # licences in NOTICE.md stop describing what actually shipped.
       - run: python -m pip install --upgrade pip
+      # pillow is pinned in the file; installing it again unpinned defeated that.
+      - run: python -m pip install -r packaging/build-requirements.txt
+
       - name: Generate icons
         run: python packaging/icon/make-icons.py packaging/icon
 
