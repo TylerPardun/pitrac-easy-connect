@@ -36,6 +36,7 @@ from pitrac_easy_connect.companion import self_update as su
 from test_self_update import stage_fixture
 
 
+@pytest.mark.skipif(os.name == "nt", reason="the script install fixture is POSIX; the decision itself is covered on every platform by test_liveness_does_not_depend_on_psutil")
 def test_a_live_but_slow_application_keeps_its_update(tmp_path, monkeypatch):
     """The exact shape of the field failure: running, but not yet confirmed."""
 
@@ -61,6 +62,7 @@ def test_a_live_but_slow_application_keeps_its_update(tmp_path, monkeypatch):
     assert "had not confirmed itself" in result["detail"], result["detail"]
 
 
+@pytest.mark.skipif(os.name == "nt", reason="the script install fixture is POSIX; the decision itself is covered on every platform by test_liveness_does_not_depend_on_psutil")
 def test_an_application_that_dies_without_confirming_is_still_rolled_back(tmp_path, monkeypatch):
     """The safety this must not lose."""
 
@@ -140,7 +142,15 @@ def test_the_probe_does_not_perform_an_update():
 
 
 def test_liveness_does_not_depend_on_psutil(monkeypatch):
-    """CI has no psutil; the machine this was written on did.
+    """The keep-or-roll-back decision itself, on every platform.
+
+    The two tests above drive a whole transaction and need a runnable install,
+    which the suite builds as a POSIX script -- so they are skipped on Windows,
+    the same way test_restart_without_ack_rolls_back_to_previous_working_version
+    already is. This one has no fixture and runs everywhere, so the decision is
+    not left unexercised on the platform those skip.
+
+    CI has no psutil; the machine this was written on did.
 
     Without psutil the process-tree check falls back to os.kill(pid, 0),
     which succeeds for a process that has exited but not been reaped. The
