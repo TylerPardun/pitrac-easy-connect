@@ -782,6 +782,31 @@ def load_journal(path: Path) -> Dict[str, Any]:
     return journal
 
 
+def _launched_still_running(launched: Any, pid: int) -> bool:
+    """Whether the application this helper started is still going.
+
+    The helper created the process, so its own handle is the authority:
+    ``poll()`` distinguishes "still running" from "exited" exactly, without
+    needing psutil. The tree check below cannot, because when psutil is absent
+    it falls back to ``os.kill(pid, 0)``, and that succeeds for a process which
+    has exited but not yet been reaped -- the helper never reaps, so every
+    dead child looks alive to it.
+
+    That mattered: keeping an update depends on the application still running,
+    and a zombie reported as alive would keep an update whose application had
+    actually died. It passed on a machine with psutil installed and failed on
+    CI, which has none.
+    """
+
+    poll = getattr(launched, "poll", None)
+    if callable(poll):
+        try:
+            return poll() is None
+        except Exception:            # pragma: no cover - defensive
+            pass
+    return bool(pid) and _process_tree_alive(pid, set())
+
+
 def _process_tree_alive(root_pid: int, known: set, ignored: Optional[set] = None) -> bool:
     ignored = ignored or set()
     if psutil is not None:
@@ -979,7 +1004,7 @@ def run_helper(journal_path: Path, wait_pid: int, *, timeout: float = HELPER_EXI
                     acknowledged = False
                 if acknowledged:
                     break
-            if launched_pid and not _process_tree_alive(launched_pid, set()):
+            if not _launched_still_running(launched, launched_pid):
                 still_running = False
                 break
             time.sleep(0.2)

@@ -134,3 +134,28 @@ def test_the_probe_does_not_perform_an_update():
     assert source.index("if args.ping:") < source.index("run_helper("), (
         "the probe falls through into a real update"
     )
+
+
+def test_liveness_does_not_depend_on_psutil(monkeypatch):
+    """CI has no psutil; the machine this was written on did.
+
+    Without psutil the process-tree check falls back to os.kill(pid, 0),
+    which succeeds for a process that has exited but not been reaped. The
+    helper never reaps, so every dead child looked alive to it -- and since
+    keeping an update now depends on the application still running, that
+    would have kept an update whose application had died. It passed locally
+    and failed on all four CI runners.
+    """
+
+    monkeypatch.setattr(su, "psutil", None)
+
+    class Exited:
+        def poll(self):
+            return 0
+
+    class Running:
+        def poll(self):
+            return None
+
+    assert su._launched_still_running(Exited(), 999999) is False
+    assert su._launched_still_running(Running(), 999999) is True
