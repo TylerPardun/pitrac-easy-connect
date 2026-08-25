@@ -700,6 +700,10 @@ jobs:
       attestations: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          # The release notes are read from this tag's own annotation,
+          # and a shallow checkout does not bring the tag object with it.
+          fetch-depth: 0
       - name: The tag must match the version in the package
         run: |
           TAG="${GITHUB_REF_NAME#v}"
@@ -748,12 +752,30 @@ jobs:
             release/*.zip
             release/*.pyz
 
+      # The notes for a release are the message on its own tag, which is
+      # where they are written. This used to point at a file named for
+      # v0.4.6, so every release since carried v0.4.6's notes -- telling
+      # people about upgrading from v0.4.5 no matter which version they had
+      # just downloaded.
+      - name: Assemble the release notes from this tag
+        run: |
+          mkdir -p /tmp/notes
+          git tag -l --format='%(contents)' "${GITHUB_REF_NAME}" > /tmp/notes/body.md
+          if [ ! -s /tmp/notes/body.md ]; then
+            echo "::error::${GITHUB_REF_NAME} has no annotation, so it has no notes."
+            exit 1
+          fi
+          printf '\n\n' >> /tmp/notes/body.md
+          cat .github/release-notes/download-and-verify.md >> /tmp/notes/body.md
+          echo "--- notes for ${GITHUB_REF_NAME} ---"
+          head -20 /tmp/notes/body.md
+
       - name: Publish the release
         uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228  # v3.0.2
         with:
           files: release/*
           generate_release_notes: true
-          body_path: .github/release-notes/v0.4.6.md
+          body_path: /tmp/notes/body.md
 
   pages:
     if: github.ref == 'refs/heads/main'
