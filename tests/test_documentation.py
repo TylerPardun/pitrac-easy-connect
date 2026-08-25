@@ -269,13 +269,20 @@ def test_the_pi_archive_is_not_a_browser_or_desktop_entry_point():
 
 
 def test_the_release_notes_warn_about_the_unsigned_builds():
-    # Version-specific prose used to be embedded in build.yml, so every
-    # release silently retained the previous version's notes. The workflow now
-    # names a versioned source; validate the actual published body instead.
+    """Neither build is code-signed, so both operating systems warn.
+
+    This test used to require the workflow to say
+    `body_path: .github/release-notes/v0.4.6.md`, which is the arrangement
+    that made four releases carry v0.4.6's notes. It was pinning the cause of
+    the bug rather than the thing it is named for, so it now checks that the
+    guidance reaches downloaders, wherever it is kept.
+    """
+
     root = Path(__file__).resolve().parent.parent
     workflow = read(root / ".github" / "workflows" / "build.yml")
-    assert "body_path: .github/release-notes/v0.4.6.md" in workflow
-    notes = read(root / ".github" / "release-notes" / "v0.4.6.md")
+    kept = root / ".github" / "release-notes" / "download-and-verify.md"
+    assert kept.name in workflow, "the download guidance is not attached to releases"
+    notes = read(kept)
     assert "Run anyway" in notes, "Windows users need to be told about SmartScreen"
     assert "right-click" in notes.lower(), "macOS users need to be told about Gatekeeper"
 
