@@ -648,7 +648,13 @@ def prepare_transaction(*, archive_path: Path, staged: InstalledApp, install_roo
             independent.chmod(independent.stat().st_mode | stat.S_IXUSR)
         if not independent.is_file() or (system != "Windows" and not os.access(str(independent), os.X_OK)):
             raise SelfUpdateError("the independent updater helper is missing or not executable")
-        _prove_helper_runs(independent)
+        # Only for a packaged build. The risk this covers -- a binary copied
+        # out of an unsigned bundle that satisfies is_file() and the executable
+        # bit and still refuses to start -- belongs to the frozen application.
+        # Running from source the helper is a script, which is not started this
+        # way in production and is not a .exe Windows can execute at all.
+        if getattr(sys, "frozen", False):
+            _prove_helper_runs(independent)
     except Exception:
         _remove_tree(helper_dir, allowed_parent=helper_dir.parent)
         _remove_tree(prepared, allowed_parent=parent)

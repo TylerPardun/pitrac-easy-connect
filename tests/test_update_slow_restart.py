@@ -23,6 +23,7 @@ old one back, with nothing said about why, is the worst outcome available.
 """
 
 import json
+import os
 import subprocess
 import sys
 import time
@@ -92,6 +93,7 @@ def test_the_deadline_is_generous_enough_for_a_slow_first_launch():
 # --- The helper the application shuts itself down for ----------------------
 
 
+@pytest.mark.skipif(os.name == "nt", reason="the script fixture is POSIX; Windows needs a real .exe")
 def test_a_helper_that_cannot_run_is_caught_before_the_application_exits(tmp_path, monkeypatch):
     """The application closes itself so the helper can replace it.
 
@@ -112,6 +114,7 @@ def test_a_helper_that_cannot_run_is_caught_before_the_application_exits(tmp_pat
     assert "would not start" in str(raised.value) or "did not answer" in str(raised.value)
 
 
+@pytest.mark.skipif(os.name == "nt", reason="the script fixture is POSIX; Windows needs a real .exe")
 def test_a_working_helper_answers_when_started(tmp_path):
     working = tmp_path / "PiTrac Updater"
     working.write_text(
@@ -159,3 +162,19 @@ def test_liveness_does_not_depend_on_psutil(monkeypatch):
 
     assert su._launched_still_running(Exited(), 999999) is False
     assert su._launched_still_running(Running(), 999999) is True
+
+
+def test_the_probe_only_runs_for_a_packaged_build():
+    """Running from source the helper is a script, not the copied binary.
+
+    The failure it guards against belongs to the frozen application, and
+    attempting it from source made every Windows test that prepares a
+    transaction fail with "not a valid Win32 application" -- and then leave
+    file handles that blocked the cleanup.
+    """
+
+    import inspect
+
+    source = inspect.getsource(su.prepare_transaction)
+    assert 'if getattr(sys, "frozen", False):' in source
+    assert source.index('if getattr(sys, "frozen", False):') < source.index("_prove_helper_runs(independent)")
