@@ -10,10 +10,6 @@ later Mac, or `PiTrac-Easy-Connect-macos-intel.zip` for a real Intel Mac.
 Extract and move the complete `.app`, then right-click it and choose **Open**
 the first time.
 
-**Linux x86-64** — install WebKitGTK 4.1, extract the dedicated
-`PiTrac Easy-Connect` directory, and run the executable inside it. Keep the
-directory together.
-
 ### Checking what you downloaded
 
 Every release file is covered by GitHub build provenance and `SHA256SUMS.txt`.

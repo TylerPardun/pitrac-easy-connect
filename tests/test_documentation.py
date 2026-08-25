@@ -221,27 +221,30 @@ def test_product_commands_name_the_desktop_and_pi_roles_unambiguously():
     assert "pitrac-easy-connect-app" not in project
 
 
-def test_public_downloads_are_the_four_direct_release_assets():
+def test_public_downloads_are_the_shipped_release_assets():
+    """Linux is no longer distributed, so it is no longer offered."""
+
     root = Path(__file__).resolve().parent.parent
     public = read(README) + read(root / "site" / "index.html")
     assets = (
         "PiTrac-Easy-Connect-macos-apple-silicon.zip",
         "PiTrac-Easy-Connect-macos-intel.zip",
         "PiTrac-Easy-Connect-windows.zip",
-        "PiTrac-Easy-Connect-linux-x86_64.zip",
     )
     for asset in assets:
         assert "releases/latest/download/{}".format(asset) in public
     assert "Apple silicon (M1 or later)" in public
+    assert "linux" not in public.lower(), "a download is offered that is not built"
 
 
 def test_ci_smokes_the_normal_native_path_for_every_release_platform():
     workflow = read(
         Path(__file__).resolve().parent.parent / ".github" / "workflows" / "build.yml"
     )
-    assert "PiTrac-Easy-Connect-linux-x86_64.zip" in workflow
-    assert "Xvfb" in workflow and '"state": *"native"' in workflow
-    assert "gir1.2-girepository-2.0" in workflow
+    # Linux is not distributed, so there is no Linux artifact to smoke and no
+    # WebKitGTK toolchain to install. The two platforms that ship are checked
+    # the same way they always were.
+    assert "PiTrac-Easy-Connect-linux" not in workflow
     assert "msedgewebview2.exe" in workflow
     assert "packaging/check-native-only.py" in workflow
     assert "--smoke-test" in workflow

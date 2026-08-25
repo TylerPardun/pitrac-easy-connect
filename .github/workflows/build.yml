@@ -71,9 +71,6 @@ jobs:
           - os: macos-15-intel
             artifact: PiTrac-macos-intel
             path: dist/PiTrac-Easy-Connect-macos-intel.zip
-          - os: ubuntu-latest
-            artifact: PiTrac-linux-x86_64
-            path: dist/PiTrac-Easy-Connect-linux-x86_64.zip
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -83,17 +80,6 @@ jobs:
       # Pinned. Unpinned, the packaged app changes between builds and the
       # licences in NOTICE.md stop describing what actually shipped.
       - run: python -m pip install --upgrade pip
-      - name: Install the Linux native-window toolchain
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            build-essential pkg-config libcairo2-dev libgirepository-2.0-dev \
-            gir1.2-girepository-2.0 gir1.2-gtk-3.0 gir1.2-webkit2-4.1 \
-            libwebkit2gtk-4.1-dev xvfb
-      # pillow is pinned in the file; installing it again unpinned defeated that.
-      - run: python -m pip install -r packaging/build-requirements.txt
-
       - name: Generate icons
         run: python packaging/icon/make-icons.py packaging/icon
 
@@ -294,14 +280,19 @@ jobs:
             --old-version 0.4.5 --target-version "$TARGET" \
             --system Darwin --arch "$WANT" --asset "$ASSET"
 
-      # A bare .exe cannot carry a licence file, so it travels in a zip with one.
+      # The build is onedir now, so the whole directory travels, licences and
+      # all. A lone .exe could be dragged out of this folder and then had no
+      # installation to speak of; this one needs the directory around it.
       - name: Package the Windows app
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
           $root = "dist/payload/PiTrac Easy-Connect"
-          New-Item -ItemType Directory -Force -Path $root | Out-Null
-          Copy-Item "dist/PiTrac Easy-Connect.exe" $root/
+          New-Item -ItemType Directory -Force -Path (Split-Path $root) | Out-Null
+          Copy-Item "dist/PiTrac Easy-Connect" $root -Recurse
+          if (-not (Test-Path "$root/PiTrac Easy-Connect.exe")) {
+            Write-Error "the collected Windows directory has no executable in it"; exit 1
+          }
           Copy-Item "dist-helper/PiTrac Updater.exe" $root/
           Copy-Item LICENSE, NOTICE.md $root/
           Copy-Item THIRD-PARTY-LICENCES.txt $root/
@@ -315,8 +306,8 @@ jobs:
         shell: pwsh
         run: |
           $root = "dist/physical-old/PiTrac Easy-Connect"
-          New-Item -ItemType Directory -Force -Path $root | Out-Null
-          Copy-Item "dist-old/PiTrac Easy-Connect.exe" $root/
+          New-Item -ItemType Directory -Force -Path (Split-Path $root) | Out-Null
+          Copy-Item "dist-old/PiTrac Easy-Connect" $root -Recurse
           Copy-Item "dist-helper/PiTrac Updater.exe" $root/
           Copy-Item LICENSE, NOTICE.md, THIRD-PARTY-LICENCES.txt $root/
           python packaging/write-install-manifest.py "$root/pitrac-install.json" `
@@ -516,8 +507,8 @@ jobs:
         shell: pwsh
         run: |
           $fixture = "$env:RUNNER_TEMP\pitrac-update-fixture\PiTrac Easy-Connect"
-          New-Item -ItemType Directory -Force -Path $fixture | Out-Null
-          Copy-Item "dist-old/PiTrac Easy-Connect.exe" $fixture/
+          New-Item -ItemType Directory -Force -Path (Split-Path $fixture) | Out-Null
+          Copy-Item "dist-old/PiTrac Easy-Connect" $fixture -Recurse
           Copy-Item "dist-helper/PiTrac Updater.exe" $fixture/
           Copy-Item LICENSE, NOTICE.md, THIRD-PARTY-LICENCES.txt $fixture/
           python packaging/write-install-manifest.py "$fixture/pitrac-install.json" `
@@ -527,134 +518,6 @@ jobs:
             --old-root $fixture --archive dist/PiTrac-Easy-Connect-windows.zip `
             --old-version 0.4.5 --target-version $target --system Windows `
             --arch x86_64 --asset PiTrac-Easy-Connect-windows.zip
-
-      - name: Package the Linux app
-        if: runner.os == 'Linux'
-        run: |
-          ROOT="dist/payload/PiTrac Easy-Connect"
-          mkdir -p "$ROOT"
-          cp "dist/PiTrac Easy-Connect" "$ROOT/"
-          cp "dist-helper/PiTrac Updater" "$ROOT/"
-          cp LICENSE NOTICE.md THIRD-PARTY-LICENCES.txt "$ROOT/"
-          chmod +x "$ROOT/PiTrac Easy-Connect" "$ROOT/PiTrac Updater"
-          VERSION=$(PYTHONPATH=src python -c 'import pitrac_easy_connect; print(pitrac_easy_connect.__version__)')
-          python packaging/write-install-manifest.py "$ROOT/pitrac-install.json" \
-            --version "$VERSION" --system Linux --arch x86_64
-          (cd dist/payload && zip -yr ../PiTrac-Easy-Connect-linux-x86_64.zip "PiTrac Easy-Connect")
-
-      - name: Check the Linux release opens a WebKitGTK window
-        if: runner.os == 'Linux'
-        run: |
-          mkdir -p dist/unpacked-linux
-          unzip -q dist/PiTrac-Easy-Connect-linux-x86_64.zip -d dist/unpacked-linux
-          BIN="dist/unpacked-linux/PiTrac Easy-Connect/PiTrac Easy-Connect"
-          test -x "$BIN" || { echo "::error::the Linux executable bit was lost"; exit 1; }
-          EXPECTED=$(PYTHONPATH=src python -c 'import pitrac_easy_connect; print(pitrac_easy_connect.__version__)')
-          python packaging/check-release-archive.py dist/PiTrac-Easy-Connect-linux-x86_64.zip \
-            --system Linux --arch x86_64 --version "$EXPECTED"
-          BROWSERS_BEFORE=$(pgrep -x 'firefox|chromium|google-chrome' 2>/dev/null | sort || true)
-          # Both launches must share one desktop session. Wrapping only the
-          # first process in xvfb-run leaves the second with no DISPLAY, so it
-          # cannot execute the focus request the test is meant to verify.
-          export DISPLAY=:99
-          Xvfb "$DISPLAY" -screen 0 1280x1024x24 >xvfb.log 2>&1 &
-          XVFB_PID=$!
-          trap 'cat linux-window.log linux-second.log xvfb.log 2>/dev/null || true; kill $XVFB_PID 2>/dev/null || true' EXIT
-          for _ in $(seq 1 20); do
-            if [ -S /tmp/.X11-unix/X99 ]; then break; fi
-            sleep 0.25
-          done
-          test -S /tmp/.X11-unix/X99 || { echo "::error::Xvfb did not start"; exit 1; }
-          "$BIN" --port 8899 --smoke-test --config /tmp/pitrac-linux-smoke.json >linux-window.log 2>&1 &
-          APP_PID=$!
-          STATUS=""
-          PAGE_CHECK=""
-          for _ in $(seq 1 40); do
-            sleep 2
-            STATUS=$(curl -fsS -m 3 -H "X-PiTrac-App: 1" http://127.0.0.1:8899/api/status || true)
-            PAGE_CHECK=$(curl -fsS -m 3 -H "X-PiTrac-App: 1" http://127.0.0.1:8899/api/page-check || true)
-            if echo "$STATUS" | grep -qE '"state": *"native"' && \
-               echo "$PAGE_CHECK" | grep -q 'POST /api/finish-setup'; then
-              break
-            fi
-          done
-          echo "$STATUS" | grep -qE '"state": *"native"' || {
-            echo "::error::the Linux artifact did not create a native WebKitGTK window"
-            exit 1
-          }
-          echo "$STATUS" | grep -q '"version":"'"$EXPECTED"'"' || {
-            echo "::error::the Linux artifact reported the wrong version"; exit 1;
-          }
-          echo "$PAGE_CHECK" | grep -q 'POST /api/search' || {
-            echo "::error::the real Linux page did not call guarded search"; exit 1;
-          }
-          echo "$PAGE_CHECK" | grep -q 'POST /api/finish-setup' || {
-            echo "::error::the real Linux page did not call a state-changing route"; exit 1;
-          }
-
-          "$BIN" --port 8899 --config /tmp/pitrac-linux-smoke.json >linux-second.log 2>&1 &
-          SECOND_PID=$!
-          for _ in $(seq 1 20); do
-            sleep 0.5
-            kill -0 $SECOND_PID 2>/dev/null || break
-          done
-          if kill -0 $SECOND_PID 2>/dev/null; then
-            echo "::error::a second Linux app process remained running"; exit 1
-          fi
-          if ! wait $SECOND_PID; then
-            cat linux-second.log || true
-            echo "::error::the second Linux launch exited with a failure"; exit 1
-          fi
-          kill -0 $APP_PID
-          for _ in $(seq 1 20); do
-            PAGE_CHECK=$(curl -fsS -m 5 -H "X-PiTrac-App: 1" http://127.0.0.1:8899/api/page-check)
-            if echo "$PAGE_CHECK" | grep -q '"completed":1'; then break; fi
-            sleep 0.25
-          done
-          echo "$PAGE_CHECK" | grep -q 'POST /api/activate' || {
-            echo "::error::the second Linux launch did not activate the original"; exit 1;
-          }
-          echo "$PAGE_CHECK" | grep -q '"completed":1' || {
-            echo "::error::the Linux window did not complete its native activation"; exit 1;
-          }
-          echo "$PAGE_CHECK" | grep -q '"error":null' || {
-            echo "::error::the Linux native activation reported an error: $PAGE_CHECK"; exit 1;
-          }
-          BROWSERS_AFTER=$(pgrep -x 'firefox|chromium|google-chrome' 2>/dev/null | sort || true)
-          test "$BROWSERS_AFTER" = "$BROWSERS_BEFORE" || {
-            echo "::error::the Linux app launched an external browser"; exit 1;
-          }
-          curl -fsS -m 5 -H "X-PiTrac-App: 1" -H 'Content-Type: application/json' \
-            -d '{}' http://127.0.0.1:8899/api/quit >/dev/null
-          for _ in $(seq 1 20); do
-            sleep 0.5
-            kill -0 $APP_PID 2>/dev/null || break
-          done
-          if kill -0 $APP_PID 2>/dev/null; then
-            echo "::error::the Linux app did not exit cleanly"; exit 1
-          fi
-          wait $APP_PID
-          trap - EXIT
-          kill $XVFB_PID 2>/dev/null || true
-          wait $XVFB_PID 2>/dev/null || true
-          cat linux-window.log linux-second.log xvfb.log || true
-
-      - name: Run a real packaged Linux v0.4.5 to candidate update transaction
-        if: runner.os == 'Linux'
-        run: |
-          FIXTURE="$RUNNER_TEMP/pitrac-update-fixture/PiTrac Easy-Connect"
-          mkdir -p "$FIXTURE"
-          cp "dist-old/PiTrac Easy-Connect" "$FIXTURE/"
-          cp "dist-helper/PiTrac Updater" "$FIXTURE/"
-          cp LICENSE NOTICE.md THIRD-PARTY-LICENCES.txt "$FIXTURE/"
-          chmod +x "$FIXTURE/PiTrac Easy-Connect" "$FIXTURE/PiTrac Updater"
-          python packaging/write-install-manifest.py "$FIXTURE/pitrac-install.json" \
-            --version 0.4.5 --system Linux --arch x86_64
-          TARGET=$(PYTHONPATH=src python -c 'import pitrac_easy_connect; print(pitrac_easy_connect.__version__)')
-          xvfb-run -a python packaging/packaged-update-smoke.py \
-            --old-root "$FIXTURE" --archive dist/PiTrac-Easy-Connect-linux-x86_64.zip \
-            --old-version 0.4.5 --target-version "$TARGET" --system Linux \
-            --arch x86_64 --asset PiTrac-Easy-Connect-linux-x86_64.zip
 
       - name: Check NOTICE.md credits everything the build bundles
         run: python packaging/bundled-licences.py --check --toc build/app/PiTrac-Easy-Connect/Analysis-00.toc
@@ -733,7 +596,6 @@ jobs:
             PiTrac-Easy-Connect-macos-apple-silicon.zip
             PiTrac-Easy-Connect-macos-intel.zip
             PiTrac-Easy-Connect-windows.zip
-            PiTrac-Easy-Connect-linux-x86_64.zip
             "PiTrac-Easy-Connect-${GITHUB_REF_NAME#v}.pyz"
           )
           [ "$(find release -maxdepth 1 -type f | wc -l)" -eq "${#EXPECTED[@]}" ]

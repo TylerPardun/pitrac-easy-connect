@@ -192,15 +192,22 @@ if MACOS:
         },
     )
 else:
-    # Windows intentionally remains onefile. Linux retains its existing native
-    # single executable as well; neither platform wraps that executable in a
-    # second application bundle.
+    # Windows is onedir, for the same reason macOS is. A onefile executable is
+    # self-contained, so it runs perfectly well after being dragged out of the
+    # folder it shipped in -- and then its "installation" is whatever folder it
+    # was dropped into. Updating refuses that, correctly: replacing somebody's
+    # Desktop is not an installation step. Reported from the field as
+    # "Desktop is a user folder, not an application install".
+    #
+    # A onedir build cannot be moved by its executable alone, because the
+    # executable needs the directory around it. The install root is therefore
+    # always the dedicated folder, which is the shape the updater already
+    # requires and macOS already has.
     executable = EXE(
         pyz,
         analysis.scripts,
-        analysis.binaries,
-        analysis.datas,
         [],
+        exclude_binaries=True,
         name="PiTrac Easy-Connect",
         debug=False,
         bootloader_ignore_signals=False,
@@ -214,4 +221,12 @@ else:
         codesign_identity=None,
         entitlements_file=None,
         icon=ICON if os.path.exists(ICON) else None,
+    )
+    collected = COLLECT(
+        executable,
+        analysis.binaries,
+        analysis.datas,
+        strip=False,
+        upx=False,
+        name="PiTrac Easy-Connect",
     )

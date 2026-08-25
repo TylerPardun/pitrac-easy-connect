@@ -10,7 +10,7 @@
 
 PiTrac Easy-Connect makes a PiTrac launch monitor easier to set up and use. It
 includes a small program that runs on the Raspberry Pi inside the enclosure and
-a native desktop app for macOS, Windows, and Linux. The app always runs in its
+a native desktop app for macOS and Windows. The app always runs in its
 own application window. It connects the enclosure to your home Wi-Fi, finds it
 automatically, and sends each measured shot to GSPro or E6 Connect. It also
 includes PiTrac's dashboard, shot history, and a practice range.
@@ -130,7 +130,6 @@ Download the build for your computer from
 | macOS 11+, Apple silicon (M1 or later) | [`PiTrac-Easy-Connect-macos-apple-silicon.zip`](https://github.com/TylerPardun/pitrac-easy-connect/releases/latest/download/PiTrac-Easy-Connect-macos-apple-silicon.zip) |
 | macOS 11+, Intel | [`PiTrac-Easy-Connect-macos-intel.zip`](https://github.com/TylerPardun/pitrac-easy-connect/releases/latest/download/PiTrac-Easy-Connect-macos-intel.zip) |
 | Windows 11 | [`PiTrac-Easy-Connect-windows.zip`](https://github.com/TylerPardun/pitrac-easy-connect/releases/latest/download/PiTrac-Easy-Connect-windows.zip) |
-| Linux x86-64 | [`PiTrac-Easy-Connect-linux-x86_64.zip`](https://github.com/TylerPardun/pitrac-easy-connect/releases/latest/download/PiTrac-Easy-Connect-linux-x86_64.zip) |
 
 The two Mac builds are not interchangeable. Rosetta translates Intel code to
 run on Apple silicon and never the other way, so an Intel Mac given the Apple
@@ -145,15 +144,11 @@ operating systems warn the first time:
 | macOS | Right-click the app and choose **Open** rather than double-clicking |
 | Windows | Choose **More info**, then **Run anyway** |
 
-On Windows and Linux, keep the extracted `PiTrac Easy-Connect` directory
+On Windows, keep the extracted `PiTrac Easy-Connect` directory
 together and start the executable inside it. A loose executable copied to
 Downloads, Desktop, Documents, a home directory, or another unrelated folder
 will run, but automatic replacement is deliberately refused because that
 folder is not a disposable application installation.
-
-On Linux, install WebKitGTK 4.1 first. The package is commonly named
-`libwebkit2gtk-4.1-0` on Debian/Ubuntu, `webkit2gtk4.1` on Fedora, and
-`webkit2gtk-4.1` on Arch. Unzip the download and run `PiTrac Easy-Connect`.
 
 If macOS cannot find PiTrac, open **System Settings → Privacy & Security →
 Local Network** and allow PiTrac Easy-Connect, then search again.
@@ -174,8 +169,7 @@ gh attestation verify PiTrac-Easy-Connect-windows.zip --repo TylerPardun/pitrac-
 ```
 
 That names the workflow, commit and run that produced it. To check the bytes
-alone, compare them against `SHA256SUMS.txt` — `sha256sum -c` on Linux,
-`shasum -a 256 -c` on macOS, `Get-FileHash` on Windows.
+alone, compare them against `SHA256SUMS.txt` — `shasum -a 256 -c` on macOS, `Get-FileHash` on Windows.
 
 This proves where a file came from. It is not the certificate that would stop
 the warnings above; those need paid programmes from Microsoft and Apple. The
@@ -187,7 +181,7 @@ exists, install and restart the desktop app first. Only that current desktop
 may ask the enclosure to install the exact same release tag. The app reports
 success only after the enclosure reconnects and both sides report that version.
 The versioned `.pyz` attached to each release is this verified Pi-service
-payload; it is not a Linux desktop application.
+payload for the enclosure; it is not a desktop application.
 
 Version 0.4.5 predates the safe desktop updater, so moving from v0.4.5 to
 v0.4.6 is manual. Version 0.4.6 establishes the updater foundation; the first
@@ -204,7 +198,7 @@ the first-time setup, but you can reopen it with **Advanced → Run setup again*
 Building from source requires Python 3.10 or newer for the desktop dependencies.
 PyInstaller bundles the interpreter for the platform on which it runs, so each
 artifact must be built on its own operating system. Cross-compiling is not
-supported. Linux also needs the WebKitGTK development package while building.
+supported.
 
 ```bash
 git clone https://github.com/TylerPardun/pitrac-easy-connect
@@ -213,7 +207,7 @@ cd pitrac-easy-connect
 ```
 
 The build is written to `dist/` as `PiTrac Easy-Connect.app` on macOS,
-`PiTrac Easy-Connect.exe` on Windows, or `PiTrac Easy-Connect` on Linux. The
+`PiTrac Easy-Connect.exe` on Windows. The
 script installs the pinned build dependencies. To launch from source instead,
 run `python3 -m pip install -e ".[desktop]"` and then `pitrac-easy-connect`.
 Use `pitrac-easy-connect --headless` only for CI, API tests, or service use.
