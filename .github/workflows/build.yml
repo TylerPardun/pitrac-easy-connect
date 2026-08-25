@@ -440,8 +440,14 @@ jobs:
             Write-Host "no window handle, as expected on a runner with no desktop"
           }
 
+          # Ninety seconds, not thirty. A cold Windows runner starting Python,
+          # a local server and a WebView2 tree from a bundle written moments
+          # earlier does not reliably get two POSTs away inside thirty, and
+          # v0.5.1 failed here on the same code that had just passed on main.
+          # This is the same mistake as the forty-five second restart
+          # deadline: a slow start read as a failure.
           $pageReady = $false
-          foreach ($i in 1..30) {
+          foreach ($i in 1..90) {
             Start-Sleep -Seconds 1
             try {
               $p = Invoke-WebRequest -Uri "http://127.0.0.1:8898/api/page-check" `
