@@ -108,6 +108,10 @@ class UpdateCoordination:
     target_version: str = ""
     synchronized: bool = False
     can_update_pi: bool = False
+    #: The saved plan was for a version this desktop has already passed, so it
+    #: has been ignored and should be forgotten. Kept separate from
+    #: ``synchronized`` because nothing was reached -- the plan simply expired.
+    discard_pending: bool = False
     detail: str = ""
     download_url: str = ""
 
@@ -120,12 +124,45 @@ class UpdateCoordination:
             "targetVersion": self.target_version,
             "synchronized": self.synchronized,
             "canUpdatePi": self.can_update_pi,
+            "discardPending": self.discard_pending,
             "detail": self.detail,
             "downloadUrl": self.download_url,
         }
 
 
 def coordinate_update(
+    desktop: UpdateStatus,
+    enclosure_version: str,
+    pending_target: str = "",
+) -> UpdateCoordination:
+    """Choose one update direction, forgetting a plan that has been overtaken.
+
+    A saved plan for a version this desktop has already passed is finished,
+    not broken. It used to be reported as a blocking fault, which stopped the
+    enclosure being offered the update it was actually due, and the only way
+    out was starting another check by hand. Installing a newer desktop
+    manually is the ordinary way to arrive here, because that is what someone
+    does after automatic installation has been refused.
+
+    The opposite case is the one that matters and is unchanged: an older
+    desktop must never send the enclosure ahead of itself.
+    """
+
+    installed = str(desktop.installed or "")
+    pending = str(pending_target or "").lstrip("v")
+    overtaken = False
+    if pending:
+        passed = compare(installed, pending)
+        if passed is not None and passed > 0:
+            pending, overtaken = "", True
+
+    plan = _decide_update(desktop, enclosure_version, pending)
+    if overtaken:
+        plan.discard_pending = True
+    return plan
+
+
+def _decide_update(
     desktop: UpdateStatus,
     enclosure_version: str,
     pending_target: str = "",
@@ -145,12 +182,11 @@ def coordinate_update(
     pending = str(pending_target or "")
 
     if pending:
-        pending = pending.lstrip("v")
         desktop_to_pending = compare(installed, pending)
         if desktop_to_pending is None:
             return UpdateCoordination(
                 "blocked", installed, enclosure, latest, pending,
-                detail="The saved update target is not a valid version.",
+                detail="The version this update was aiming for is not readable.",
             )
         if desktop_to_pending < 0:
             return UpdateCoordination(
@@ -159,15 +195,6 @@ def coordinate_update(
                     "Update this desktop app to {}, close the old copy, and restart the new "
                     "copy. PiTrac will not be updated first."
                 ).format(pending),
-                download_url=desktop.download_url,
-            )
-        if desktop_to_pending > 0:
-            return UpdateCoordination(
-                "blocked", installed, enclosure, latest, pending,
-                detail=(
-                    "This desktop ({}) is newer than the saved update target ({}). Start a "
-                    "new update check before changing PiTrac."
-                ).format(installed, pending),
                 download_url=desktop.download_url,
             )
         if not enclosure:
@@ -197,8 +224,8 @@ def coordinate_update(
         return UpdateCoordination(
             "blocked", installed, enclosure, latest, pending,
             detail=(
-                "PiTrac reported {} while the saved update target is {}. It was not "
-                "downgraded or changed."
+                "PiTrac is on {} and this update was aiming for {}, so PiTrac was "
+                "left alone rather than moved backwards."
             ).format(enclosure, pending),
             download_url=desktop.download_url,
         )

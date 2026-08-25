@@ -1629,7 +1629,11 @@ class CompanionService:
         plan = coordinate_update(checked, enclosure_version, pending_target)
         status["coordination"] = plan.as_dict()
         status["desktop"] = self._desktop_update_payload()
-        if pending_target and plan.synchronized:
+        # Forget the saved plan once it is finished -- either both halves
+        # reached it, or this desktop moved past it and it has been ignored.
+        # Only the first case used to clear it, so an overtaken plan was read
+        # again on every check and kept blocking.
+        if pending_target and (plan.synchronized or plan.discard_pending):
             self._remember_update_target("")
         return status
 
