@@ -31,9 +31,20 @@ APPLICATION_ID = "com.pitrac.easyconnect"
 INSTALL_MANIFEST = "pitrac-install.json"
 PACKAGE_LAYOUT_VERSION = 1
 HELPER_NAME = "PiTrac Updater"
+#: What --ping prints, so the reply cannot be confused with any other
+#: output the process might produce.
+HELPER_PING_REPLY = "pitrac-updater-ready"
 VERSION_PROBE_TIMEOUT = 15.0
+HELPER_PING_TIMEOUT = 20.0
 HELPER_EXIT_TIMEOUT = 45.0
-ACK_TIMEOUT = 45.0
+#: How long to wait for a restarted application to confirm itself. The
+#: confirmation only fires once its window is on screen, which on a slow
+#: machine means starting Python, a local server and a WebKit window from a
+#: bundle written seconds earlier. Forty-five seconds was not enough on an
+#: Intel Mac -- measured at about forty-eight. Waiting longer costs nothing
+#: but a helper process that lives a little longer, and running out no
+#: longer undoes the update anyway.
+ACK_TIMEOUT = 300.0
 DISK_MARGIN_BYTES = 64 * 1024 * 1024
 SHA256_RE = re.compile(r"^[0-9a-fA-F]{64}$")
 PHASES = {
@@ -636,7 +647,8 @@ def prepare_transaction(*, archive_path: Path, staged: InstalledApp, install_roo
         if system != "Windows":
             independent.chmod(independent.stat().st_mode | stat.S_IXUSR)
         if not independent.is_file() or (system != "Windows" and not os.access(str(independent), os.X_OK)):
-            raise SelfUpdateError("the independent updater helper could not execute")
+            raise SelfUpdateError("the independent updater helper is missing or not executable")
+        _prove_helper_runs(independent)
     except Exception:
         _remove_tree(helper_dir, allowed_parent=helper_dir.parent)
         _remove_tree(prepared, allowed_parent=parent)
@@ -661,6 +673,28 @@ def prepare_transaction(*, archive_path: Path, staged: InstalledApp, install_roo
     }
     _write_journal(journal_path, journal)
     return journal_path
+
+
+def _prove_helper_runs(helper: Path, timeout: float = HELPER_PING_TIMEOUT) -> None:
+    """Start the copied helper and require it to answer.
+
+    The application shuts itself down so this helper can replace it. If the
+    copy cannot start, nothing performs the update and nothing writes a
+    result -- the user is left on the old version with no explanation, which
+    is the least debuggable outcome available.
+    """
+
+    try:
+        done = subprocess.run([str(helper), "--ping"], capture_output=True,
+                              text=True, timeout=timeout)
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise SelfUpdateError(
+            "the independent updater helper would not start: {}".format(exc)
+        ) from exc
+    if done.returncode != 0 or HELPER_PING_REPLY not in (done.stdout or ""):
+        raise SelfUpdateError(
+            "the independent updater helper did not answer when started"
+        )
 
 
 def load_journal(path: Path) -> Dict[str, Any]:
@@ -933,6 +967,7 @@ def run_helper(journal_path: Path, wait_pid: int, *, timeout: float = HELPER_EXI
         journal["launchedPid"] = int(getattr(launched, "pid", 0) or 0)
         _write_journal(journal_path, journal, "awaiting-restart-verification")
         ack_path, deadline, acknowledged = Path(journal["restartAcknowledgementPath"]), time.monotonic() + ack_timeout, False
+        launched_pid, still_running = int(journal.get("launchedPid") or 0), True
         while time.monotonic() < deadline:
             if ack_path.exists():
                 try:
@@ -944,12 +979,33 @@ def run_helper(journal_path: Path, wait_pid: int, *, timeout: float = HELPER_EXI
                     acknowledged = False
                 if acknowledged:
                     break
-            pid = int(journal.get("launchedPid") or 0)
-            if pid and not _process_tree_alive(pid, set()):
+            if launched_pid and not _process_tree_alive(launched_pid, set()):
+                still_running = False
                 break
             time.sleep(0.2)
         if not acknowledged:
-            raise SelfUpdateError("the new application did not acknowledge its exact path and version")
+            # Two very different things used to end up here. An application
+            # that started and then died is a failed update and must be undone.
+            # An application that is still running and simply has not confirmed
+            # itself yet is a *successful* update on a slow machine, and undoing
+            # it is the worse outcome by far: the user watches the new version
+            # start, then finds the old one back with nothing said about why.
+            #
+            # That is what happened in the field. The confirmation only fires
+            # once the window is on screen, and on an Intel Mac the first launch
+            # of a freshly written bundle took about forty-eight seconds against
+            # a forty-five second deadline. The rollback then restored a version
+            # which missed the same deadline by two and a half seconds.
+            if not still_running:
+                raise SelfUpdateError("the new application did not acknowledge its exact path and version")
+            _write_journal(journal_path, journal, "complete")
+            _write_result(
+                journal, True,
+                "Updated to {}. It started but had not confirmed itself after {:.0f} seconds, "
+                "so the previous version was kept at {} rather than the update being undone."
+                .format(journal["targetVersion"], ack_timeout, previous),
+            )
+            return 0
         _remove_tree(previous, allowed_parent=install.parent)
         _write_journal(journal_path, journal, "complete")
         _write_result(journal, True, "Updated to {} and verified after restart.".format(journal["targetVersion"]))
@@ -1155,10 +1211,23 @@ def clean_transaction(path: Path) -> None:
 def run_helper_cli(argv) -> int:
     import argparse
     parser = argparse.ArgumentParser(prog="PiTrac Updater")
-    parser.add_argument("--journal", type=Path, required=True)
-    parser.add_argument("--wait-pid", type=int, required=True)
+    # Proving the copied helper can start, rather than assuming it from a
+    # file mode. The check before this existed looked at is_file() and the
+    # executable bit and then reported "could not execute" on failure, which
+    # claimed more than it had tested: a binary copied out of an unsigned
+    # bundle can satisfy both and still refuse to launch. The application
+    # closes itself in favour of this helper, so being wrong about it means
+    # nothing performs the update and nothing reports why.
+    parser.add_argument("--ping", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--journal", type=Path, required=False)
+    parser.add_argument("--wait-pid", type=int, required=False)
     parser.add_argument("--timeout", type=float, default=HELPER_EXIT_TIMEOUT)
     parser.add_argument("--ack-timeout", type=float, default=ACK_TIMEOUT)
     args = parser.parse_args(argv)
+    if args.ping:
+        print(HELPER_PING_REPLY)
+        return 0
+    if args.journal is None or args.wait_pid is None:
+        parser.error("--journal and --wait-pid are required")
     return run_helper(args.journal, args.wait_pid, timeout=args.timeout,
                       ack_timeout=args.ack_timeout)

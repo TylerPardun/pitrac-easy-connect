@@ -51,7 +51,16 @@ def _make_current_install(tmp_path, version="0.4.4"):
     helper = self_update.helper_path(root, system="Linux")
     executable.parent.mkdir(parents=True)
     executable.write_text("old")
-    helper.write_text("helper")
+    # A helper that can actually run. Preparing a transaction now starts this
+    # copy and requires it to answer, because the application shuts itself
+    # down in favour of it -- a file with the executable bit set and nothing
+    # behind it was never a helper, it just looked like one to a stat() call.
+    helper.write_text(
+        "#!/usr/bin/env python3\n"
+        "import sys\n"
+        "from pitrac_easy_connect.companion.self_update import run_helper_cli\n"
+        "raise SystemExit(run_helper_cli(sys.argv[1:]))\n"
+    )
     executable.chmod(0o755)
     helper.chmod(0o755)
     self_update.write_package_manifest(root, version, system="Linux", machine="x86_64")
