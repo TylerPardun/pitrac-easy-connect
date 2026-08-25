@@ -15,6 +15,7 @@ device ID, so a second PiTrac is a second entry rather than a conflict.
 
 import os
 import platform
+import subprocess
 import sys
 import threading
 import time
@@ -42,6 +43,8 @@ from ..common.errors import (
 from ..common.states import State
 from ..common.updates import (
     DEVELOPMENT,
+    RELEASES_PAGE,
+    REPOSITORY,
     SOURCE,
     DesktopReleaseUpdater,
     DesktopUpdateState,
@@ -312,6 +315,50 @@ class CompanionService:
                 self._session = None
         self.connect_simulator()
         return self.status()
+
+    def open_release_page(self, url: str = "") -> Dict[str, Any]:
+        """Hand this project's releases page to the system browser.
+
+        Deliberately narrow, and deliberately not the standard library's
+        browser-launcher module -- which check-native-only.py forbids by
+        name, and which is unreliable inside a frozen bundle anyway.
+        This application must never show its own interface in a browser --
+        packaging/check-native-only.py enforces that, and pywebview is
+        configured to refuse external links so stray markup cannot do it
+        either. Sending someone to a download page is a different act: it
+        hands a URL to the operating system and nothing of ours renders
+        there.
+
+        It exists because the honest fallback, when the app cannot install an
+        update itself, is "download it yourself" -- and that used to mean
+        printing an address as text beside a Copy button. In a WKWebView
+        without clipboard permission that is nothing to click and a copy that
+        does not happen, which is what "I am not able to click the link"
+        turned out to be.
+
+        Only this project's own releases. The address is rebuilt here rather
+        than trusted from the caller, because the page doing the asking is
+        the one an injected script would be running in.
+        """
+
+        page = RELEASES_PAGE.format(REPOSITORY)
+        allowed = "https://github.com/{}/releases/".format(REPOSITORY)
+        if url and url.startswith(allowed):
+            page = url
+
+        system = platform.system()
+        if system == "Darwin":
+            command = ["/usr/bin/open", page]
+        elif system == "Windows":
+            command = ["cmd", "/c", "start", "", page]
+        else:
+            command = ["xdg-open", page]
+        try:
+            done = subprocess.run(command, capture_output=True, timeout=15)
+            opened = done.returncode == 0
+        except (OSError, subprocess.SubprocessError):
+            opened = False
+        return {"opened": opened, "url": page}
 
     def set_window_state(self, state: str, detail: Optional[str] = None) -> None:
         if state not in {"starting", "native", "headless", "failed"}:

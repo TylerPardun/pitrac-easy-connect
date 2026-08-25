@@ -1131,14 +1131,24 @@ function wireDesktopDownload(host,url,target,isLocalPackage){
         return;
       }
     }
-    host.innerHTML='<div class="update"><span>'+esc(isLocalPackage
-      ? "Automatic replacement was refused before the app closed. Extract the saved package into a dedicated PiTrac Easy-Connect application folder, then start that copy:"
-      : "Copy this release address and open it when ready:")+'<br>'+
+    // Open it, rather than printing the address and hoping. This used to
+    // render the URL as text with a Copy button: the text was not a link, so
+    // there was nothing to click, and the copy silently did nothing in a
+    // WKWebView without clipboard permission. The address stays below as a
+    // fallback for when the browser cannot be opened at all.
+    let opened=false;
+    try{ opened=!!(await api("/api/open-release",{url:url})).opened; }catch(e){}
+    host.innerHTML='<div class="update"><span>'+esc(opened
+      ? "Opened the download page in your browser. Download the file for this computer, then replace the app with it."
+      : "Open this address in your browser to download the new version:")+'<br>'+
       '<code>'+esc(url)+'</code></span>'+
-      '<button class="quiet" id="copyUpdate">Copy address</button></div>';
+      '<button class="quiet" id="copyUpdate">'+(opened?"Open again":"Open in browser")+'</button></div>';
     $("copyUpdate").addEventListener("click",async e=>{
-      const copied=await copyText(url);
-      e.target.textContent=copied?"Copied":"Copy failed";
+      const again=await api("/api/open-release",{url:url}).catch(()=>({opened:false}));
+      if(!again.opened){
+        const copied=await copyText(url);
+        e.target.textContent=copied?"Address copied":"Could not open";
+      }
     });
   }));
 }
