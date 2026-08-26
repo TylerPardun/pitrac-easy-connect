@@ -140,6 +140,40 @@ def stage_fixture(tmp_path, monkeypatch, *, old="0.4.5", new="0.4.6",
     return state, current, journal
 
 
+def acknowledging_launcher(arguments):
+    """Stand in for the restarted native app without executing a fake script.
+
+    The package fixture deliberately contains a POSIX script, not a Windows
+    executable.  Recovery itself is cross-platform, so write the same exact
+    durable acknowledgement the native window writes after it is shown.
+    """
+
+    def value(flag):
+        return arguments[arguments.index(flag) + 1]
+
+    journal_path = Path(value("--post-update-journal"))
+    journal = su.load_journal(journal_path)
+    if journal["phase"] in {
+        "current-promoted", "awaiting-restart-verification", "unresolved",
+    }:
+        version = journal["targetVersion"]
+    else:
+        version = journal["installedVersion"]
+    su.acknowledge_restart(
+        journal_path, value("--post-update-token"), version=version,
+        executable=Path(arguments[0]),
+    )
+
+    class Running:
+        pid = 999999
+
+        @staticmethod
+        def poll():
+            return None
+
+    return Running()
+
+
 def test_packaged_architecture_follows_the_manifest_not_the_host(tmp_path, monkeypatch):
     root = make_install(tmp_path, "0.4.6", system="Linux", machine="x86_64")
     executable = su.executable_path(root, system="Linux")
@@ -375,6 +409,21 @@ def test_windows_helper_cleanup_retries_a_transient_file_lock(monkeypatch, tmp_p
     assert not helper_dir.exists()
 
 
+def test_transaction_rename_refuses_an_occupied_destination(tmp_path):
+    source = tmp_path / "source"
+    destination = tmp_path / "destination"
+    source.mkdir()
+    destination.mkdir()
+    (source / "candidate").write_text("new")
+    (destination / "canary").write_text("keep")
+
+    with pytest.raises(FileExistsError, match="already occupied"):
+        su._replace_transaction_path(source, destination)
+
+    assert (source / "candidate").read_text() == "new"
+    assert (destination / "canary").read_text() == "keep"
+
+
 def test_second_promotion_rename_failure_restores_the_previous_install(monkeypatch, tmp_path):
     _state, current, journal = stage_fixture(tmp_path, monkeypatch)
     real_replace = su._replace_transaction_path
@@ -473,14 +522,18 @@ def test_stable_recovery_reconciles_every_mutation_gap_idempotently(
     marker = su._recovery_marker_path(su.load_journal(journal_path))
     assert marker.exists(), "no stable recovery registration survived the injected crash"
 
-    assert su.run_recovery(journal_path, ack_timeout=3) == code
+    assert su.run_recovery(
+        journal_path, ack_timeout=3, launcher=acknowledging_launcher
+    ) == code
     installed = json.loads((install / su.INSTALL_MANIFEST).read_text())
     assert installed["version"] == expected
     assert canary.read_text() == "untouched"
     assert not marker.exists()
 
     # Terminal recovery is safe to re-run and cannot change the chosen result.
-    assert su.run_recovery(journal_path, ack_timeout=0.1) == code
+    assert su.run_recovery(
+        journal_path, ack_timeout=0.1, launcher=acknowledging_launcher
+    ) == code
     assert json.loads((install / su.INSTALL_MANIFEST).read_text())["version"] == expected
     assert canary.read_text() == "untouched"
 

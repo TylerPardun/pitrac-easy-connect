@@ -952,12 +952,24 @@ def _terminate_process_tree(pid: int) -> bool:
 
 
 def _replace_transaction_path(source: Path, destination: Path, *, timeout: float = 10) -> None:
-    """Atomically rename an exact transaction path, tolerating brief Windows locks."""
+    """Atomically rename an exact transaction path, tolerating brief Windows locks.
+
+    ``os.replace`` maps to a replace-existing operation on Windows, and that
+    operation rejects directories even when the destination has just been
+    vacated.  Every transaction destination is required to be absent anyway:
+    silently replacing anything here would destroy evidence or user data.
+    Check that invariant explicitly, then use the cross-platform directory
+    rename operation.
+    """
 
     deadline = time.monotonic() + timeout
     while True:
         try:
-            os.replace(str(source), str(destination))
+            if destination.exists() or destination.is_symlink():
+                raise FileExistsError(
+                    "the update destination is already occupied: {}".format(destination)
+                )
+            os.rename(str(source), str(destination))
             return
         except PermissionError:
             if time.monotonic() >= deadline:

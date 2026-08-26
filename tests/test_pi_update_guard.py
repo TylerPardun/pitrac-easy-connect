@@ -20,7 +20,11 @@ from pathlib import Path
 
 import pytest
 
+from conftest import on_posix
 from pitrac_easy_connect.pi import update_guard as guard
+
+
+pytestmark = on_posix
 
 
 class Clock:
