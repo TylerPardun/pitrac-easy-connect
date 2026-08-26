@@ -421,6 +421,15 @@ jobs:
         env:
           PITRAC_RELEASE_SIGNING_KEY: ${{ secrets.PITRAC_RELEASE_SIGNING_KEY }}
         run: |
+          if [ -z "$PITRAC_RELEASE_SIGNING_KEY" ]; then
+            if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+              echo "::error::tag smoke requires PITRAC_RELEASE_SIGNING_KEY from the release environment"
+              exit 1
+            fi
+            echo "Signed packaged-update smoke is deferred to the protected release-tag build."
+            echo "Pull requests cannot access the production release-manifest key."
+            exit 0
+          fi
           FIXTURE="$RUNNER_TEMP/pitrac-update-fixture"
           mkdir -p "$FIXTURE"
           ditto -x -k "$PREVIOUS_ASSET" "$FIXTURE"
@@ -436,40 +445,34 @@ jobs:
           }
           TARGET=$(PYTHONPATH=src python -c 'import pitrac_easy_connect; print(pitrac_easy_connect.__version__)')
           ASSET=$(basename "${{ matrix.path }}")
-          SIGNING=()
-          if [[ "$GITHUB_REF" == refs/tags/v* && -z "$PITRAC_RELEASE_SIGNING_KEY" ]]; then
-            echo "::error::tag smoke requires PITRAC_RELEASE_SIGNING_KEY from the release environment"
-            exit 1
-          fi
-          if [ -n "$PITRAC_RELEASE_SIGNING_KEY" ]; then
-            umask 077
-            printf '%s' "$PITRAC_RELEASE_SIGNING_KEY" > "$RUNNER_TEMP/release-signing-key.pem"
-            SIGNING=(--signing-key "$RUNNER_TEMP/release-signing-key.pem")
-          fi
+          umask 077
+          printf '%s' "$PITRAC_RELEASE_SIGNING_KEY" > "$RUNNER_TEMP/release-signing-key.pem"
           python packaging/packaged-update-smoke.py \
             --old-root "$OLD_APP" --archive "${{ matrix.path }}" \
             --old-version "$PREVIOUS_VERSION" --target-version "$TARGET" \
-            --system Darwin --arch "$WANT" --asset "$ASSET" "${SIGNING[@]}"
+            --system Darwin --arch "$WANT" --asset "$ASSET" \
+            --signing-key "$RUNNER_TEMP/release-signing-key.pem"
           if [ -f "$RUNNER_TEMP/release-signing-key.pem" ]; then
             rm -f "$RUNNER_TEMP/release-signing-key.pem"
           fi
 
-      # The build is onedir now, so the whole directory travels, licences and
-      # all. A lone .exe could be dragged out of this folder and then had no
-      # installation to speak of; this one needs the directory around it.
+      # The main Windows executable is onefile so it cannot be separated from
+      # its Python runtime. The surrounding directory remains the installed
+      # package because it also carries the updater and install manifest.
       - name: Package the Windows app
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
           $root = "dist/payload/PiTrac Easy-Connect"
-          New-Item -ItemType Directory -Force -Path (Split-Path $root) | Out-Null
-          Copy-Item "dist/PiTrac Easy-Connect" $root -Recurse
+          New-Item -ItemType Directory -Force -Path $root | Out-Null
+          Copy-Item "dist/PiTrac Easy-Connect.exe" $root/
           if (-not (Test-Path "$root/PiTrac Easy-Connect.exe")) {
-            Write-Error "the collected Windows directory has no executable in it"; exit 1
+            Write-Error "the self-contained Windows executable was not produced"; exit 1
           }
           Copy-Item "dist-helper/PiTrac Updater.exe" $root/
           Copy-Item LICENSE, NOTICE.md $root/
           Copy-Item THIRD-PARTY-LICENCES.txt $root/
+          Copy-Item packaging/WINDOWS-INSTALLATION.txt $root/
           $version = python -c "import sys;sys.path.insert(0,'src');import pitrac_easy_connect;print(pitrac_easy_connect.__version__)"
           python packaging/write-install-manifest.py "$root/pitrac-install.json" `
             --version $version --system Windows --arch x86_64
@@ -523,10 +526,9 @@ jobs:
 
       # The zip stays: it is what the updater downloads, and self-update is
       # built around replacing the directory inside it. The installer is for
-      # people, so that there is never a loose executable to drag out of that
-      # directory. Inno Setup is already on this image. Signing the exe and
-      # helper before this runs is what makes the installer's own payload,
-      # unpacked from the SourceDir Inno reads, signed too.
+      # people. Inno Setup is already on this image. Signing the exe and helper
+      # before this runs is what makes the installer's own payload, unpacked
+      # from the SourceDir Inno reads, signed too.
       - name: Build the Windows installer
         if: runner.os == 'Windows'
         shell: pwsh
@@ -593,7 +595,7 @@ jobs:
             Write-Error "the installer did not complete"; exit 1
           }
           foreach ($needed in @("PiTrac Easy-Connect.exe","PiTrac Updater.exe",
-                                "pitrac-install.json","_internal")) {
+                                "pitrac-install.json","WINDOWS-INSTALLATION.txt")) {
             if (-not (Test-Path "$root\$needed")) {
               Write-Host "installed into ${root}:"
               Get-ChildItem $root -ErrorAction SilentlyContinue |
@@ -798,6 +800,15 @@ jobs:
         env:
           PITRAC_RELEASE_SIGNING_KEY: ${{ secrets.PITRAC_RELEASE_SIGNING_KEY }}
         run: |
+          if ($env:PITRAC_RELEASE_SIGNING_KEY -eq "") {
+            if ($env:GITHUB_REF.StartsWith("refs/tags/v")) {
+              Write-Error "tag smoke requires PITRAC_RELEASE_SIGNING_KEY from the release environment"
+              exit 1
+            }
+            Write-Host "Signed packaged-update smoke is deferred to the protected release-tag build."
+            Write-Host "Pull requests cannot access the production release-manifest key."
+            exit 0
+          }
           $fixture = "$env:RUNNER_TEMP\pitrac-update-fixture\PiTrac Easy-Connect"
           New-Item -ItemType Directory -Force -Path (Split-Path $fixture) | Out-Null
           Expand-Archive -Path $env:PREVIOUS_ASSET -DestinationPath (Split-Path $fixture) -Force
@@ -805,21 +816,12 @@ jobs:
             Write-Error "$env:PREVIOUS_TAG did not contain its actual app directory"; exit 1
           }
           $target = python -c "import sys;sys.path.insert(0,'src');import pitrac_easy_connect;print(pitrac_easy_connect.__version__)"
-          $signing = @()
           $releaseKey = "$env:RUNNER_TEMP\release-signing-key.pem"
-          if ($env:GITHUB_REF.StartsWith("refs/tags/v") -and
-              $env:PITRAC_RELEASE_SIGNING_KEY -eq "") {
-            Write-Error "tag smoke requires PITRAC_RELEASE_SIGNING_KEY from the release environment"
-            exit 1
-          }
-          if ($env:PITRAC_RELEASE_SIGNING_KEY -ne "") {
-            [IO.File]::WriteAllText($releaseKey, $env:PITRAC_RELEASE_SIGNING_KEY)
-            $signing = @("--signing-key", $releaseKey)
-          }
+          [IO.File]::WriteAllText($releaseKey, $env:PITRAC_RELEASE_SIGNING_KEY)
           python packaging/packaged-update-smoke.py `
             --old-root $fixture --archive dist/PiTrac-Easy-Connect-windows.zip `
             --old-version $env:PREVIOUS_VERSION --target-version $target --system Windows `
-            --arch x86_64 --asset PiTrac-Easy-Connect-windows.zip @signing
+            --arch x86_64 --asset PiTrac-Easy-Connect-windows.zip --signing-key $releaseKey
           Remove-Item -Force $releaseKey -ErrorAction SilentlyContinue
 
       - name: Check NOTICE.md credits everything the build bundles
@@ -1065,12 +1067,43 @@ jobs:
           head -20 /tmp/notes/body.md
 
       - name: Publish the release
+        id: publish_release
         uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228  # v3.0.2
         with:
           files: release/*
           generate_release_notes: true
           body_path: /tmp/notes/body.md
           prerelease: ${{ env.PRERELEASE }}
+
+      # Both Windows files must remain public: people need the installer and
+      # existing installations need the ZIP. Labels prevent the updater
+      # payload from masquerading as a second manual download choice.
+      - name: Label human downloads and internal updater payloads
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          release=$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${GITHUB_REF_NAME}")
+          label_asset() {
+            name="$1"
+            label="$2"
+            id=$(printf '%s' "$release" | jq -r --arg name "$name" \
+              '.assets[] | select(.name == $name) | .id')
+            if [ -z "$id" ] || [ "$id" = null ]; then
+              echo "::error::release asset is missing: $name"
+              exit 1
+            fi
+            gh api --method PATCH \
+              "repos/${GITHUB_REPOSITORY}/releases/assets/${id}" \
+              --raw-field "label=${label}" >/dev/null
+          }
+          label_asset "PiTrac-Easy-Connect-windows-setup.exe" \
+            "Windows installer - download this"
+          label_asset "PiTrac-Easy-Connect-windows.zip" \
+            "Internal automatic-update payload - do not download manually"
+          label_asset "PiTrac-Easy-Connect-macos-apple-silicon.zip" \
+            "macOS installer - Apple silicon"
+          label_asset "PiTrac-Easy-Connect-macos-intel.zip" \
+            "macOS installer - Intel"
 
   pages:
     if: github.ref == 'refs/heads/main'

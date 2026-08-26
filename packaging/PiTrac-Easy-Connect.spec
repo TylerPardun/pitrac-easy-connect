@@ -176,22 +176,19 @@ if MACOS:
         },
     )
 else:
-    # Windows is onedir, for the same reason macOS is. A onefile executable is
-    # self-contained, so it runs perfectly well after being dragged out of the
-    # folder it shipped in -- and then its "installation" is whatever folder it
-    # was dropped into. Updating refuses that, correctly: replacing somebody's
-    # Desktop is not an installation step. Reported from the field as
-    # "Desktop is a user folder, not an application install".
-    #
-    # A onedir build cannot be moved by its executable alone, because the
-    # executable needs the directory around it. The install root is therefore
-    # always the dedicated folder, which is the shape the updater already
-    # requires and macOS already has.
+    # Windows is onefile deliberately. The human-facing installer still puts
+    # the executable, updater and install manifest in one dedicated directory,
+    # which is the shape self-update requires. But Windows users routinely move
+    # an apparent application file to the Desktop. With onedir that separated
+    # the bootloader from _internal/python*.dll and produced the opaque
+    # "Failed to load Python DLL" error before our code could explain anything.
+    # A self-contained main executable cannot be broken that way.
     executable = EXE(
         pyz,
         analysis.scripts,
+        analysis.binaries,
+        analysis.datas,
         [],
-        exclude_binaries=True,
         name="PiTrac Easy-Connect",
         debug=False,
         bootloader_ignore_signals=False,
@@ -205,12 +202,4 @@ else:
         codesign_identity=None,
         entitlements_file=None,
         icon=ICON if os.path.exists(ICON) else None,
-    )
-    collected = COLLECT(
-        executable,
-        analysis.binaries,
-        analysis.datas,
-        strip=False,
-        upx=False,
-        name="PiTrac Easy-Connect",
     )

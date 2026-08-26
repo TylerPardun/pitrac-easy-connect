@@ -2,14 +2,11 @@
 
 Two decisions are pinned here.
 
-**Windows is onedir.** It used to be a single self-contained .exe, which runs
-perfectly well after being dragged out of the folder it shipped in -- and then
-its "installation" is whatever folder it was dropped into. The updater refuses
-to replace that, correctly: replacing somebody's Desktop is not an
-installation step, and the field report was exactly "Desktop is a user folder,
-not an application install". A onedir executable cannot be moved on its own,
-so the install root is always the dedicated folder the updater requires and
-macOS already had.
+**Windows is onefile inside an installed directory.** The installer creates the
+dedicated directory the updater requires. The main executable itself remains
+self-contained because users move apparent application files. An onedir build
+then dies in PyInstaller before our code can help, with "Failed to load Python
+DLL" because its `_internal` directory stayed behind.
 
 **Linux is not distributed.** It cannot be tested here, so it is not shipped.
 The Linux *code paths* stay: this suite builds its fixtures with
@@ -28,25 +25,25 @@ WORKFLOW = (ROOT / "workflows.marker") if False else (ROOT / ".github" / "workfl
 FLOW = WORKFLOW.read_text()
 
 
-def test_windows_is_built_as_a_directory_not_a_loose_executable():
-    """A lone .exe can leave its folder; a onedir build cannot."""
+def test_windows_main_executable_is_self_contained():
+    """Moving the visible executable must not strand its Python runtime."""
 
     branch = SPEC.split("else:", 1)[1]
-    assert "exclude_binaries=True" in branch, (
-        "the non-macOS build still bundles everything into one executable, so it "
-        "can be dragged out of its folder and have no install root"
+    assert "exclude_binaries=True" not in branch, (
+        "the Windows bootloader depends on a separate _internal directory and "
+        "will fail before the application can explain a broken installation"
     )
-    assert branch.count("COLLECT(") == 1, "the non-macOS build does not collect a directory"
+    assert "analysis.binaries" in branch
+    assert "analysis.datas" in branch
+    assert "COLLECT(" not in branch
 
 
-def test_both_platforms_produce_a_directory_named_for_the_app():
-    """validate_install_root requires the root to carry the app's name."""
+def test_windows_package_still_has_a_directory_named_for_the_app():
+    """The installer/updater root is separate from PyInstaller's shape."""
 
     from pitrac_easy_connect.companion.self_update import APP_NAME
 
-    assert SPEC.count('name="{}"'.format(APP_NAME)) >= 2, (
-        "each platform's collected directory must be named {}".format(APP_NAME)
-    )
+    assert '$root = "dist/payload/{}"'.format(APP_NAME) in FLOW
 
 
 def test_the_updater_helper_stays_a_single_file():
@@ -101,13 +98,7 @@ def test_the_release_expects_exactly_what_is_built():
 
 
 def test_windows_ships_an_installer():
-    """A directory build has a loose executable people can move out of it.
-
-    That is what happened: the executable was dragged onto the Desktop and
-    then failed with "Failed to load Python DLL", which is accurate and
-    useless. An installer removes the choice -- there is nothing loose to
-    move, and the application lands in one known directory.
-    """
+    """The installer provides the updater and supported application root."""
 
     assert "PiTrac-Easy-Connect-windows-setup.exe" in FLOW, "no installer is built"
     assert "windows-installer.iss" in FLOW, "the installer script is not used"
@@ -140,6 +131,31 @@ def test_the_installed_directory_is_named_for_the_app():
     )
 
 
+def test_the_installer_does_not_invite_a_desktop_folder_install():
+    """The app belongs in its fixed per-user program directory."""
+
+    script = (ROOT / "packaging" / "windows-installer.iss").read_text()
+    assert "DisableDirPage=yes" in script
+
+
+def test_the_installer_creates_a_desktop_shortcut_by_default():
+    """Users should move a shortcut, never the installed executable."""
+
+    script = (ROOT / "packaging" / "windows-installer.iss").read_text()
+    task = next(line for line in script.splitlines() if line.startswith('Name: "desktopicon"'))
+    assert "unchecked" not in task
+
+
+def test_windows_package_explains_which_download_is_for_people():
+    guidance = ROOT / "packaging" / "WINDOWS-INSTALLATION.txt"
+    assert guidance.is_file()
+    text = guidance.read_text()
+    assert "windows-setup.exe" in text
+    assert "windows.zip" in text
+    assert "not the Windows installer" in text
+    assert "WINDOWS-INSTALLATION.txt" in FLOW
+
+
 def test_the_installer_has_a_fixed_identity():
     """A changing AppId installs beside the old copy instead of replacing it."""
 
@@ -166,3 +182,22 @@ def test_ci_installs_the_installer_and_checks_the_result():
     assert "validate_install_root" in FLOW, (
         "what the installer produced is never put through the updater's own check"
     )
+
+
+def test_release_labels_separate_the_installer_from_the_updater_payload():
+    assert "Windows installer - download this" in FLOW
+    assert "Internal automatic-update payload - do not download manually" in FLOW
+
+
+def test_real_release_update_smoke_requires_the_production_manifest_key():
+    """A current release cannot update from an unsigned local fake release.
+
+    Pull requests do not get the production private key. Release tags enter
+    the protected environment and must run the signed N-to-N+1 migration before
+    publication; absence of the key on a tag is a hard failure.
+    """
+
+    assert FLOW.count("tag smoke requires PITRAC_RELEASE_SIGNING_KEY") == 2
+    assert FLOW.count("Signed packaged-update smoke is deferred") == 2
+    assert FLOW.count('--signing-key "$RUNNER_TEMP/release-signing-key.pem"') == 1
+    assert "--signing-key $releaseKey" in FLOW
