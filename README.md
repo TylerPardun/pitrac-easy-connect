@@ -18,7 +18,7 @@ includes PiTrac's dashboard, shot history, and a practice range.
 A five-step guide walks you through the first setup. If you move the enclosure to another home, you only need to choose the new Wi-Fi network. You do not need to reconfigure PiTrac.
 
 - **Download:** <https://tylerpardun.github.io/pitrac-easy-connect/>
-- **Version:** 0.9.0
+- **Version:** 0.9.1
 - **License:** [MIT](LICENSE)
 
 ![The practice range](media/range.png)
@@ -131,6 +131,10 @@ Download the build for your computer from
 | macOS 11+, Intel | [`PiTrac-Easy-Connect-macos-intel.zip`](https://github.com/TylerPardun/pitrac-easy-connect/releases/latest/download/PiTrac-Easy-Connect-macos-intel.zip) |
 | Windows 11 | [`PiTrac-Easy-Connect-windows-setup.exe`](https://github.com/TylerPardun/pitrac-easy-connect/releases/latest/download/PiTrac-Easy-Connect-windows-setup.exe) |
 
+On Windows, download the `windows-setup.exe` file above. Do not download the
+similarly named `windows.zip`; that ZIP is published only for the installed
+app's automatic updater.
+
 The two Mac builds are not interchangeable. Rosetta translates Intel code to
 run on Apple silicon and never the other way, so an Intel Mac given the Apple
 silicon build cannot start it at all. **Apple menu → About This Mac** says
@@ -148,11 +152,12 @@ you run from source, those operating systems warn the first time:
 | macOS | Right-click the app and choose **Open** rather than double-clicking |
 | Windows | Choose **More info**, then **Run anyway** |
 
-On Windows the installer places the application for you. On macOS, keep the
-`.app` whole and put it in Applications. A loose executable copied to
-Downloads, Desktop, Documents, a home directory, or another unrelated folder
-is not a supported installation, and automatic replacement is deliberately
-refused because that folder is not a disposable application installation.
+On Windows the installer places the application and its updater for you. On
+macOS, keep the `.app` whole and put it in Applications. A loose Windows
+executable can launch, but it is not a complete installation and cannot update
+itself. Automatic replacement from Downloads, Desktop, Documents, a home
+directory, or another unrelated folder is deliberately refused because that
+folder is not a disposable application installation.
 
 If macOS cannot find PiTrac, open **System Settings → Privacy & Security →
 Local Network** and allow PiTrac Easy-Connect, then search again.

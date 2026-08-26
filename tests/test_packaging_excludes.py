@@ -93,27 +93,20 @@ def test_macos_uses_the_supported_onedir_bundle_shape():
     assert '"NSAllowsLocalNetworking": True' in mac
 
 
-def test_windows_ships_as_a_directory_like_macos():
-    """Reversed deliberately. This used to require the opposite.
+def test_windows_executable_contains_its_runtime():
+    """The visible EXE must not depend on a sibling `_internal` directory.
 
-    A single self-contained .exe runs after being dragged out of the folder it
-    shipped in, and then its install root is whatever folder it landed in --
-    so the updater refused to replace it, which is right: replacing somebody's
-    Desktop is not an installation step. The field report was exactly "Desktop
-    is a user folder, not an application install".
-
-    A onedir executable cannot be moved on its own, so the install root is
-    always the dedicated folder both the updater and macOS already require.
-    The binaries and data still ship; they sit beside the executable now
-    instead of inside it.
+    A real user moved the onedir EXE to the Desktop. PyInstaller then failed to
+    load `_internal/python313.dll` before application code ran. The installer
+    still supplies the dedicated update root; onefile makes this predictable
+    user action non-fatal.
     """
 
     source = SPEC.read_text()
     other = source.split("else:", 1)[1]
-    assert "exclude_binaries=True" in other, (
-        "the Windows build is a single executable again, which can leave its "
-        "folder and lose the install root the updater needs"
+    assert "exclude_binaries=True" not in other, (
+        "the Windows executable depends on external PyInstaller binaries"
     )
     assert "analysis.binaries" in other
     assert "analysis.datas" in other
-    assert "COLLECT(" in other
+    assert "COLLECT(" not in other

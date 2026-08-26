@@ -1,0 +1,17 @@
+PiTrac Easy-Connect for Windows
+================================
+
+For a normal Windows installation, download and run:
+
+    PiTrac-Easy-Connect-windows-setup.exe
+
+Open the installed application from its Desktop or Start-menu shortcut. The
+installer keeps the app and its updater in the supported per-user location.
+
+PiTrac-Easy-Connect-windows.zip is an internal payload used by the app's
+automatic updater. It is published so installed copies can update themselves;
+it is not the Windows installer and should not be downloaded manually.
+
+The main executable is self-contained, so copying it by itself will still
+launch. However, a loose copy has no updater beside it and is not a supported
+installation. Run the setup executable to install or repair the app.
