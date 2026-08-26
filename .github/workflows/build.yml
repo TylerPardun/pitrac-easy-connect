@@ -131,34 +131,29 @@ jobs:
           python -m PyInstaller --noconfirm --clean --distpath dist --workpath build/app packaging/PiTrac-Easy-Connect.spec
           python -m PyInstaller --noconfirm --clean --distpath dist-helper --workpath build/helper packaging/PiTrac-Updater.spec
 
-      - name: Download the actual preceding stable release
+      - name: Download the actual preceding release when one exists
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           TARGET=$(PYTHONPATH=src python -c 'import pitrac_easy_connect; print(pitrac_easy_connect.__version__)')
-          gh api --paginate "repos/${GITHUB_REPOSITORY}/releases?per_page=100" > "$RUNNER_TEMP/releases.json"
-          PREVIOUS_TAG=$(python - "$RUNNER_TEMP/releases.json" "$TARGET" <<'PY'
-          import json, sys
-          from packaging.version import Version
-          releases = json.load(open(sys.argv[1], encoding="utf-8"))
-          target = Version(sys.argv[2])
-          stable = []
-          for release in releases:
-              if release.get("draft") or release.get("prerelease"):
-                  continue
-              tag = str(release.get("tag_name") or "")
-              try:
-                  version = Version(tag.lstrip("v"))
-              except Exception:
-                  continue
-              if version < target:
-                  stable.append((version, tag))
-          if not stable:
-              raise SystemExit("no preceding stable release exists below " + str(target))
-          print(max(stable)[1])
-          PY
-          )
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/releases?per_page=100" > "$RUNNER_TEMP/releases.json"
+          set +e
+          PREVIOUS_TAG=$(python packaging/select-update-baseline.py \
+            "$RUNNER_TEMP/releases.json" "$TARGET")
+          SELECT_STATUS=$?
+          set -e
+          if [ "$SELECT_STATUS" -eq 3 ]; then
+            if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+              echo "::error::release-tag builds require a published lower-version updater baseline"
+              exit 1
+            fi
+            echo "HAS_UPDATE_BASELINE=false" >> "$GITHUB_ENV"
+            echo "::notice::No lower release exists; v0.9.0 is the fresh release-history baseline. Upgrade smoke resumes after the next version bump."
+            exit 0
+          elif [ "$SELECT_STATUS" -ne 0 ]; then
+            exit "$SELECT_STATUS"
+          fi
           PREVIOUS_VERSION="${PREVIOUS_TAG#v}"
           case "${{ matrix.path }}" in
             *macos-apple-silicon*) OLD_ASSET=PiTrac-Easy-Connect-macos-apple-silicon.zip ;;
@@ -170,6 +165,7 @@ jobs:
           gh release download "$PREVIOUS_TAG" --repo "$GITHUB_REPOSITORY" --pattern "$OLD_ASSET" --dir "$RUNNER_TEMP/previous-release"
           test -s "$RUNNER_TEMP/previous-release/$OLD_ASSET"
           {
+            echo "HAS_UPDATE_BASELINE=true"
             echo "PREVIOUS_TAG=$PREVIOUS_TAG"
             echo "PREVIOUS_VERSION=$PREVIOUS_VERSION"
             echo "PREVIOUS_ASSET=$RUNNER_TEMP/previous-release/$OLD_ASSET"
@@ -421,7 +417,7 @@ jobs:
           echo "the exact macOS zip passed native page, single-instance, and browser checks"
 
       - name: Run the actual preceding macOS release to candidate update
-        if: runner.os == 'macOS'
+        if: runner.os == 'macOS' && env.HAS_UPDATE_BASELINE == 'true'
         env:
           PITRAC_RELEASE_SIGNING_KEY: ${{ secrets.PITRAC_RELEASE_SIGNING_KEY }}
         run: |
@@ -797,7 +793,7 @@ jobs:
           Write-Host "the exact Windows zip passed native page and single-instance checks"
 
       - name: Run the actual preceding Windows release to candidate update
-        if: runner.os == 'Windows'
+        if: runner.os == 'Windows' && env.HAS_UPDATE_BASELINE == 'true'
         shell: pwsh
         env:
           PITRAC_RELEASE_SIGNING_KEY: ${{ secrets.PITRAC_RELEASE_SIGNING_KEY }}
