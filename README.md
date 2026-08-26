@@ -89,7 +89,7 @@ Once PiTrac is working, copy this repository to the Pi. From your own computer:
 ```bash
 git clone https://github.com/TylerPardun/pitrac-easy-connect
 cd pitrac-easy-connect
-scp -r . pitracuser@pitrac.local:~/easy-connect
+scp -r . <username>@<Pi name>.local:~/easy-connect
 ```
 
 Then on the Pi:
