@@ -951,7 +951,7 @@ def _terminate_process_tree(pid: int) -> bool:
     return not _process_tree_alive(pid, set())
 
 
-def _replace_transaction_path(source: Path, destination: Path, *, timeout: float = 10) -> None:
+def _replace_transaction_path(source: Path, destination: Path, *, timeout: float = 30) -> None:
     """Atomically rename an exact transaction path, tolerating brief Windows locks.
 
     ``os.replace`` maps to a replace-existing operation on Windows, and that
@@ -960,6 +960,13 @@ def _replace_transaction_path(source: Path, destination: Path, *, timeout: float
     silently replacing anything here would destroy evidence or user data.
     Check that invariant explicitly, then use the cross-platform directory
     rename operation.
+
+    The retry window is generous rather than merely non-zero: a freshly
+    written or extracted directory can still be held by Windows Defender's
+    real-time scan, which the CI workflow now excludes pytest's own temp
+    directory from, but a real installed application's directories are not
+    excluded from anything, so this path still has to tolerate that lock on
+    a real machine.
     """
 
     deadline = time.monotonic() + timeout
