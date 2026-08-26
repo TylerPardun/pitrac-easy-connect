@@ -137,11 +137,11 @@ silicon build cannot start it at all. **Apple menu → About This Mac** says
 which you have: a chip beginning with M, or an Intel processor.
 
 The release workflow signs and notarizes macOS and Authenticode-signs Windows
-whenever the release environment holds the required certificates; a release
-that is not fully signed publishes as a GitHub pre-release rather than a
-final one, with the exact reason in its notes (see
-`packaging/release-signing-gate.py`). Until signed, or on any build you run
-from source, those operating systems warn the first time:
+whenever the release environment holds the required certificates. Certificates
+are optional: a complete, tested build still publishes as a stable release,
+with its exact signing state in the notes (see
+`packaging/release-signing-gate.py`). Until a build is signed, or on any build
+you run from source, those operating systems warn the first time:
 
 | Platform | What to do |
 |---|---|
