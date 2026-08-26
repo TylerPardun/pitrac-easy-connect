@@ -187,3 +187,17 @@ def test_ci_installs_the_installer_and_checks_the_result():
 def test_release_labels_separate_the_installer_from_the_updater_payload():
     assert "Windows installer - download this" in FLOW
     assert "Internal automatic-update payload - do not download manually" in FLOW
+
+
+def test_real_release_update_smoke_requires_the_production_manifest_key():
+    """A current release cannot update from an unsigned local fake release.
+
+    Pull requests do not get the production private key. Release tags enter
+    the protected environment and must run the signed N-to-N+1 migration before
+    publication; absence of the key on a tag is a hard failure.
+    """
+
+    assert FLOW.count("tag smoke requires PITRAC_RELEASE_SIGNING_KEY") == 2
+    assert FLOW.count("Signed packaged-update smoke is deferred") == 2
+    assert FLOW.count('--signing-key "$RUNNER_TEMP/release-signing-key.pem"') == 1
+    assert "--signing-key $releaseKey" in FLOW
