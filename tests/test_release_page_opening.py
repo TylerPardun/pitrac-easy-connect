@@ -30,6 +30,12 @@ def service(tmp_path, monkeypatch):
     made = CompanionService(
         config_path=tmp_path / "companion.json", discovery_port=0,
         search_seconds=0.05, research_seconds=0.05,
+        # This suite runs from a real git checkout, so the real startup
+        # check would spawn a background thread that shells out to the
+        # actual project directory's git -- unrelated to what these tests
+        # verify, and a source of exactly the kind of cross-test
+        # subprocess.run mock pollution this file's tests must not have.
+        startup_update_check=False,
     )
     yield made, state
     made.close()
