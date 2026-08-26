@@ -1,10 +1,10 @@
-"""Whether a release may call itself final, decided from what CI reported.
+"""Release completeness and platform-signing notes from what CI reported.
 
 Each platform build writes one honest record of whether it actually signed
 itself (packaging/write-signing-status.py). release-signing-gate.py reads
-whatever landed in the downloaded-artifacts directory and decides -- this is
-the one place that decision is made, so it is the one place these tests need
-to exercise directly, without needing a real certificate or a real CI run.
+whatever landed in the downloaded-artifacts directory. Missing reports remain
+a release blocker; an honest unsigned report does not, because certificates
+are optional and first-launch warnings are documented.
 """
 
 import importlib.util
@@ -72,7 +72,7 @@ def test_any_missing_platform_status_refuses_final(tmp_path, missing):
     assert missing in result["notes"]
 
 
-def test_a_platform_reporting_unsigned_refuses_final(tmp_path):
+def test_a_platform_reporting_unsigned_is_final_with_a_warning(tmp_path):
     write_status(tmp_path / "macos-apple-silicon", "macos-apple-silicon",
                 signed=True, notarized=True)
     write_status(tmp_path / "macos-intel", "macos-intel", signed=True, notarized=True)
@@ -82,12 +82,13 @@ def test_a_platform_reporting_unsigned_refuses_final(tmp_path):
     result = gate.decide(gate.gather(tmp_path))
 
     assert result["fullySigned"] is False
-    assert result["prerelease"] is True
+    assert result["prerelease"] is False
     assert "unsigned" in result["notes"]
+    assert "stable release" in result["notes"]
 
 
-def test_signed_but_not_notarized_macos_refuses_final(tmp_path):
-    """Signing alone is not the bar -- Gatekeeper needs the staple too."""
+def test_signed_but_not_notarized_macos_is_final_with_a_warning(tmp_path):
+    """A partial platform signature must be described without blocking files."""
 
     write_status(tmp_path / "macos-apple-silicon", "macos-apple-silicon",
                 signed=True, notarized=False,
@@ -98,7 +99,7 @@ def test_signed_but_not_notarized_macos_refuses_final(tmp_path):
     result = gate.decide(gate.gather(tmp_path))
 
     assert result["fullySigned"] is False
-    assert result["prerelease"] is True
+    assert result["prerelease"] is False
     assert "macos-apple-silicon" in result["notes"]
 
 
@@ -160,8 +161,8 @@ def test_write_signing_status_produces_what_the_gate_reads(tmp_path):
     assert "macos-intel" in result["statuses"]
 
 
-def test_the_workflow_gates_publishing_on_signing_status(tmp_path):
-    """The wiring itself: the release job must not hardcode success."""
+def test_the_workflow_labels_releases_from_reported_platform_status(tmp_path):
+    """The wiring itself: the release job must not hardcode completeness."""
 
     workflow = (ROOT / ".github" / "workflows" / "build.yml").read_text()
     assert "release-signing-gate.py" in workflow

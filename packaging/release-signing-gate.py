@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
-"""Decide whether a release may call itself final, from what each platform
-actually reported about signing itself -- never from what was intended.
+"""Describe platform signing and refuse a final release with missing reports.
 
 A platform that reports nothing is not silently treated as signed: a missing
 status file is a build that has not been updated to write one, and that is
-refused exactly like a build that reported failure, because either one means
-this script cannot vouch for what shipped.
+published as a pre-release because this script cannot vouch for what shipped.
+An explicit unsigned status is different: it proves the platform build ran and
+reported its state honestly. Code signing is optional for this project, so a
+complete unsigned build may be final while its operating-system warning stays
+prominent in the release notes.
 """
 
 import argparse
@@ -39,7 +41,8 @@ def decide(statuses: dict) -> dict:
         name for name, value in statuses.items()
         if name.startswith("macos") and value.get("signed") and not value.get("notarized")
     ]
-    fully_signed = not missing and not unsigned and not unnotarized_macos
+    complete = not missing
+    fully_signed = complete and not unsigned and not unnotarized_macos
 
     lines = []
     if fully_signed:
@@ -48,16 +51,20 @@ def decide(statuses: dict) -> dict:
             "Application certificate or Authenticode certificate, and the "
             "macOS builds are notarized and stapled."
         )
-    else:
+    elif missing:
         lines.append(
-            "This release is not fully code-signed, so it is published as a "
-            "pre-release rather than a final one:"
+            "This release is missing required platform status reports, so it "
+            "is published as a pre-release:"
         )
         for name in missing:
             lines.append("- {}: no signing status was reported at all.".format(name))
+    else:
+        lines.append(
+            "This release is complete but not fully platform code-signed. It "
+            "is published as a stable release; the documented first-launch "
+            "operating-system warnings still apply:"
+        )
         for name in unsigned:
-            if name in missing:
-                continue
             lines.append("- {}: {}".format(name, statuses[name].get("detail") or "not signed."))
         for name in unnotarized_macos:
             lines.append(
@@ -67,7 +74,7 @@ def decide(statuses: dict) -> dict:
             )
     return {
         "fullySigned": fully_signed,
-        "prerelease": not fully_signed,
+        "prerelease": not complete,
         "statuses": statuses,
         "notes": "\n".join(lines),
     }

@@ -1033,11 +1033,11 @@ jobs:
             release/sbom-*.json
 
       # Every platform build wrote its own honest record of whether it
-      # actually signed anything -- see release-signing-gate.py. A release
-      # this script cannot vouch for as fully signed publishes as a
-      # pre-release rather than a final one, with an accurate reason why,
-      # per the requirement that a beta must not hide or fake its warnings.
-      - name: Decide whether this release may call itself final
+      # actually signed anything -- see release-signing-gate.py. Certificates
+      # are optional, but a missing platform report means CI cannot vouch for
+      # what shipped and keeps that release marked as a pre-release. The exact
+      # signing state always goes into the public notes.
+      - name: Record signing state and verify every platform reported
         run: |
           python packaging/release-signing-gate.py --status-dir artifacts --out /tmp/signing-gate.json
           echo "PRERELEASE=$(python -c "import json; print(str(json.load(open('/tmp/signing-gate.json'))['prerelease']).lower())")" \
