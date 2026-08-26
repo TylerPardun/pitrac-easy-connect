@@ -71,20 +71,26 @@ def _alongside_python() -> Iterator[Path]:
     """The library the running interpreter's own ``ssl`` module already uses.
 
     On Raspberry Pi OS this is the packaged system OpenSSL; in a virtual
-    environment or a conda prefix it is that prefix's own copy. Either way it
-    is a real library rather than a stub, because ``import ssl`` worked.
+    environment or a conda prefix it is that prefix's own copy. On Windows,
+    the official CPython builds (including the ones GitHub Actions'
+    setup-python installs) bundle their own OpenSSL DLLs in a "DLLs"
+    subdirectory or directly beside python.exe, under an
+    architecture-suffixed name (``libcrypto-3-arm64.dll``,
+    ``libcrypto-3-x64.dll``, and so on) rather than a fixed one -- hence the
+    glob, matching every architecture instead of naming each one. Either way
+    it is a real library rather than a stub, because ``import ssl`` worked.
     """
 
     for variable in ("LIBDIR", "prefix", "base"):
         directory = sysconfig.get_config_var(variable)
         if not directory:
             continue
-        for parent in (Path(directory), Path(directory) / "lib"):
-            for name in ("libcrypto.3.dylib", "libcrypto.dylib",
-                         "libcrypto.so.3", "libcrypto.so.1.1", "libcrypto.so"):
-                candidate = parent / name
-                if candidate.is_file():
-                    yield candidate
+        for parent in (Path(directory), Path(directory) / "lib", Path(directory) / "DLLs"):
+            if not parent.is_dir():
+                continue
+            for pattern in ("libcrypto*.dylib", "libcrypto*.so*", "libcrypto*.dll"):
+                for found in sorted(parent.glob(pattern)):
+                    yield found
 
 
 def _from_loader() -> Iterator[Path]:

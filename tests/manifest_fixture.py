@@ -13,10 +13,18 @@ import base64
 import ctypes
 import hashlib
 import json
+import sys
 
 import pytest
 
 from pitrac_easy_connect.common import release_manifest, signing
+
+#: Platforms every CI runner in this project covers. libcrypto is expected to
+#: be genuinely loadable here; treat "unavailable" as a real regression to
+#: fail loudly on rather than a skip, since a skip is exactly what let
+#: signing.py go unable to find any libcrypto at all on Windows for a whole
+#: release cycle without a single test noticing.
+_ALWAYS_SUPPORTED_PLATFORMS = ("win32", "darwin", "linux")
 
 #: Not a secret and never used for anything real: 32 fixed bytes.
 SEED = bytes(range(32))
@@ -26,6 +34,11 @@ def _library():
     try:
         library = signing.libcrypto()
     except signing.SigningUnavailable as exc:
+        if sys.platform in _ALWAYS_SUPPORTED_PLATFORMS:
+            pytest.fail(
+                "libcrypto could not be loaded on {}, a platform this project "
+                "runs CI on and expects to always find one: {}".format(sys.platform, exc)
+            )
         pytest.skip("no OpenSSL with Ed25519 on this machine: {}".format(exc))
     library.EVP_PKEY_new_raw_private_key.restype = ctypes.c_void_p
     library.EVP_PKEY_new_raw_private_key.argtypes = [
