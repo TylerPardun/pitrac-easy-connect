@@ -55,6 +55,14 @@ jobs:
 
   build:
     needs: test
+    # Branch/PR builds enter an unprotected environment with no secrets and
+    # therefore remain unsigned. A release-tag build enters the protected
+    # release environment, which is the only place the platform certificates
+    # exist. Without this job-level environment, `${{ secrets.* }}` below can
+    # never see environment secrets and every release is silently unsigned.
+    environment:
+      name: ${{ startsWith(github.ref, 'refs/tags/v') && 'release' || 'build' }}
+      deployment: false
     strategy:
       fail-fast: false
       matrix:
@@ -66,15 +74,21 @@ jobs:
             path: |
               dist/PiTrac-Easy-Connect-windows.zip
               dist/PiTrac-Easy-Connect-windows-setup.exe
+            signingStatus: dist/signing-status-windows.json
+            sbomPlatform: windows
           # Two Mac builds, because a Mac cannot run the other one's. Rosetta
           # translates Intel code to run on Apple silicon, never the reverse,
           # so an Intel Mac given the arm64 build has no way to start it at all.
           - os: macos-latest
             artifact: PiTrac-macos-apple-silicon
             path: dist/PiTrac-Easy-Connect-macos-apple-silicon.zip
+            signingStatus: dist/signing-status-macos-apple-silicon.json
+            sbomPlatform: macos-apple-silicon
           - os: macos-15-intel
             artifact: PiTrac-macos-intel
             path: dist/PiTrac-Easy-Connect-macos-intel.zip
+            signingStatus: dist/signing-status-macos-intel.json
+            sbomPlatform: macos-intel
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -105,25 +119,54 @@ jobs:
           python -m PyInstaller --noconfirm --clean --distpath dist --workpath build/app packaging/PiTrac-Easy-Connect.spec
           python -m PyInstaller --noconfirm --clean --distpath dist-helper --workpath build/helper packaging/PiTrac-Updater.spec
 
-      - name: Build a disposable v0.4.5 application for the N to N+1 updater test
+      - name: Download the actual preceding stable release
         shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          OLD_SOURCE="$RUNNER_TEMP/pitrac-old-source"
-          mkdir -p "$OLD_SOURCE"
-          cp -R src/pitrac_easy_connect "$OLD_SOURCE/"
-          OLD_INIT="$OLD_SOURCE/pitrac_easy_connect/__init__.py"
-          python - "$OLD_INIT" <<'PY'
-          import pathlib, re, sys
-          path = pathlib.Path(sys.argv[1])
-          path.write_text(re.sub(r'__version__ = "[^"]+"', '__version__ = "0.4.5"', path.read_text()))
+          TARGET=$(PYTHONPATH=src python -c 'import pitrac_easy_connect; print(pitrac_easy_connect.__version__)')
+          gh api --paginate "repos/${GITHUB_REPOSITORY}/releases?per_page=100" > "$RUNNER_TEMP/releases.json"
+          PREVIOUS_TAG=$(python - "$RUNNER_TEMP/releases.json" "$TARGET" <<'PY'
+          import json, sys
+          from packaging.version import Version
+          releases = json.load(open(sys.argv[1], encoding="utf-8"))
+          target = Version(sys.argv[2])
+          stable = []
+          for release in releases:
+              if release.get("draft") or release.get("prerelease"):
+                  continue
+              tag = str(release.get("tag_name") or "")
+              try:
+                  version = Version(tag.lstrip("v"))
+              except Exception:
+                  continue
+              if version < target:
+                  stable.append((version, tag))
+          if not stable:
+              raise SystemExit("no preceding stable release exists below " + str(target))
+          print(max(stable)[1])
           PY
-          PITRAC_SOURCE_ROOT="$OLD_SOURCE" PITRAC_VERSION=0.4.5 \
-            python -m PyInstaller --noconfirm --clean --distpath dist-old \
-            --workpath build/old packaging/PiTrac-Easy-Connect.spec
+          )
+          PREVIOUS_VERSION="${PREVIOUS_TAG#v}"
+          case "${{ matrix.path }}" in
+            *macos-apple-silicon*) OLD_ASSET=PiTrac-Easy-Connect-macos-apple-silicon.zip ;;
+            *macos-intel*)         OLD_ASSET=PiTrac-Easy-Connect-macos-intel.zip ;;
+            *windows*)             OLD_ASSET=PiTrac-Easy-Connect-windows.zip ;;
+            *) echo "::error::unknown release platform"; exit 1 ;;
+          esac
+          mkdir -p "$RUNNER_TEMP/previous-release"
+          gh release download "$PREVIOUS_TAG" --repo "$GITHUB_REPOSITORY" --pattern "$OLD_ASSET" --dir "$RUNNER_TEMP/previous-release"
+          test -s "$RUNNER_TEMP/previous-release/$OLD_ASSET"
+          {
+            echo "PREVIOUS_TAG=$PREVIOUS_TAG"
+            echo "PREVIOUS_VERSION=$PREVIOUS_VERSION"
+            echo "PREVIOUS_ASSET=$RUNNER_TEMP/previous-release/$OLD_ASSET"
+          } >> "$GITHUB_ENV"
+          echo "Updater baseline: exact published $PREVIOUS_TAG / $OLD_ASSET"
 
       # A .app is a directory, and uploading it directly loses the executable
       # bit, which leaves a download that cannot be opened.
-      - name: Package the macOS app
+      - name: Assemble the macOS app bundle
         if: runner.os == 'macOS'
         run: |
           VERSION=$(PYTHONPATH=src python -c 'import pitrac_easy_connect; print(pitrac_easy_connect.__version__)')
@@ -137,27 +180,130 @@ jobs:
           python packaging/write-install-manifest.py \
             "dist/PiTrac Easy-Connect.app/Contents/Resources/pitrac-install.json" \
             --version "$VERSION" --system Darwin --arch "$WANT"
-          # Adding the separately-built helper changes the bundle, so refresh
-          # the ad-hoc signature before packaging and verify it immediately.
-          codesign --force --deep --sign - "dist/PiTrac Easy-Connect.app"
-          codesign --verify --deep --strict "dist/PiTrac Easy-Connect.app"
-
-          # The archive has one .app at its root plus deterministic legal files.
-          mkdir -p dist/payload
-          cp -R "dist/PiTrac Easy-Connect.app" dist/payload/
-          cp LICENSE NOTICE.md dist/payload/
-          cp THIRD-PARTY-LICENCES.txt dist/payload/
-          ditto -c -k --norsrc --noextattr dist/payload/ "${{ matrix.path }}"
 
           # The architecture is the whole reason there are two of these, so it
-          # is worth failing the build rather than shipping the wrong one under
-          # the right name.
+          # is worth failing the build rather than signing and notarizing the
+          # wrong one under the right name.
           BUILT=$(lipo -archs "dist/PiTrac Easy-Connect.app/Contents/MacOS/PiTrac Easy-Connect")
           echo "built for: $BUILT"
           if [ "$BUILT" != "$WANT" ]; then
             echo "::error::${{ matrix.artifact }} should be $WANT but is $BUILT"
             exit 1
           fi
+
+      # A Developer ID certificate is a release-environment secret, so a fork's
+      # pull request build -- which cannot see it -- has to keep building. What
+      # changes is only whether it signs for real; see release-signing-gate.py
+      # for what that means for whether the eventual release may call itself
+      # final.
+      - name: Import the Developer ID signing certificate
+        if: runner.os == 'macOS' && env.MACOS_SIGNING_CERTIFICATE_P12 != ''
+        env:
+          MACOS_SIGNING_CERTIFICATE_P12: ${{ secrets.MACOS_SIGNING_CERTIFICATE_P12 }}
+          MACOS_SIGNING_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_SIGNING_CERTIFICATE_PASSWORD }}
+        run: |
+          KEYCHAIN="$RUNNER_TEMP/signing.keychain-db"
+          KEYCHAIN_PASSWORD=$(uuidgen)
+          echo "$MACOS_SIGNING_CERTIFICATE_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security import "$RUNNER_TEMP/cert.p12" -k "$KEYCHAIN" -P "$MACOS_SIGNING_CERTIFICATE_PASSWORD" \
+            -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN" \
+            >/dev/null
+          security list-keychain -d user -s "$KEYCHAIN" login.keychain
+          rm -f "$RUNNER_TEMP/cert.p12"
+          IDENTITY=$(security find-identity -v -p codesigning "$KEYCHAIN" \
+            | grep "Developer ID Application" | head -1 | sed -E 's/.*"(.*)"/\1/')
+          if [ -z "$IDENTITY" ]; then
+            echo "::error::no Developer ID Application identity found in the imported certificate"
+            exit 1
+          fi
+          echo "MACOS_SIGNING_IDENTITY=$IDENTITY" >> "$GITHUB_ENV"
+          echo "Imported: $IDENTITY"
+
+      # Signing inside-out: the helper first, since it is also copied
+      # separately into the bundle the archive ships, then the whole bundle.
+      # PyInstaller's own bundles are flat enough that --deep on the app after
+      # its parts are already signed is the recipe PyInstaller's own packaging
+      # documentation gives, despite Apple discouraging --deep in general for
+      # bundles with independently-versioned nested components.
+      - name: Sign the macOS app and its helper
+        if: runner.os == 'macOS'
+        run: |
+          IDENTITY="${MACOS_SIGNING_IDENTITY:--}"
+          HARDENED=()
+          if [ "$IDENTITY" != "-" ]; then
+            HARDENED=(--options runtime --timestamp --entitlements packaging/entitlements.plist)
+          fi
+          codesign --force --deep "${HARDENED[@]}" --sign "$IDENTITY" \
+            "dist/PiTrac Easy-Connect.app/Contents/Helpers/PiTrac Updater"
+          codesign --force --deep "${HARDENED[@]}" --sign "$IDENTITY" \
+            "dist/PiTrac Easy-Connect.app"
+          codesign --verify --deep --strict "dist/PiTrac Easy-Connect.app"
+          codesign -dv --verbose=2 "dist/PiTrac Easy-Connect.app" 2>&1 | tail -5
+
+      - name: Notarize and staple the macOS app
+        if: >-
+          runner.os == 'macOS' && env.MACOS_SIGNING_IDENTITY != '' &&
+          env.AC_NOTARY_KEY_P8 != ''
+        env:
+          AC_NOTARY_KEY_ID: ${{ secrets.AC_NOTARY_KEY_ID }}
+          AC_NOTARY_ISSUER_ID: ${{ secrets.AC_NOTARY_ISSUER_ID }}
+          AC_NOTARY_KEY_P8: ${{ secrets.AC_NOTARY_KEY_P8 }}
+        run: |
+          echo "$AC_NOTARY_KEY_P8" > "$RUNNER_TEMP/notary-key.p8"
+          ditto -c -k --norsrc --noextattr "dist/PiTrac Easy-Connect.app" "$RUNNER_TEMP/notarize.zip"
+          xcrun notarytool submit "$RUNNER_TEMP/notarize.zip" \
+            --key "$RUNNER_TEMP/notary-key.p8" --key-id "$AC_NOTARY_KEY_ID" \
+            --issuer "$AC_NOTARY_ISSUER_ID" --wait --timeout 30m \
+            | tee "$RUNNER_TEMP/notary-log.txt"
+          rm -f "$RUNNER_TEMP/notary-key.p8" "$RUNNER_TEMP/notarize.zip"
+          grep -q "status: Accepted" "$RUNNER_TEMP/notary-log.txt" || {
+            echo "::error::notarization did not report Accepted"; exit 1;
+          }
+          xcrun stapler staple "dist/PiTrac Easy-Connect.app"
+          xcrun stapler validate "dist/PiTrac Easy-Connect.app"
+          echo "MACOS_NOTARIZED=true" >> "$GITHUB_ENV"
+
+      # The archive is built only now, after stapling: the notarization
+      # ticket has to be inside the zip a person downloads, not only inside
+      # the copy that was submitted for notarization.
+      - name: Assemble the macOS archive
+        if: runner.os == 'macOS'
+        run: |
+          mkdir -p dist/payload
+          cp -R "dist/PiTrac Easy-Connect.app" dist/payload/
+          cp LICENSE NOTICE.md dist/payload/
+          cp THIRD-PARTY-LICENCES.txt dist/payload/
+          ditto -c -k --norsrc --noextattr dist/payload/ "${{ matrix.path }}"
+
+      - name: Verify signing and record what actually happened
+        if: runner.os == 'macOS'
+        run: |
+          case "${{ matrix.path }}" in
+            *apple-silicon*) PLATFORM=macos-apple-silicon ;;
+            *intel*)         PLATFORM=macos-intel ;;
+          esac
+          SIGNED=false; NOTARIZED=false
+          if [ -n "$MACOS_SIGNING_IDENTITY" ]; then
+            SIGNED=true
+            DETAIL="signed as $MACOS_SIGNING_IDENTITY"
+          else
+            DETAIL="no MACOS_SIGNING_CERTIFICATE_P12 secret is configured; ad-hoc signed only"
+          fi
+          if [ "${MACOS_NOTARIZED:-false}" = true ]; then
+            NOTARIZED=true
+            DETAIL="$DETAIL, notarized and stapled"
+            spctl --assess --type execute -vvv "dist/PiTrac Easy-Connect.app"
+          elif [ "$SIGNED" = true ]; then
+            DETAIL="$DETAIL, but no AC_NOTARY_KEY_P8 secret is configured so it was not notarized"
+          fi
+          echo "$DETAIL"
+          python packaging/write-signing-status.py \
+            --out "dist/signing-status-$PLATFORM.json" --platform "$PLATFORM" \
+            --signed "$SIGNED" --notarized "$NOTARIZED" --detail "$DETAIL"
 
       - name: Check the exact macOS zip, page API, and single application
         if: runner.os == 'macOS'
@@ -262,30 +408,43 @@ jobs:
           cat /tmp/mac-window.log /tmp/mac-second.log || true
           echo "the exact macOS zip passed native page, single-instance, and browser checks"
 
-      - name: Run a real packaged macOS v0.4.5 to candidate update transaction
+      - name: Run the actual preceding macOS release to candidate update
         if: runner.os == 'macOS'
+        env:
+          PITRAC_RELEASE_SIGNING_KEY: ${{ secrets.PITRAC_RELEASE_SIGNING_KEY }}
         run: |
           FIXTURE="$RUNNER_TEMP/pitrac-update-fixture"
           mkdir -p "$FIXTURE"
-          cp -R "dist-old/PiTrac Easy-Connect.app" "$FIXTURE/"
-          OLD_APP="$FIXTURE/PiTrac Easy-Connect.app"
-          mkdir -p "$OLD_APP/Contents/Helpers"
-          cp "dist-helper/PiTrac Updater" "$OLD_APP/Contents/Helpers/"
-          chmod +x "$OLD_APP/Contents/Helpers/PiTrac Updater"
+          ditto -x -k "$PREVIOUS_ASSET" "$FIXTURE"
+          OLD_APP=$(find "$FIXTURE" -maxdepth 2 -name "PiTrac Easy-Connect.app" | head -1)
+          test -n "$OLD_APP" -a -x "$OLD_APP/Contents/MacOS/PiTrac Easy-Connect"
           case "${{ matrix.path }}" in
             *apple-silicon*) WANT=arm64 ;;
             *intel*)         WANT=x86_64 ;;
           esac
-          python packaging/write-install-manifest.py \
-            "$OLD_APP/Contents/Resources/pitrac-install.json" \
-            --version 0.4.5 --system Darwin --arch "$WANT"
-          codesign --force --deep --sign - "$OLD_APP"
+          OLD_BUILT=$(lipo -archs "$OLD_APP/Contents/MacOS/PiTrac Easy-Connect")
+          test "$OLD_BUILT" = "$WANT" || {
+            echo "::error::$PREVIOUS_TAG artifact is $OLD_BUILT, expected $WANT"; exit 1;
+          }
           TARGET=$(PYTHONPATH=src python -c 'import pitrac_easy_connect; print(pitrac_easy_connect.__version__)')
           ASSET=$(basename "${{ matrix.path }}")
+          SIGNING=()
+          if [[ "$GITHUB_REF" == refs/tags/v* && -z "$PITRAC_RELEASE_SIGNING_KEY" ]]; then
+            echo "::error::tag smoke requires PITRAC_RELEASE_SIGNING_KEY from the release environment"
+            exit 1
+          fi
+          if [ -n "$PITRAC_RELEASE_SIGNING_KEY" ]; then
+            umask 077
+            printf '%s' "$PITRAC_RELEASE_SIGNING_KEY" > "$RUNNER_TEMP/release-signing-key.pem"
+            SIGNING=(--signing-key "$RUNNER_TEMP/release-signing-key.pem")
+          fi
           python packaging/packaged-update-smoke.py \
             --old-root "$OLD_APP" --archive "${{ matrix.path }}" \
-            --old-version 0.4.5 --target-version "$TARGET" \
-            --system Darwin --arch "$WANT" --asset "$ASSET"
+            --old-version "$PREVIOUS_VERSION" --target-version "$TARGET" \
+            --system Darwin --arch "$WANT" --asset "$ASSET" "${SIGNING[@]}"
+          if [ -f "$RUNNER_TEMP/release-signing-key.pem" ]; then
+            rm -f "$RUNNER_TEMP/release-signing-key.pem"
+          fi
 
       # The build is onedir now, so the whole directory travels, licences and
       # all. A lone .exe could be dragged out of this folder and then had no
@@ -306,12 +465,60 @@ jobs:
           $version = python -c "import sys;sys.path.insert(0,'src');import pitrac_easy_connect;print(pitrac_easy_connect.__version__)"
           python packaging/write-install-manifest.py "$root/pitrac-install.json" `
             --version $version --system Windows --arch x86_64
+
+      # An Authenticode certificate is a release-environment secret, so a
+      # fork's pull request build -- which cannot see it -- has to keep
+      # building unsigned. What changes is only whether release-signing-gate.py
+      # later lets the eventual release call itself final.
+      - name: Import the Windows signing certificate
+        if: runner.os == 'Windows' && env.WINDOWS_SIGNING_CERTIFICATE_PFX != ''
+        shell: pwsh
+        env:
+          WINDOWS_SIGNING_CERTIFICATE_PFX: ${{ secrets.WINDOWS_SIGNING_CERTIFICATE_PFX }}
+        run: |
+          $bytes = [Convert]::FromBase64String($env:WINDOWS_SIGNING_CERTIFICATE_PFX)
+          $pfx = Join-Path $env:RUNNER_TEMP "signing-cert.pfx"
+          [IO.File]::WriteAllBytes($pfx, $bytes)
+          "WINDOWS_SIGNING_CERTIFICATE_PATH=$pfx" >> $env:GITHUB_ENV
+
+          $signtool = Get-ChildItem -Path "${env:ProgramFiles(x86)}\Windows Kits\10\bin" `
+            -Recurse -Filter signtool.exe -ErrorAction SilentlyContinue |
+            Where-Object { $_.FullName -match "\\x64\\" } |
+            Sort-Object FullName -Descending | Select-Object -First 1
+          if (-not $signtool) { Write-Error "signtool.exe was not found on this runner"; exit 1 }
+          "WINDOWS_SIGNTOOL_PATH=$($signtool.FullName)" >> $env:GITHUB_ENV
+
+      - name: Sign the Windows app and helper
+        if: runner.os == 'Windows' && env.WINDOWS_SIGNING_CERTIFICATE_PATH != ''
+        shell: pwsh
+        env:
+          WINDOWS_SIGNING_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_SIGNING_CERTIFICATE_PASSWORD }}
+        run: |
+          $root = "dist/payload/PiTrac Easy-Connect"
+          & $env:WINDOWS_SIGNTOOL_PATH sign /f $env:WINDOWS_SIGNING_CERTIFICATE_PATH `
+            /p $env:WINDOWS_SIGNING_CERTIFICATE_PASSWORD /fd sha256 `
+            /tr http://timestamp.digicert.com /td sha256 `
+            "$root/PiTrac Easy-Connect.exe" "$root/PiTrac Updater.exe"
+          if ($LASTEXITCODE -ne 0) { Write-Error "signtool sign failed"; exit 1 }
+          & $env:WINDOWS_SIGNTOOL_PATH verify /pa /v "$root/PiTrac Easy-Connect.exe"
+          if ($LASTEXITCODE -ne 0) { Write-Error "the signed app executable did not verify"; exit 1 }
+          & $env:WINDOWS_SIGNTOOL_PATH verify /pa /v "$root/PiTrac Updater.exe"
+          if ($LASTEXITCODE -ne 0) { Write-Error "the signed helper did not verify"; exit 1 }
+          "WINDOWS_APP_SIGNED=true" >> $env:GITHUB_ENV
+
+      - name: Compress the Windows zip
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $root = "dist/payload/PiTrac Easy-Connect"
           Compress-Archive -Path $root -DestinationPath dist/PiTrac-Easy-Connect-windows.zip -Force
 
       # The zip stays: it is what the updater downloads, and self-update is
       # built around replacing the directory inside it. The installer is for
       # people, so that there is never a loose executable to drag out of that
-      # directory. Inno Setup is already on this image.
+      # directory. Inno Setup is already on this image. Signing the exe and
+      # helper before this runs is what makes the installer's own payload,
+      # unpacked from the SourceDir Inno reads, signed too.
       - name: Build the Windows installer
         if: runner.os == 'Windows'
         shell: pwsh
@@ -324,6 +531,38 @@ jobs:
           $setup = "dist/PiTrac-Easy-Connect-windows-setup.exe"
           if (-not (Test-Path $setup)) { Write-Error "the installer was not produced"; exit 1 }
           Write-Host ("installer: {0:N1} MB" -f ((Get-Item $setup).Length / 1MB))
+
+      - name: Sign the Windows installer
+        if: runner.os == 'Windows' && env.WINDOWS_SIGNING_CERTIFICATE_PATH != ''
+        shell: pwsh
+        env:
+          WINDOWS_SIGNING_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_SIGNING_CERTIFICATE_PASSWORD }}
+        run: |
+          $setup = "dist/PiTrac-Easy-Connect-windows-setup.exe"
+          & $env:WINDOWS_SIGNTOOL_PATH sign /f $env:WINDOWS_SIGNING_CERTIFICATE_PATH `
+            /p $env:WINDOWS_SIGNING_CERTIFICATE_PASSWORD /fd sha256 `
+            /tr http://timestamp.digicert.com /td sha256 $setup
+          if ($LASTEXITCODE -ne 0) { Write-Error "signtool sign failed on the installer"; exit 1 }
+          & $env:WINDOWS_SIGNTOOL_PATH verify /pa /v $setup
+          if ($LASTEXITCODE -ne 0) { Write-Error "the signed installer did not verify"; exit 1 }
+          "WINDOWS_INSTALLER_SIGNED=true" >> $env:GITHUB_ENV
+          Remove-Item -Force $env:WINDOWS_SIGNING_CERTIFICATE_PATH -ErrorAction SilentlyContinue
+
+      - name: Record what Windows signing actually did
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $signed = ($env:WINDOWS_APP_SIGNED -eq "true") -and ($env:WINDOWS_INSTALLER_SIGNED -eq "true")
+          if ($signed) {
+            $detail = "app, helper, and installer Authenticode-signed and verified with signtool"
+          } elseif ($env:WINDOWS_SIGNING_CERTIFICATE_PATH -ne $null -and $env:WINDOWS_SIGNING_CERTIFICATE_PATH -ne "") {
+            $detail = "a signing certificate was configured but signing or verification did not complete for every file"
+          } else {
+            $detail = "no WINDOWS_SIGNING_CERTIFICATE_PFX secret is configured; unsigned"
+          }
+          Write-Host $detail
+          python packaging/write-signing-status.py --out dist/signing-status-windows.json `
+            --platform windows --signed $(if ($signed) { "true" } else { "false" }) --detail $detail
 
       # Installing for real, then checking the application landed where the
       # updater will look for it. /VERYSILENT is Inno's unattended mode.
@@ -366,29 +605,6 @@ jobs:
           print('the installed directory is a replaceable install:', app.install_root)
           " "$root"
           if ($LASTEXITCODE -ne 0) { Write-Error "the installed layout is not updatable"; exit 1 }
-
-      - name: Package the disposable Windows physical-test fixture
-        if: runner.os == 'Windows' && github.ref == 'refs/heads/main'
-        shell: pwsh
-        run: |
-          $root = "dist/physical-old/PiTrac Easy-Connect"
-          New-Item -ItemType Directory -Force -Path (Split-Path $root) | Out-Null
-          Copy-Item "dist-old/PiTrac Easy-Connect" $root -Recurse
-          Copy-Item "dist-helper/PiTrac Updater.exe" $root/
-          Copy-Item LICENSE, NOTICE.md, THIRD-PARTY-LICENCES.txt $root/
-          python packaging/write-install-manifest.py "$root/pitrac-install.json" `
-            --version 0.4.5 --system Windows --arch x86_64
-          Compress-Archive -Path $root `
-            -DestinationPath dist/PiTrac-Easy-Connect-windows-physical-old.zip -Force
-
-      - name: Retain the disposable Windows physical-test fixture
-        if: runner.os == 'Windows' && github.ref == 'refs/heads/main'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
-        with:
-          name: PiTrac-windows-physical-old
-          path: dist/PiTrac-Easy-Connect-windows-physical-old.zip
-          if-no-files-found: error
-          retention-days: 1
 
       # Unpack the exact zip that gets published and use its normal launch path.
       # What it asserts is that WebView2 started: the runtime runs as msedge
@@ -568,25 +784,48 @@ jobs:
           }
           Write-Host "the exact Windows zip passed native page and single-instance checks"
 
-      - name: Run a real packaged Windows v0.4.5 to candidate update transaction
+      - name: Run the actual preceding Windows release to candidate update
         if: runner.os == 'Windows'
         shell: pwsh
+        env:
+          PITRAC_RELEASE_SIGNING_KEY: ${{ secrets.PITRAC_RELEASE_SIGNING_KEY }}
         run: |
           $fixture = "$env:RUNNER_TEMP\pitrac-update-fixture\PiTrac Easy-Connect"
           New-Item -ItemType Directory -Force -Path (Split-Path $fixture) | Out-Null
-          Copy-Item "dist-old/PiTrac Easy-Connect" $fixture -Recurse
-          Copy-Item "dist-helper/PiTrac Updater.exe" $fixture/
-          Copy-Item LICENSE, NOTICE.md, THIRD-PARTY-LICENCES.txt $fixture/
-          python packaging/write-install-manifest.py "$fixture/pitrac-install.json" `
-            --version 0.4.5 --system Windows --arch x86_64
+          Expand-Archive -Path $env:PREVIOUS_ASSET -DestinationPath (Split-Path $fixture) -Force
+          if (-not (Test-Path "$fixture\PiTrac Easy-Connect.exe")) {
+            Write-Error "$env:PREVIOUS_TAG did not contain its actual app directory"; exit 1
+          }
           $target = python -c "import sys;sys.path.insert(0,'src');import pitrac_easy_connect;print(pitrac_easy_connect.__version__)"
+          $signing = @()
+          $releaseKey = "$env:RUNNER_TEMP\release-signing-key.pem"
+          if ($env:GITHUB_REF.StartsWith("refs/tags/v") -and
+              $env:PITRAC_RELEASE_SIGNING_KEY -eq "") {
+            Write-Error "tag smoke requires PITRAC_RELEASE_SIGNING_KEY from the release environment"
+            exit 1
+          }
+          if ($env:PITRAC_RELEASE_SIGNING_KEY -ne "") {
+            [IO.File]::WriteAllText($releaseKey, $env:PITRAC_RELEASE_SIGNING_KEY)
+            $signing = @("--signing-key", $releaseKey)
+          }
           python packaging/packaged-update-smoke.py `
             --old-root $fixture --archive dist/PiTrac-Easy-Connect-windows.zip `
-            --old-version 0.4.5 --target-version $target --system Windows `
-            --arch x86_64 --asset PiTrac-Easy-Connect-windows.zip
+            --old-version $env:PREVIOUS_VERSION --target-version $target --system Windows `
+            --arch x86_64 --asset PiTrac-Easy-Connect-windows.zip @signing
+          Remove-Item -Force $releaseKey -ErrorAction SilentlyContinue
 
       - name: Check NOTICE.md credits everything the build bundles
         run: python packaging/bundled-licences.py --check --toc build/app/PiTrac-Easy-Connect/Analysis-00.toc
+
+      # Reuses the exact same manifest reader the check above just passed, so
+      # the SBOM cannot list anything that check did not already verify
+      # against NOTICE.md -- see write-sbom.py's own docstring for why a
+      # second, independent enumeration here would be worse than none.
+      - name: Write this platform's SBOM
+        shell: bash
+        run: |
+          VERSION=$(PYTHONPATH=src python -c 'import pitrac_easy_connect; print(pitrac_easy_connect.__version__)')
+          python packaging/write-sbom.py             --out "dist/sbom-${{ matrix.sbomPlatform }}.json"             --toc build/app/PiTrac-Easy-Connect/Analysis-00.toc             --component-name "PiTrac Easy-Connect" --component-version "$VERSION"             --platform "${{ matrix.sbomPlatform }}"
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
@@ -596,6 +835,25 @@ jobs:
           # These exist to hand the build to the release job in the same run.
           # Once a release is published they are a duplicate of its assets, so
           # the default ninety days is ninety days of storing them twice.
+          retention-days: 7
+
+      # Published, unlike signing-status: an SBOM is meant to be downloaded.
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: sbom-${{ matrix.artifact }}
+          path: dist/sbom-${{ matrix.sbomPlatform }}.json
+          if-no-files-found: error
+          retention-days: 7
+
+      # A separate artifact, not part of matrix.path: it is read by
+      # release-signing-gate.py, never published as a release download, and
+      # keeping it apart means it never has to be excluded from the file
+      # globs the release job uses to gather what actually gets published.
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: signing-status-${{ matrix.artifact }}
+          path: ${{ matrix.signingStatus }}
+          if-no-files-found: error
           retention-days: 7
 
   pi-archive:
@@ -621,9 +879,31 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  # One stable required-check name covers every matrix build and the Pi
+  # archive. Branch rulesets should require this instead of trying to pin
+  # GitHub's generated matrix-context names, which change when the matrix does.
+  quality-gate:
+    name: release-ready
+    if: always()
+    needs: [test, build, pi-archive]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Require every test and platform build
+        env:
+          TEST_RESULT: ${{ needs.test.result }}
+          BUILD_RESULT: ${{ needs.build.result }}
+          PI_RESULT: ${{ needs.pi-archive.result }}
+        run: |
+          printf 'test=%s build=%s pi-archive=%s\n' "$TEST_RESULT" "$BUILD_RESULT" "$PI_RESULT"
+          test "$TEST_RESULT" = success
+          test "$BUILD_RESULT" = success
+          test "$PI_RESULT" = success
+
   release:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [build, pi-archive]
+    needs: [build, pi-archive, quality-gate]
     runs-on: ubuntu-latest
     permissions:
       # The only job that writes anything back to the repository.
@@ -633,6 +913,10 @@ jobs:
       # result against the repository so anyone can check it later.
       id-token: write
       attestations: write
+    # The release manifest signing key lives only in this environment's
+    # secrets -- see packaging/make-signing-key.py -- so only this job can
+    # reach it, and an environment with required reviewers can gate it.
+    environment: release
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -670,11 +954,60 @@ jobs:
           for asset in "${EXPECTED[@]}"; do test -s "release/$asset"; done
           ls -l release
 
+      # Each platform's own SBOM, already checked against NOTICE.md before it
+      # was ever written -- see write-sbom.py. Renamed on the way in so the
+      # per-platform name survives the collapse from artifacts/sbom-<job>/.
+      - name: Gather the per-platform SBOMs
+        run: |
+          for found in artifacts/sbom-*/sbom-*.json; do
+            cp "$found" "release/$(basename "$found")"
+          done
+          ls -l release/sbom-*.json
+
       - name: Write the checksums
         run: |
           cd release
           sha256sum * > SHA256SUMS.txt
           cat SHA256SUMS.txt
+
+      # The checksums above are convenience, not authentication: they come
+      # from the same job that built the files they describe, exactly the
+      # thing an attacker positioned to serve a bad release would also serve.
+      # The manifest and its detached signature are what an installer can
+      # actually trust -- see common/release_manifest.py for why, and
+      # SECURITY.md for what this depends on.
+      - name: Write and sign the release manifest
+        env:
+          PITRAC_RELEASE_SIGNING_KEY: ${{ secrets.PITRAC_RELEASE_SIGNING_KEY }}
+        run: |
+          if [ -z "$PITRAC_RELEASE_SIGNING_KEY" ]; then
+            echo "::error::PITRAC_RELEASE_SIGNING_KEY is not set in the release environment."
+            echo "::error::Generate one with packaging/make-signing-key.py -- see SECURITY.md."
+            exit 1
+          fi
+          KEY_ID=$(python3 -c "
+          import re, sys
+          sys.path.insert(0, 'src')
+          from pitrac_easy_connect.common import release_manifest as rm
+          keys = rm._PINNED_KEYS
+          if not keys:
+              raise SystemExit('no key is pinned in _PINNED_KEYS yet')
+          # This build must already trust the key it is about to sign with,
+          # or every application in the field would refuse the release it
+          # produces. There is deliberately only ever one pinned key during
+          # ordinary operation; rotation adds a second before removing the
+          # first, and this picks the newest.
+          print(sorted(keys)[-1])
+          ")
+          umask 077
+          printf '%s' "$PITRAC_RELEASE_SIGNING_KEY" > /tmp/release-signing-key.pem
+          TAG="${GITHUB_REF_NAME}"
+          VERSION="${TAG#v}"
+          PI_ASSET=$(find release -maxdepth 1 -name '*.pyz')
+          python3 packaging/write-release-manifest.py             --out release/release-manifest.json             --version "$VERSION" --tag "$TAG" --signing-key-id "$KEY_ID"             --asset release/PiTrac-Easy-Connect-macos-apple-silicon.zip             --asset release/PiTrac-Easy-Connect-macos-intel.zip             --asset release/PiTrac-Easy-Connect-windows.zip             --pi-asset "$PI_ASSET"
+          python3 packaging/sign-release-manifest.py release/release-manifest.json             --key /tmp/release-signing-key.pem             --out release/release-manifest.json.sig
+          shred -u /tmp/release-signing-key.pem 2>/dev/null || rm -f /tmp/release-signing-key.pem
+          cat release/release-manifest.json
 
       # Signs the files themselves, keylessly, through Sigstore: the signature
       # records the workflow, repository and commit that built them, and is
@@ -688,6 +1021,19 @@ jobs:
             release/*.zip
             release/*.pyz
             release/*-setup.exe
+            release/release-manifest.json
+            release/sbom-*.json
+
+      # Every platform build wrote its own honest record of whether it
+      # actually signed anything -- see release-signing-gate.py. A release
+      # this script cannot vouch for as fully signed publishes as a
+      # pre-release rather than a final one, with an accurate reason why,
+      # per the requirement that a beta must not hide or fake its warnings.
+      - name: Decide whether this release may call itself final
+        run: |
+          python packaging/release-signing-gate.py --status-dir artifacts --out /tmp/signing-gate.json
+          echo "PRERELEASE=$(python -c "import json; print(str(json.load(open('/tmp/signing-gate.json'))['prerelease']).lower())")" \
+            >> "$GITHUB_ENV"
 
       # The notes for a release are the message on its own tag, which is
       # where they are written. This used to point at a file named for
@@ -704,6 +1050,9 @@ jobs:
           fi
           printf '\n\n' >> /tmp/notes/body.md
           cat .github/release-notes/download-and-verify.md >> /tmp/notes/body.md
+          printf '\n\n### Code signing\n\n' >> /tmp/notes/body.md
+          python -c "import json; print(json.load(open('/tmp/signing-gate.json'))['notes'])" \
+            >> /tmp/notes/body.md
           echo "--- notes for ${GITHUB_REF_NAME} ---"
           head -20 /tmp/notes/body.md
 
@@ -713,6 +1062,7 @@ jobs:
           files: release/*
           generate_release_notes: true
           body_path: /tmp/notes/body.md
+          prerelease: ${{ env.PRERELEASE }}
 
   pages:
     if: github.ref == 'refs/heads/main'

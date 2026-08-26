@@ -29,6 +29,21 @@ case "${1:-}" in
     *)     printf 'Unknown option: %s\n' "$1" >&2; exit 1 ;;
 esac
 
+# macOS and Windows are the only platforms this project builds, tests, or
+# publishes a desktop application for -- see docs/distribution.md. Building
+# would not merely be untested on anything else: the PyInstaller spec no
+# longer bundles a window backend for it, so the result would not open a
+# window at all, which is a worse failure than refusing here and now.
+case "$(uname -s 2>/dev/null || echo Windows)" in
+    Darwin|MINGW*|MSYS*|CYGWIN*|Windows*) ;;
+    *)
+        printf 'PiTrac Easy-Connect only ships a desktop app for macOS and Windows.\n' >&2
+        printf 'The Raspberry Pi service (pitrac_easy_connect.pi) is the Linux target;\n' >&2
+        printf 'see packaging/build-pi-archive.sh.\n' >&2
+        exit 1
+        ;;
+esac
+
 printf '\nPiTrac %s\n' "$VERSION"
 mkdir -p "$OUT"
 # Only known application outputs are removed. This prevents a stale artifact
@@ -74,10 +89,6 @@ case "$(uname -s 2>/dev/null || echo Windows)" in
             say "$OUT/PiTrac Easy-Connect.exe"
             printf '\n  \033[1mUnsigned.\033[0m SmartScreen will warn until it is code-signed.\n'
             printf '  Users click More info, then Run anyway.\n'
-            ;;
-        *)
-            say "$OUT/PiTrac Easy-Connect ($(du -h "$OUT/PiTrac Easy-Connect" | cut -f1))"
-            printf '\n  Requires WebKitGTK 4.1 at runtime (for example libwebkit2gtk-4.1-0 on Ubuntu).\n'
             ;;
 esac
 

@@ -50,6 +50,12 @@ SHA256_RE = re.compile(r"^[0-9a-fA-F]{64}$")
 PHASES = {
     "prepared", "waiting-for-old-app", "previous-moved", "current-promoted",
     "awaiting-restart-verification", "complete", "rolling-back", "rolled-back", "failed",
+    # Distinct from "failed", and deliberately not terminal. It means the
+    # candidate could not be terminated, so rollback was never attempted and
+    # the install root still holds an unverified application. Terminal phases
+    # get compacted, which deletes the independent helper -- the exact binary
+    # the persisted login recovery command points at. This phase keeps it.
+    "unresolved",
 }
 
 
@@ -62,6 +68,16 @@ class InstalledApp:
     install_root: Path
     executable: Path
     manifest: Dict[str, Any]
+
+
+@dataclass(frozen=True)
+class PendingRestart:
+    """A validated restart that still needs a real usability acknowledgement."""
+
+    journal_path: Path
+    token: str
+    version: str
+    executable: Path
 
 
 def _default_state_dir() -> Path:
@@ -165,10 +181,15 @@ def _fsync_dir(path: Path) -> None:
 
 
 def _atomic_json(path: Path, value: Dict[str, Any]) -> None:
+    _atomic_bytes(
+        path, (json.dumps(value, indent=2, sort_keys=True) + "\n").encode("utf-8")
+    )
+
+
+def _atomic_bytes(path: Path, payload: bytes) -> None:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(path.name + ".new-" + uuid.uuid4().hex)
-    payload = (json.dumps(value, indent=2, sort_keys=True) + "\n").encode("utf-8")
     descriptor = os.open(str(temporary), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     try:
         view = memoryview(payload)
@@ -677,7 +698,12 @@ def prepare_transaction(*, archive_path: Path, staged: InstalledApp, install_roo
         "relaunchArguments": [str(value) for value in (relaunch_arguments or [])],
         "phase": "prepared", "createdAt": time.time(), "updatedAt": time.time(),
     }
-    _write_journal(journal_path, journal)
+    try:
+        _write_journal(journal_path, journal)
+    except Exception:
+        _remove_tree(helper_dir, allowed_parent=helper_dir.parent)
+        _remove_tree(prepared, allowed_parent=parent)
+        raise
     return journal_path
 
 
@@ -728,7 +754,7 @@ def load_journal(path: Path) -> Dict[str, Any]:
     relaunch = journal["relaunchArguments"]
     valued_flags = {"--port", "--gspro-port", "--e6-port", "--simulator-host",
                     "--discovery-port", "--config", "--computer-name"}
-    boolean_flags = {"--headless"}
+    boolean_flags = {"--headless", "--smoke-test"}
     valid_relaunch = isinstance(relaunch, list) and len(relaunch) <= 15
     index = 0
     while valid_relaunch and index < len(relaunch):
@@ -874,14 +900,35 @@ def _independent_helper_processes(helper_path_value: Path) -> set:
     return ignored
 
 
-def _terminate_process_tree(pid: int) -> None:
+def _terminate_process_tree(pid: int) -> bool:
+    """Terminate a candidate we launched and prove it is no longer running."""
+
     if psutil is None:
-        return
+        try:
+            os.kill(pid, 15)
+        except ProcessLookupError:
+            return True
+        except OSError:
+            return False
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            try:
+                os.kill(pid, 0)
+            except OSError:
+                return True
+            time.sleep(0.05)
+        try:
+            os.kill(pid, 9)
+        except ProcessLookupError:
+            return True
+        except OSError:
+            return False
+        return not _process_tree_alive(pid, set())
     try:
         root = psutil.Process(pid)
         processes = root.children(recursive=True) + [root]
     except Exception:
-        return
+        return True
     for process in reversed(processes):
         try:
             process.terminate()
@@ -901,6 +948,7 @@ def _terminate_process_tree(pid: int) -> None:
             psutil.wait_procs(alive, timeout=5)
         except Exception:
             pass
+    return not _process_tree_alive(pid, set())
 
 
 def _replace_transaction_path(source: Path, destination: Path, *, timeout: float = 10) -> None:
@@ -947,6 +995,121 @@ def _launch_args(journal_path: Path, journal: Dict[str, Any], executable: Path) 
             *journal.get("relaunchArguments", [])]
 
 
+def _recovery_marker_path(journal: Dict[str, Any]) -> Path:
+    return staging_dir() / "recovery" / (
+        "com.pitrac.easyconnect.recovery.{}.json".format(journal["transactionId"])
+    )
+
+
+def _macos_recovery_plist(journal: Dict[str, Any]) -> Path:
+    return Path.home() / "Library" / "LaunchAgents" / (
+        "com.pitrac.easyconnect.recovery.{}.plist".format(journal["transactionId"])
+    )
+
+
+def _register_recovery(journal_path: Path, journal: Dict[str, Any]) -> None:
+    """Persist a login recovery command before the first install-root rename."""
+
+    # This marker is useful on every platform and gives tests/operators one
+    # exact, private record of the registered command.  It is not executable
+    # and all paths in it have already passed load_journal().
+    marker = _recovery_marker_path(journal)
+    _atomic_json(marker, {
+        "transactionId": journal["transactionId"],
+        "journalPath": str(_resolved(journal_path)),
+        "helperPath": str(_resolved(journal["helperPath"])),
+    })
+    arguments = [
+        str(_resolved(journal["helperPath"])),
+        "--recover", str(_resolved(journal_path)),
+    ]
+    system = _system_from_journal(journal)
+    try:
+        if system == "Darwin":
+            label = "com.pitrac.easyconnect.recovery.{}".format(journal["transactionId"])
+            value = {
+                "Label": label,
+                "ProgramArguments": arguments,
+                "RunAtLoad": True,
+                "ProcessType": "Background",
+            }
+            _atomic_bytes(_macos_recovery_plist(journal), plistlib.dumps(value))
+        elif system == "Windows":  # pragma: no cover - exercised on Windows CI
+            import winreg
+            key_path = r"Software\Microsoft\Windows\CurrentVersion\Run"
+            name = "PiTracEasyConnectRecovery-{}".format(journal["transactionId"])
+            with winreg.CreateKey(winreg.HKEY_CURRENT_USER, key_path) as key:
+                winreg.SetValueEx(
+                    key, name, 0, winreg.REG_SZ, subprocess.list2cmdline(arguments)
+                )
+    except Exception:
+        try:
+            marker.unlink()
+        except OSError:
+            pass
+        raise SelfUpdateError("the stable restart recovery command could not be registered")
+
+
+def _unregister_recovery(journal: Dict[str, Any]) -> None:
+    """Remove only the exact per-transaction login registration."""
+
+    system = _system_from_journal(journal)
+    if system == "Darwin":
+        try:
+            _macos_recovery_plist(journal).unlink()
+        except FileNotFoundError:
+            pass
+    elif system == "Windows":  # pragma: no cover - exercised on Windows CI
+        try:
+            import winreg
+            key_path = r"Software\Microsoft\Windows\CurrentVersion\Run"
+            name = "PiTracEasyConnectRecovery-{}".format(journal["transactionId"])
+            with winreg.OpenKey(
+                winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_SET_VALUE
+            ) as key:
+                winreg.DeleteValue(key, name)
+        except FileNotFoundError:
+            pass
+    try:
+        _recovery_marker_path(journal).unlink()
+    except FileNotFoundError:
+        pass
+
+
+def _ack_matches(journal: Dict[str, Any], version: str, executable: Path) -> bool:
+    path = Path(journal["restartAcknowledgementPath"])
+    if not path.exists():
+        return False
+    try:
+        ack = _read_json(path)
+        return (
+            ack.get("transactionId") == journal["transactionId"]
+            and secrets.compare_digest(
+                str(ack.get("token") or ""), str(journal["restartToken"])
+            )
+            and str(ack.get("version") or "") == str(version)
+            and _resolved(ack.get("executable", "")) == _resolved(executable)
+        )
+    except Exception:
+        return False
+
+
+def _wait_for_ack(journal: Dict[str, Any], version: str, executable: Path,
+                  launched: Any, timeout: float) -> bool:
+    deadline = time.monotonic() + timeout
+    pid = int(getattr(launched, "pid", 0) or 0)
+    while time.monotonic() < deadline:
+        if _ack_matches(journal, version, executable):
+            return True
+        if not _launched_still_running(launched, pid):
+            # A short-lived test/guard process can write the durable proof and
+            # exit between the check above and poll(). Re-read after observing
+            # exit so a valid acknowledgement is not lost to that race.
+            return _ack_matches(journal, version, executable)
+        time.sleep(0.2)
+    return _ack_matches(journal, version, executable)
+
+
 def run_helper(journal_path: Path, wait_pid: int, *, timeout: float = HELPER_EXIT_TIMEOUT,
                ack_timeout: float = ACK_TIMEOUT,
                process_tree_alive: Optional[Callable[[int, set], bool]] = None,
@@ -954,6 +1117,7 @@ def run_helper(journal_path: Path, wait_pid: int, *, timeout: float = HELPER_EXI
     """Perform promotion and keep the previous version until exact acknowledgement."""
 
     journal_path = _resolved(journal_path)
+    launched = None
     try:
         journal = load_journal(journal_path)
     except Exception:
@@ -971,6 +1135,7 @@ def run_helper(journal_path: Path, wait_pid: int, *, timeout: float = HELPER_EXI
     try:
         if getattr(sys, "frozen", False) and _resolved(sys.executable) != _resolved(journal["helperPath"]):
             raise SelfUpdateError("the updater is not running from its independent helper path")
+        _register_recovery(journal_path, journal)
         _write_journal(journal_path, journal, "waiting-for-old-app")
         known, deadline = set(), time.monotonic() + timeout
         while alive(wait_pid, known) and time.monotonic() < deadline:
@@ -997,49 +1162,19 @@ def run_helper(journal_path: Path, wait_pid: int, *, timeout: float = HELPER_EXI
         launched = (launcher or _spawn_detached)(_launch_args(journal_path, journal, new_app.executable))
         journal["launchedPid"] = int(getattr(launched, "pid", 0) or 0)
         _write_journal(journal_path, journal, "awaiting-restart-verification")
-        ack_path, deadline, acknowledged = Path(journal["restartAcknowledgementPath"]), time.monotonic() + ack_timeout, False
-        launched_pid, still_running = int(journal.get("launchedPid") or 0), True
-        while time.monotonic() < deadline:
-            if ack_path.exists():
-                try:
-                    ack = _read_json(ack_path)
-                    acknowledged = (secrets.compare_digest(str(ack.get("token") or ""), str(journal["restartToken"]))
-                                    and str(ack.get("version") or "") == journal["targetVersion"]
-                                    and _resolved(ack.get("executable", "")) == _resolved(new_app.executable))
-                except Exception:
-                    acknowledged = False
-                if acknowledged:
-                    break
-            if not _launched_still_running(launched, launched_pid):
-                still_running = False
-                break
-            time.sleep(0.2)
+        acknowledged = _wait_for_ack(
+            journal, journal["targetVersion"], new_app.executable,
+            launched, ack_timeout,
+        )
         if not acknowledged:
-            # Two very different things used to end up here. An application
-            # that started and then died is a failed update and must be undone.
-            # An application that is still running and simply has not confirmed
-            # itself yet is a *successful* update on a slow machine, and undoing
-            # it is the worse outcome by far: the user watches the new version
-            # start, then finds the old one back with nothing said about why.
-            #
-            # That is what happened in the field. The confirmation only fires
-            # once the window is on screen, and on an Intel Mac the first launch
-            # of a freshly written bundle took about forty-eight seconds against
-            # a forty-five second deadline. The rollback then restored a version
-            # which missed the same deadline by two and a half seconds.
-            if not still_running:
-                raise SelfUpdateError("the new application did not acknowledge its exact path and version")
-            _write_journal(journal_path, journal, "complete")
-            _write_result(
-                journal, True,
-                "Updated to {}. It started but had not confirmed itself after {:.0f} seconds, "
-                "so the previous version was kept at {} rather than the update being undone."
-                .format(journal["targetVersion"], ack_timeout, previous),
+            raise SelfUpdateError(
+                "the new application did not acknowledge a usable native window "
+                "from its exact path, version, and transaction token"
             )
-            return 0
         _remove_tree(previous, allowed_parent=install.parent)
         _write_journal(journal_path, journal, "complete")
         _write_result(journal, True, "Updated to {} and verified after restart.".format(journal["targetVersion"]))
+        _unregister_recovery(journal)
         return 0
     except Exception as exc:
         try:
@@ -1050,7 +1185,15 @@ def run_helper(journal_path: Path, wait_pid: int, *, timeout: float = HELPER_EXI
             try:
                 _write_journal(journal_path, journal, "rolling-back")
                 if journal.get("launchedPid"):
-                    _terminate_process_tree(int(journal["launchedPid"]))
+                    candidate_pid = int(journal["launchedPid"])
+                    if not _terminate_process_tree(candidate_pid):
+                        _write_journal(journal_path, journal, "unresolved")
+                        _write_result(
+                            journal, False,
+                            "The update is unresolved: the unacknowledged candidate "
+                            "could not be terminated, so rollback was not attempted. {}".format(exc),
+                        )
+                        return 2
                 if install.exists():
                     if broken.exists():
                         _remove_tree(broken, allowed_parent=install.parent)
@@ -1068,37 +1211,31 @@ def run_helper(journal_path: Path, wait_pid: int, *, timeout: float = HELPER_EXI
                 old_process = _spawn_detached(_launch_args(journal_path, journal, old.executable))
                 journal["rollbackPid"] = int(old_process.pid)
                 _write_journal(journal_path, journal, "rolling-back")
-                rollback_deadline = time.monotonic() + ack_timeout
-                rollback_acknowledged = False
-                while time.monotonic() < rollback_deadline:
-                    if ack_path.exists():
-                        try:
-                            ack = _read_json(ack_path)
-                            rollback_acknowledged = (
-                                secrets.compare_digest(str(ack.get("token") or ""), str(journal["restartToken"]))
-                                and str(ack.get("version") or "") == journal["installedVersion"]
-                                and _resolved(ack.get("executable", "")) == _resolved(old.executable)
-                            )
-                        except Exception:
-                            rollback_acknowledged = False
-                        if rollback_acknowledged:
-                            break
-                    if not _process_tree_alive(int(old_process.pid), set()):
-                        break
-                    time.sleep(0.2)
-                if rollback_acknowledged and broken.exists():
-                    _remove_tree(broken, allowed_parent=install.parent)
-                _write_journal(journal_path, journal, "rolled-back")
+                rollback_acknowledged = _wait_for_ack(
+                    journal, journal["installedVersion"], old.executable,
+                    old_process, ack_timeout,
+                )
                 detail = "The update failed and the previous working version was restored: {}".format(exc)
                 if not rollback_acknowledged:
-                    detail += " The restored application did not acknowledge its relaunch automatically."
+                    detail += (
+                        " The restored files have not acknowledged a usable restart; "
+                        "stable recovery remains registered."
+                    )
+                    _write_journal(journal_path, journal, "rolling-back")
+                    _write_result(journal, False, detail, rolled_back=True)
+                    return 2
+                if broken.exists():
+                    _remove_tree(broken, allowed_parent=install.parent)
+                _write_journal(journal_path, journal, "rolled-back")
                 _write_result(journal, False, detail, rolled_back=True)
+                _unregister_recovery(journal)
                 return 1
             except Exception as rollback_exc:
                 _write_result(journal, False, "The update failed and rollback also failed: {}; {}".format(exc, rollback_exc))
                 return 2
         _write_journal(journal_path, journal, "failed")
         _write_result(journal, False, "Nothing was changed: {}".format(exc))
+        _unregister_recovery(journal)
         return 1
 
 
@@ -1111,18 +1248,207 @@ def spawn_helper(journal_path: Path, *, wait_pid: Optional[int] = None) -> subpr
                             "--wait-pid", str(wait_pid or os.getpid())])
 
 
+def run_recovery(journal_path: Path, *, ack_timeout: float = ACK_TIMEOUT,
+                 launcher: Optional[Callable[[list], Any]] = None) -> int:
+    """Idempotently reconcile and verify an interrupted desktop transaction.
+
+    This is the command persisted outside the replaceable install root.  Every
+    destination comes from load_journal(); existence is reconciled because a
+    power loss can occur after a rename but before its following phase write.
+    """
+
+    journal_path = _resolved(journal_path)
+    try:
+        journal = load_journal(journal_path)
+        _register_recovery(journal_path, journal)
+    except Exception:
+        return 2
+    system = _system_from_journal(journal)
+    install = Path(journal["installRoot"])
+    previous = Path(journal["previousInstallPath"])
+    prepared = Path(journal["preparedSiblingPath"])
+    broken = Path(journal["brokenInstallPath"])
+    ack_path = Path(journal["restartAcknowledgementPath"])
+
+    def installed_as(version: str) -> Optional[InstalledApp]:
+        if not install.exists():
+            return None
+        try:
+            return validate_install_root(
+                install, system=system, machine=journal["architecture"],
+                expected_version=version,
+            )
+        except SelfUpdateError:
+            return None
+
+    def clear_invalid_ack(version: str, executable: Path) -> None:
+        if _ack_matches(journal, version, executable):
+            return
+        try:
+            ack_path.unlink()
+        except FileNotFoundError:
+            pass
+
+    try:
+        if journal["phase"] == "complete":
+            if installed_as(journal["targetVersion"]) is None:
+                raise SelfUpdateError("a completed transaction no longer has its target install")
+            _unregister_recovery(journal)
+            return 0
+        if journal["phase"] == "rolled-back":
+            if installed_as(journal["installedVersion"]) is None:
+                raise SelfUpdateError("a rolled-back transaction no longer has its restored install")
+            _unregister_recovery(journal)
+            return 1
+
+        # Reconcile the two-rename gap.  Prefer restoring the known previous
+        # install when both siblings exist: the candidate never reached a
+        # verifiable final-path launch before the interruption.
+        if not install.exists():
+            if previous.exists():
+                _replace_transaction_path(previous, install)
+                _fsync_dir(install.parent)
+                journal = load_journal(journal_path)
+                _write_journal(journal_path, journal, "rolling-back")
+            elif prepared.exists():
+                _replace_transaction_path(prepared, install)
+                _fsync_dir(install.parent)
+                journal = load_journal(journal_path)
+                _write_journal(journal_path, journal, "current-promoted")
+            else:
+                raise SelfUpdateError("no validated install remains to recover")
+
+        target = installed_as(journal["targetVersion"])
+        old = installed_as(journal["installedVersion"])
+        if target is not None:
+            journal = load_journal(journal_path)
+            _write_journal(journal_path, journal, "awaiting-restart-verification")
+            clear_invalid_ack(journal["targetVersion"], target.executable)
+            if not _ack_matches(journal, journal["targetVersion"], target.executable):
+                process = (launcher or _spawn_detached)(
+                    _launch_args(journal_path, journal, target.executable)
+                )
+                journal["launchedPid"] = int(getattr(process, "pid", 0) or 0)
+                _write_journal(journal_path, journal, "awaiting-restart-verification")
+                if not _wait_for_ack(
+                    journal, journal["targetVersion"], target.executable,
+                    process, ack_timeout,
+                ):
+                    if journal.get("launchedPid") and not _terminate_process_tree(
+                        int(journal["launchedPid"])
+                    ):
+                        raise SelfUpdateError(
+                            "the unacknowledged candidate could not be terminated"
+                        )
+                    if not previous.exists():
+                        raise SelfUpdateError(
+                            "the candidate did not acknowledge and no rollback copy remains"
+                        )
+                    if broken.exists():
+                        _remove_tree(broken, allowed_parent=install.parent)
+                    _replace_transaction_path(install, broken)
+                    _replace_transaction_path(previous, install)
+                    _fsync_dir(install.parent)
+                    old = validate_install_root(
+                        install, system=system, machine=journal["architecture"],
+                        expected_version=journal["installedVersion"],
+                    )
+                else:
+                    if previous.exists():
+                        _remove_tree(previous, allowed_parent=install.parent)
+                    if broken.exists():
+                        _remove_tree(broken, allowed_parent=install.parent)
+                    if prepared.exists():
+                        _remove_tree(prepared, allowed_parent=install.parent)
+                    _write_journal(journal_path, journal, "complete")
+                    _write_result(
+                        journal, True,
+                        "Updated to {} and verified by stable recovery.".format(
+                            journal["targetVersion"]
+                        ),
+                    )
+                    _unregister_recovery(journal)
+                    return 0
+            else:
+                if previous.exists():
+                    _remove_tree(previous, allowed_parent=install.parent)
+                if broken.exists():
+                    _remove_tree(broken, allowed_parent=install.parent)
+                if prepared.exists():
+                    _remove_tree(prepared, allowed_parent=install.parent)
+                _write_journal(journal_path, journal, "complete")
+                _write_result(
+                    journal, True,
+                    "Updated to {} and verified by stable recovery.".format(
+                        journal["targetVersion"]
+                    ),
+                )
+                _unregister_recovery(journal)
+                return 0
+
+        old = old or installed_as(journal["installedVersion"])
+        if old is None:
+            raise SelfUpdateError("the final install path contains neither validated version")
+        journal = load_journal(journal_path)
+        _write_journal(journal_path, journal, "rolling-back")
+        clear_invalid_ack(journal["installedVersion"], old.executable)
+        if not _ack_matches(journal, journal["installedVersion"], old.executable):
+            process = (launcher or _spawn_detached)(
+                _launch_args(journal_path, journal, old.executable)
+            )
+            journal["rollbackPid"] = int(getattr(process, "pid", 0) or 0)
+            _write_journal(journal_path, journal, "rolling-back")
+            if not _wait_for_ack(
+                journal, journal["installedVersion"], old.executable,
+                process, ack_timeout,
+            ):
+                _write_result(
+                    journal, False,
+                    "The previous files were restored but did not acknowledge a "
+                    "usable restart; stable recovery remains registered.",
+                    rolled_back=True,
+                )
+                return 2
+        for candidate in (prepared, broken, previous):
+            if candidate.exists():
+                _remove_tree(candidate, allowed_parent=install.parent)
+        _write_journal(journal_path, journal, "rolled-back")
+        _write_result(
+            journal, False,
+            "The interrupted update was rolled back and the previous version "
+            "was verified after restart.",
+            rolled_back=True,
+        )
+        _unregister_recovery(journal)
+        return 1
+    except Exception as exc:
+        try:
+            journal = load_journal(journal_path)
+            _write_result(
+                journal, False,
+                "Stable update recovery is unresolved: {}".format(exc),
+                rolled_back=bool(installed_as(journal["installedVersion"])),
+            )
+        except Exception:
+            pass
+        # Deliberately retain the exact recovery registration for a later
+        # idempotent retry. Corrupt journals fail closed before any rename.
+        return 2
+
+
 def validate_restart(journal_path: Path, token: str, *, version: str,
                      executable: Optional[Path] = None) -> Tuple[Dict[str, Any], Path]:
     """Validate the restart proof without claiming the app is usable yet."""
 
     journal = load_journal(journal_path)
     if journal["phase"] not in ("current-promoted", "awaiting-restart-verification",
-                                "rolling-back", "rolled-back"):
+                                "unresolved", "rolling-back", "rolled-back"):
         raise SelfUpdateError("the transaction is not awaiting acknowledgement")
     if not secrets.compare_digest(str(token), str(journal["restartToken"])):
         raise SelfUpdateError("the restart acknowledgement token is invalid")
     expected_version = (journal["targetVersion"] if journal["phase"] in
-                        ("current-promoted", "awaiting-restart-verification") else journal["installedVersion"])
+                        ("current-promoted", "awaiting-restart-verification", "unresolved")
+                        else journal["installedVersion"])
     if str(version).lstrip("v") != expected_version:
         raise SelfUpdateError("the restarted application reports the wrong version")
     expected_executable = executable_path(Path(journal["installRoot"]),
@@ -1168,35 +1494,51 @@ def cleanup_independent_helper(helper_pid: int, helper_file: Path) -> None:
     threading.Thread(target=work, daemon=True).start()
 
 
-def recover_pending_restart(*, version: str, executable: Optional[Path] = None) -> bool:
-    """Acknowledge a promoted or restored install after an interrupted launch.
+def recover_pending_restart(*, version: str,
+                            executable: Optional[Path] = None) -> Optional[PendingRestart]:
+    """Locate a restart proof, but never acknowledge it during startup parsing.
 
-    Journals are the authority; this never derives a destination or performs a
-    rename. It only completes the same narrow path/version proof the helper's
-    explicit restart arguments normally request.
+    The returned context is safe to hand to the native-window shown callback.
+    It contains only values revalidated from a signed-integrity transaction
+    journal and the exact executable path currently running.
     """
     actual = Path(executable or sys.executable)
     root = staging_dir()
     if not root.is_dir():
-        return False
+        return None
     for path in sorted(root.glob("transaction-*/journal.json"), reverse=True):
         try:
             journal = load_journal(path)
             if journal["phase"] not in (
                 "current-promoted", "awaiting-restart-verification",
-                "rolling-back", "rolled-back",
+                "unresolved", "rolling-back", "rolled-back",
             ):
                 continue
             expected = executable_path(Path(journal["installRoot"]),
                                        system=_system_from_journal(journal))
             if _resolved(actual) != _resolved(expected):
                 continue
-            acknowledge_restart(path, journal["restartToken"], version=version,
-                                executable=actual)
-            return True
+            validate_restart(
+                path, journal["restartToken"], version=version, executable=actual
+            )
+            return PendingRestart(
+                journal_path=path,
+                token=str(journal["restartToken"]),
+                version=str(version).lstrip("v"),
+                executable=_resolved(actual),
+            )
         except Exception:
             continue
-    return False
+    return None
+
+
+def acknowledge_pending_restart(context: PendingRestart) -> None:
+    """Acknowledge a context only after the caller proved UI/API usability."""
+
+    acknowledge_restart(
+        context.journal_path, context.token,
+        version=context.version, executable=context.executable,
+    )
 
 
 def read_and_clear_last_result(base: Optional[Path] = None) -> Optional[Dict[str, Any]]:
@@ -1214,27 +1556,153 @@ def read_and_clear_last_result(base: Optional[Path] = None) -> Optional[Dict[str
     return value
 
 
-def prune_transactions(base: Optional[Path] = None, keep: int = 3) -> None:
+def compact_transaction(path: Path) -> None:
+    """Remove heavy payloads from one terminal transaction, retaining metadata."""
+
+    journal_path = Path(path) / "journal.json"
+    journal = load_journal(journal_path)
+    if journal["phase"] not in ("complete", "failed", "rolled-back"):
+        return
+    root = journal_path.parent
+    for candidate in list(root.iterdir()):
+        if candidate.name in {"journal.json", "result.json"}:
+            continue
+        if candidate.is_dir() and not candidate.is_symlink():
+            _remove_tree(candidate, allowed_parent=root)
+        else:
+            candidate.unlink(missing_ok=True)
+    helper_dir = staging_dir() / "helpers" / journal["transactionId"]
+    if helper_dir.exists():
+        try:
+            _remove_tree(helper_dir, allowed_parent=helper_dir.parent)
+        except (OSError, SelfUpdateError):
+            # The just-exiting Windows helper can still hold itself. Its
+            # cleanup thread and the next pruning pass retry this exact path.
+            pass
+
+
+def prune_transactions(base: Optional[Path] = None, keep: int = 3,
+                       max_bytes: int = 8 * 1024 * 1024,
+                       remove_debris: bool = False) -> None:
+    """Bound what the private update-state directory retains.
+
+    ``remove_debris`` also discards transactions that never reached a written
+    journal: a download interrupted before prepare_transaction, and a manual
+    package retained for a "reveal it for me" offer that only ever exists in
+    one running process's memory. Neither is bounded by the terminal-journal
+    budget below, because neither has a journal to be counted by it.
+
+    Pass it only where nothing of ours can be part-way through building a
+    transaction -- in practice, service startup, before any download begins.
+    A corrupt or tampered journal is left exactly as found either way, so
+    recovery and later inspection still see it.
+    """
+
     root = staging_dir(base)
     if not root.is_dir():
         return
     completed = []
     for path in root.glob("transaction-*"):
+        journal_path = path / "journal.json"
+        if not journal_path.exists():
+            if remove_debris:
+                _discard_debris(path, root)
+            continue
         try:
-            if load_journal(path / "journal.json")["phase"] in ("complete", "failed", "rolled-back"):
-                completed.append(path)
+            phase = load_journal(journal_path)["phase"]
         except Exception:
             continue
+        if phase in ("complete", "failed", "rolled-back"):
+            compact_transaction(path)
+            completed.append(path)
     completed.sort(key=lambda item: item.stat().st_mtime, reverse=True)
-    for path in completed[keep:]:
-        _remove_tree(path, allowed_parent=root)
+    retained_bytes = 0
+    for index, path in enumerate(completed):
+        size = _tree_size(path)
+        if index >= max(0, keep) or retained_bytes + size > max(0, max_bytes):
+            _remove_tree(path, allowed_parent=root)
+        else:
+            retained_bytes += size
+
+
+def _discard_debris(path: Path, root: Path) -> None:
+    """Remove one journal-less transaction and its independent helper copy."""
+
+    if path.parent != root or not re.fullmatch(r"transaction-[0-9a-f]{32}", path.name):
+        return
+    helper_dir = root / "helpers" / path.name.removeprefix("transaction-")
+    for candidate, parent in ((helper_dir, helper_dir.parent), (path, root)):
+        if candidate.exists():
+            try:
+                _remove_tree(candidate, allowed_parent=parent)
+            except (OSError, SelfUpdateError):
+                # Retried by the next startup rather than failing a launch.
+                pass
+
+
+def discard_unstarted_transaction(path: Path) -> None:
+    """Discard one transaction that never began install-root replacement."""
+
+    candidate = Path(path)
+    root = staging_dir()
+    if (
+        candidate.parent != root
+        or not re.fullmatch(r"transaction-[0-9a-f]{32}", candidate.name)
+    ):
+        raise SelfUpdateError("refused unsafe unstarted transaction cleanup path")
+    transaction_id = candidate.name.removeprefix("transaction-")
+    helper_dir = root / "helpers" / transaction_id
+    if helper_dir.exists():
+        _remove_tree(helper_dir, allowed_parent=helper_dir.parent)
+    if candidate.exists():
+        _remove_tree(candidate, allowed_parent=root)
+
+
+def abort_prepared_transaction(journal_path: Path) -> None:
+    """Remove a fully prepared transaction before its helper is ever started."""
+
+    journal = load_journal(journal_path)
+    if journal["phase"] != "prepared":
+        raise SelfUpdateError("only an unstarted prepared transaction may be aborted")
+    prepared = Path(journal["preparedSiblingPath"])
+    if prepared.exists():
+        _remove_tree(prepared, allowed_parent=Path(journal["installRoot"]).parent)
+    discard_unstarted_transaction(Path(journal_path).parent)
+
+
+def retain_manual_package(path: Path, archive: Path) -> None:
+    """Keep one verified archive while removing its extracted duplicates."""
+
+    transaction = Path(path)
+    root = staging_dir()
+    if (
+        transaction.parent != root
+        or not re.fullmatch(r"transaction-[0-9a-f]{32}", transaction.name)
+    ):
+        raise SelfUpdateError("refused unsafe manual-package cleanup path")
+    retained = _resolved(archive)
+    if not _inside(retained, transaction) or not retained.is_file():
+        raise SelfUpdateError("the manual package is outside its transaction")
+    for candidate in list(transaction.iterdir()):
+        if _resolved(candidate) == retained:
+            continue
+        if candidate.is_dir() and not candidate.is_symlink():
+            _remove_tree(candidate, allowed_parent=transaction)
+        else:
+            candidate.unlink(missing_ok=True)
+    helper_dir = root / "helpers" / transaction.name.removeprefix("transaction-")
+    if helper_dir.exists():
+        _remove_tree(helper_dir, allowed_parent=helper_dir.parent)
 
 
 def clean_transaction(path: Path) -> None:
     """Remove one incomplete transaction, and never any broader directory."""
     candidate = Path(path)
     root = staging_dir()
-    if candidate.parent != root or not candidate.name.startswith("transaction-"):
+    if (
+        candidate.parent != root
+        or not re.fullmatch(r"transaction-[0-9a-f]{32}", candidate.name)
+    ):
         raise SelfUpdateError("refused unsafe transaction cleanup path")
     _remove_tree(candidate, allowed_parent=root)
 
@@ -1252,12 +1720,15 @@ def run_helper_cli(argv) -> int:
     parser.add_argument("--ping", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--journal", type=Path, required=False)
     parser.add_argument("--wait-pid", type=int, required=False)
+    parser.add_argument("--recover", type=Path, required=False)
     parser.add_argument("--timeout", type=float, default=HELPER_EXIT_TIMEOUT)
     parser.add_argument("--ack-timeout", type=float, default=ACK_TIMEOUT)
     args = parser.parse_args(argv)
     if args.ping:
         print(HELPER_PING_REPLY)
         return 0
+    if args.recover is not None:
+        return run_recovery(args.recover, ack_timeout=args.ack_timeout)
     if args.journal is None or args.wait_pid is None:
         parser.error("--journal and --wait-pid are required")
     return run_helper(args.journal, args.wait_pid, timeout=args.timeout,

@@ -30,8 +30,6 @@ BUNDLED = {
     "proxy_tools": ["proxy_tools"],
     "typing_extensions": ["typing_extensions"],
     "psutil": ["psutil"],
-    "PyGObject": ["gi"],
-    "pycairo": ["cairo"],
     "pythonnet": ["clr"],
     "clr_loader": ["clr_loader"],
     # Pulled in beneath pythonnet on Windows, and bundled with it.
@@ -166,44 +164,6 @@ OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
 SUCH DAMAGE.""",
 }
 
-# Meson-built pycairo wheels omit the licence files that are present in the
-# source archive. Debian and Ubuntu install the same standard texts centrally;
-# use both because pycairo is dual-licensed. If another Linux builder does not
-# provide them, collection still fails closed below.
-SYSTEM_LICENCES = {
-    "pycairo": (
-        Path("/usr/share/common-licenses/LGPL-2.1"),
-        Path("/usr/share/common-licenses/MPL-1.1"),
-    ),
-}
-
-# PyInstaller copies these shared libraries into the Linux executable. They
-# are Debian/Ubuntu packages rather than Python distributions, so their
-# complete upstream notices and licence grants come from the package copyright
-# files. Presence of PyGObject means this is the Linux build: in that case all
-# of these files are mandatory and collection fails closed if one is absent.
-LINUX_NATIVE_COPYRIGHTS = {
-    # Ubuntu 24.04 uses the t64 GLib package name; 22.04 does not.
-    "GLib": (
-        Path("/usr/share/doc/libglib2.0-0t64/copyright"),
-        Path("/usr/share/doc/libglib2.0-0/copyright"),
-    ),
-    "util-linux": (Path("/usr/share/doc/libblkid1/copyright"),),
-    "PCRE2": (Path("/usr/share/doc/libpcre2-8-0/copyright"),),
-    "libselinux": (Path("/usr/share/doc/libselinux1/copyright"),),
-}
-
-
-def system_licence_text(name):
-    paths = SYSTEM_LICENCES.get(name)
-    if not paths or not all(path.is_file() for path in paths):
-        return None
-    return "\n\n".join(
-        "{}\n{}\n\n{}".format(path.name, "=" * len(path.name), path.read_text().strip())
-        for path in paths
-    )
-
-
 def declared_holder(dist):
     """The copyright holder the distribution names for itself.
 
@@ -253,8 +213,8 @@ def build() -> tuple:
         "Third-party licences bundled in PiTrac Easy-Connect\n"
         + ("=" * 52) + "\n\n"
         "The Raspberry Pi service uses only the Python standard library. The\n"
-        "packaged macOS, Windows, and Linux applications bundle\n"
-        "the components below, and their licence texts follow in full.\n"
+        "packaged macOS and Windows applications bundle the components below,\n"
+        "and their licence texts follow in full.\n"
     )
 
     for name in sorted(BUNDLED):
@@ -262,7 +222,7 @@ def build() -> tuple:
         dist = distributions.get(key)
         if dist is None:
             continue                       # not installed on this platform
-        text = licence_text(dist) or reconstructed_text(dist) or system_licence_text(name)
+        text = licence_text(dist) or reconstructed_text(dist)
         version = dist.metadata["Version"]
         if not text:
             missing.append("{} {}".format(name, version))
@@ -275,16 +235,6 @@ def build() -> tuple:
             "\n" + "-" * 72 + "\n{}\n".format(name) + "-" * 72 + "\n\n"
             + text.strip() + "\n"
         )
-    if "pygobject" in distributions:
-        for name, candidates in sorted(LINUX_NATIVE_COPYRIGHTS.items()):
-            path = next((one for one in candidates if one.is_file()), None)
-            if path is None:
-                missing.append("{} ({})".format(name, " or ".join(map(str, candidates))))
-                continue
-            sections.append(
-                "\n" + "-" * 72 + "\n{} (Linux system library)\n".format(name)
-                + "-" * 72 + "\n\n" + path.read_text(errors="replace").strip() + "\n"
-            )
     # Upstream licence files sometimes carry spaces at line endings. They have
     # no legal meaning, make the generated repository file fail whitespace
     # checks, and vary between wheel repacks, so normalize only that whitespace.

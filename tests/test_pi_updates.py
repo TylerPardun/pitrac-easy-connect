@@ -19,9 +19,12 @@ import zipapp
 import http.server
 import pathlib
 import shutil
+from pathlib import Path
 
 import pytest
 
+import manifest_fixture
+from pitrac_easy_connect.common import release_manifest
 from pitrac_easy_connect.common.updates import ArchiveUpdater
 
 
@@ -55,9 +58,30 @@ def build_archive(tmp_path, version="9.9.9", broken=False, empty=False):
     return blob[: len(blob) // 2] if broken else blob
 
 
+def _build_manifest(state, archive_name):
+    """Sign whatever this stand-in is currently serving.
+
+    Rebuilt on every listing rather than once, because tests change the blob,
+    the tag and the digest, and a manifest describing the old ones would fail
+    for the wrong reason.
+    """
+
+    manifest = manifest_fixture.manifest_for(
+        {archive_name: state["blob"]},
+        version=state["tag"].lstrip("v"), tag=state["tag"], pi_asset=archive_name,
+    )
+    for key, value in (state.get("manifestOverrides") or {}).items():
+        manifest[key] = value
+    payload, signature = manifest_fixture.signed(manifest)
+    state["manifestBytes"] = state.get("manifestBytesOverride") or payload
+    state["manifestSignature"] = signature
+
+
 @pytest.fixture
-def upstream(tmp_path):
+def upstream(tmp_path, monkeypatch):
     """A stand-in for the release API and its download."""
+
+    manifest_fixture.pin(monkeypatch)
 
     state = {"tag": "9.9.9", "blob": build_archive(tmp_path), "asset": True}
 
@@ -76,16 +100,32 @@ def upstream(tmp_path):
                 digest = state.get("digest")
                 if digest is None:
                     digest = "sha256:" + hashlib.sha256(state["blob"]).hexdigest()
-                assets = ([{"name": "PiTrac-Easy-Connect-{}.pyz".format(
-                                state["tag"].lstrip("v")
-                            ),
+                archive_name = "PiTrac-Easy-Connect-{}.pyz".format(
+                    state["tag"].lstrip("v")
+                )
+                assets = ([{"name": archive_name,
                             "browser_download_url": base[0] + "/download",
                             "digest": digest}]
                           if state["asset"] else [])
+                # A real release from 0.9.0 onward publishes a signed manifest
+                # describing itself, and the enclosure refuses one that does
+                # not, so a stand-in without one is not a useful stand-in.
+                if state.get("manifest", True):
+                    _build_manifest(state, archive_name)
+                    assets += [
+                        {"name": release_manifest.MANIFEST_ASSET,
+                         "browser_download_url": base[0] + "/manifest"},
+                        {"name": release_manifest.SIGNATURE_ASSET,
+                         "browser_download_url": base[0] + "/manifest.sig"},
+                    ]
                 body = json.dumps({"tag_name": state["tag"], "assets": assets,
                                    "html_url": "http://example.invalid"}).encode()
             elif self.path == "/download":
                 body = state["blob"]
+            elif self.path == "/manifest":
+                body = state["manifestBytes"]
+            elif self.path == "/manifest.sig":
+                body = state["manifestSignature"]
             else:
                 self.send_error(404)
                 return
@@ -491,8 +531,19 @@ def test_an_ordinary_user_runs_the_check_as_itself(monkeypatch):
 
 
 @on_posix
-def test_the_check_stays_as_root_rather_than_failing_when_nobody_is_missing(monkeypatch):
-    """A machine without a nobody account still has to be able to update."""
+def test_no_unprivileged_account_refuses_the_check_rather_than_running_it_as_root(
+    monkeypatch, capsys
+):
+    """Replaces a test that asserted the opposite, which was the bug.
+
+    It used to require that a Pi with no ``nobody`` account fell back to
+    running the probe anyway -- as root, on code downloaded minutes earlier and
+    trusted only as far as TLS -- on the grounds that such a machine "still has
+    to be able to update". That is the one situation dropping privileges exists
+    to prevent, and it happened silently. An enclosure that cannot sandbox the
+    check does not get to skip the sandbox; it does not get the check, and
+    therefore does not get the update.
+    """
 
     from pitrac_easy_connect.pi import service as service_module
 
@@ -504,17 +555,51 @@ def test_the_check_stays_as_root_rather_than_failing_when_nobody_is_missing(monk
         raise KeyError(name)
 
     monkeypatch.setattr(pwd, "getpwnam", no_such_user)
-    assert service_module._unprivileged() == {}
+    assert service_module._unprivileged() is None
+
+    # _can_run imports subprocess itself, so the module object is the hook.
+    import subprocess
+
+    ran = []
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: ran.append(a))
+    assert service_module._can_run(Path("/nowhere/pitrac_easy_connect")) is False
+    assert ran == [], "the probe ran as root with no account to drop to"
+    assert "must not run as root" in capsys.readouterr().err
+
+
+@on_posix
+def test_an_account_that_is_secretly_root_is_not_accepted(monkeypatch):
+    """A uid-0 or gid-0 "nobody" is not a sandbox."""
+
+    from pitrac_easy_connect.pi import service as service_module
+
+    monkeypatch.setattr(service_module.os, "geteuid", lambda: 0, raising=False)
+
+    class RootInDisguise:
+        pw_uid, pw_gid = 0, 0
+
+    import pwd
+
+    monkeypatch.setattr(pwd, "getpwnam", lambda name: RootInDisguise)
+    assert service_module._unprivileged() is None
 
 
 # --- Checking the download against what the release says it is -------------
 
 
-def _release_with(tmp_path, blob, digest=None):
+#: These exercise the unsigned fallback, which exists only for releases
+#: published before signed manifests did. A release at or above
+#: MANIFEST_REQUIRED_FROM that carries no manifest is refused outright, and
+#: is covered separately below, so the tag here is deliberately an old one.
+LEGACY_TAG = "v0.8.9"
+
+
+def _release_with(tmp_path, blob, digest=None, tag=LEGACY_TAG):
+    version = tag.lstrip("v")
     release = {
-        "tag_name": "v9.9.9",
+        "tag_name": tag,
         "assets": [{
-            "name": "PiTrac-Easy-Connect-9.9.9.pyz",
+            "name": "PiTrac-Easy-Connect-{}.pyz".format(version),
             "browser_download_url": "https://example.invalid/a.pyz",
         }],
     }
@@ -527,7 +612,8 @@ def _updater(tmp_path, release, blob):
     from pitrac_easy_connect.common.updates import ArchiveUpdater
 
     updater = ArchiveUpdater(
-        installed="1.0.0",
+        # Older than LEGACY_TAG, so there is genuinely an update to refuse.
+        installed="0.8.0",
         app_dir=tmp_path / "app",
         fetch=lambda url: blob,
     )
@@ -540,7 +626,7 @@ def test_an_archive_that_does_not_match_its_published_checksum_is_refused(tmp_pa
 
     import hashlib
 
-    blob = build_archive(tmp_path, "9.9.9")
+    blob = build_archive(tmp_path, LEGACY_TAG.lstrip("v"))
     wrong = hashlib.sha256(b"something else entirely").hexdigest()
     updater = _updater(tmp_path, _release_with(tmp_path, blob, "sha256:" + wrong), blob)
 
@@ -554,7 +640,7 @@ def test_an_archive_that_does_not_match_its_published_checksum_is_refused(tmp_pa
 def test_an_archive_that_matches_its_checksum_is_installed(tmp_path):
     import hashlib
 
-    blob = build_archive(tmp_path, "9.9.9")
+    blob = build_archive(tmp_path, LEGACY_TAG.lstrip("v"))
     right = hashlib.sha256(blob).hexdigest()
     (tmp_path / "app").mkdir(parents=True)
     updater = _updater(tmp_path, _release_with(tmp_path, blob, "sha256:" + right), blob)
@@ -563,7 +649,7 @@ def test_an_archive_that_matches_its_checksum_is_installed(tmp_path):
 
 
 def test_a_release_with_no_checksum_at_all_is_refused(tmp_path):
-    blob = build_archive(tmp_path, "9.9.9")
+    blob = build_archive(tmp_path, LEGACY_TAG.lstrip("v"))
     updater = _updater(tmp_path, _release_with(tmp_path, blob, None), blob)
 
     result = updater.apply()
@@ -667,3 +753,116 @@ def test_pruning_never_removes_the_release_that_is_running(released):
     updater._prune_releases()
 
     assert oldest.exists(), "the running release was deleted as stale"
+
+
+# --- The guard the enclosure's updater cannot be ---------------------------
+#
+# Restarting the service ends the process running apply(), so the health check
+# and rollback further down apply() are, on a real Pi, code that never runs.
+# These check the hand-off to the component that runs instead.
+
+
+@on_posix
+def test_the_guard_is_armed_before_the_link_moves_never_after(released, upstream):
+    """Arming afterwards would leave the gap the guard exists to cover."""
+
+    _root, link, _releases, current = released
+    observed = []
+
+    def arm_guard(**details):
+        observed.append(("armed", link.resolve(), dict(details)))
+        return lambda: observed.append(("swapped", link.resolve()))
+
+    up = release_updater(released, upstream, restart=lambda: None, arm_guard=arm_guard)
+    up._verify = lambda staged: True
+
+    assert up.apply()["applied"] is True
+
+    assert [entry[0] for entry in observed] == ["armed", "swapped"]
+    assert observed[0][1] == current, "the guard was armed after the link had moved"
+    assert observed[1][1] == link.resolve() != current
+
+    details = observed[0][2]
+    assert details["previous"] == current
+    assert details["candidate"] == link.resolve()
+    assert details["installed_version"] == "0.2.0"
+    assert details["expected_version"] == "9.9.9"
+    # Whatever the release actually published, carried through verbatim
+    # rather than rebuilt from the version, so a guard cannot verify against
+    # a tag the release never used.
+    assert details["expected_tag"] == "9.9.9"
+    assert len(details["asset_sha256"]) == 64
+
+
+@on_posix
+def test_a_guard_that_cannot_be_armed_stops_the_update(released, upstream):
+    """No guard means no way back, so the swap must not happen at all."""
+
+    _root, link, _releases, current = released
+
+    def refuse(**_details):
+        raise OSError("the guard could not be registered to run at boot")
+
+    up = release_updater(released, upstream, restart=lambda: None, arm_guard=refuse)
+    up._verify = lambda staged: True
+
+    result = up.apply()
+
+    assert result["applied"] is False
+    assert "could not be registered" in result["detail"]
+    assert link.resolve() == current, "the link moved with no way to move it back"
+    assert '"0.2.0"' in (link.resolve() / "pitrac_easy_connect" / "__init__.py").read_text()
+
+
+@on_posix
+def test_a_real_update_and_a_real_rollback_through_the_real_guard(
+    released, upstream, tmp_path
+):
+    """End to end: apply() arms it, the release fails, the guard puts it back."""
+
+    from pitrac_easy_connect.pi import update_guard
+
+    _root, link, releases, current = released
+    state = tmp_path / "state"
+    state.mkdir()
+    journals = []
+
+    def arm_guard(**details):
+        path = update_guard.arm(
+            state_dir=state, link_path=link, releases_dir=releases,
+            register=lambda _path, _journal: None, **details,
+        )
+        journals.append(path)
+        return lambda: update_guard.write_journal(
+            path, update_guard.load_journal(path), "symlink-moved"
+        )
+
+    up = release_updater(released, upstream, restart=lambda: None, arm_guard=arm_guard)
+    up._verify = lambda staged: True
+    assert up.apply()["applied"] is True
+    assert link.resolve() != current
+
+    # The restarted service never acknowledges: it imported, and then would
+    # not run. Nothing in apply() can notice that; the guard is what does.
+    restarted = []
+    clock = _GuardClock()
+    code = update_guard.run_guard(
+        journals[0], now=clock.now, sleep=clock.sleep,
+        restart=restarted.append, unregister=lambda journal: None,
+    )
+
+    assert code == 2
+    assert restarted, "the previous release was restored but never restarted"
+    assert link.resolve() == current, "the enclosure was left on the broken release"
+    assert '"0.2.0"' in (link.resolve() / "pitrac_easy_connect" / "__init__.py").read_text()
+
+
+class _GuardClock:
+    def __init__(self):
+        self.value = 0.0
+
+    def now(self):
+        return self.value
+
+    def sleep(self, seconds):
+        self.value += seconds

@@ -171,15 +171,15 @@ class CompanionLinkClient:
         with self._lock:
             self._stream = stream
         try:
-            self._handshake(stream)
-            self._pump(stream)
+            secured = self._handshake(stream)
+            self._pump(secured)
         finally:
             stream.close()
             with self._lock:
                 if self._stream is stream:
                     self._stream = None
 
-    def _handshake(self, stream: link.FrameStream) -> None:
+    def _handshake(self, stream: link.FrameStream) -> link.SecureFrameStream:
         hello = stream.receive(timeout=HANDSHAKE_TIMEOUT)
         if hello.get("type") != "hello":
             raise link.LinkError("PiTrac did not introduce itself")
@@ -232,12 +232,23 @@ class CompanionLinkClient:
             # hold its secret. Refuse rather than send shots into it.
             raise link.LinkError("that device could not prove it is your PiTrac")
 
+        # Wrapped only now: both proofs above have to check out first, or the
+        # keys below would be derived from a secret this connection never
+        # actually demonstrated it holds against the Pi that just answered.
+        keys = link.session_keys(self.secret, challenge)
+        secured = link.SecureFrameStream(
+            stream, keys=keys,
+            send_direction=link.DIRECTION_COMPANION_TO_PI,
+            receive_direction=link.DIRECTION_PI_TO_COMPANION,
+        )
         with self._lock:
             self._device = dict(hello.get("device") or {})
             self.connected = True
             self.connected_since = time.time()
             self.last_error = None
+            self._stream = secured
         self._notify()
+        return secured
 
     def _pump(self, stream: link.FrameStream) -> None:
         while not self._stop.is_set():

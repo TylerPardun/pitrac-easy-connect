@@ -15,6 +15,7 @@ device ID, so a second PiTrac is a second entry rather than a conflict.
 
 import os
 import platform
+import secrets
 import subprocess
 import sys
 import threading
@@ -40,11 +41,10 @@ from ..common.errors import (
     EasyConnectError,
     lookup,
 )
+from ..common import release_manifest
 from ..common.states import State
 from ..common.updates import (
     DEVELOPMENT,
-    RELEASES_PAGE,
-    REPOSITORY,
     SOURCE,
     DesktopReleaseUpdater,
     DesktopUpdateState,
@@ -264,8 +264,15 @@ class CompanionService:
         self._desktop_downloaded_bytes = 0
         self._desktop_download_total: Optional[int] = None
         self._desktop_cancel = threading.Event()
+        self._desktop_operation_generation = 0
         self._update_check_in_progress = False
         self._check_last_install_result()
+        if self.desktop_updates is not None:
+            # Startup is the one moment nothing of ours is part-way through
+            # building a transaction, so it is where journal-less debris --
+            # an interrupted download, or a manual package this process is
+            # not offering -- can be discarded safely.
+            self_update.prune_transactions(remove_debris=True)
         self._update_check_stop = threading.Event()
         # Off the startup path, and silent on failure: a GitHub outage must not
         # stop anyone playing golf. Checked once immediately and then on a
@@ -316,49 +323,65 @@ class CompanionService:
         self.connect_simulator()
         return self.status()
 
-    def open_release_page(self, url: str = "") -> Dict[str, Any]:
-        """Hand this project's releases page to the system browser.
+    def reveal_downloaded_update(self) -> Dict[str, Any]:
+        """Reveal only this process's verified manual-update package.
 
-        Deliberately narrow, and deliberately not the standard library's
-        browser-launcher module -- which check-native-only.py forbids by
-        name, and which is unreliable inside a frozen bundle anyway.
-        This application must never show its own interface in a browser --
-        packaging/check-native-only.py enforces that, and pywebview is
-        configured to refuse external links so stray markup cannot do it
-        either. Sending someone to a download page is a different act: it
-        hands a URL to the operating system and nothing of ours renders
-        there.
-
-        It exists because the honest fallback, when the app cannot install an
-        update itself, is "download it yourself" -- and that used to mean
-        printing an address as text beside a Copy button. In a WKWebView
-        without clipboard permission that is nothing to click and a copy that
-        does not happen, which is what "I am not able to click the link"
-        turned out to be.
-
-        Only this project's own releases. The address is rebuilt here rather
-        than trusted from the caller, because the page doing the asking is
-        the one an injected script would be running in.
+        The page supplies no path.  The backend reads the path retained by the
+        failed automatic-install transaction, resolves it beneath the private
+        update-state directory, and then asks Finder/File Explorer to select
+        that local file.  This deliberately cannot open a URL or an arbitrary
+        path chosen by page script.
         """
 
-        page = RELEASES_PAGE.format(REPOSITORY)
-        allowed = "https://github.com/{}/releases/".format(REPOSITORY)
-        if url and url.startswith(allowed):
-            page = url
+        with self._lock:
+            archive = self._desktop_archive_path
+            state = self._desktop_update_state
+        if archive is None or state is not DesktopUpdateState.PREFLIGHT_FAILED:
+            return {
+                "revealed": False,
+                "path": "",
+                "detail": "No verified update package is waiting to be shown.",
+            }
+        try:
+            supplied = Path(archive)
+            if supplied.is_symlink():
+                raise OSError("the saved package is a symbolic link")
+            resolved = supplied.resolve(strict=True)
+            state_root = self_update.staging_dir().resolve(strict=True)
+            if not resolved.is_file() or state_root not in resolved.parents:
+                raise OSError("the saved package is outside the update-state directory")
+        except OSError as exc:
+            return {
+                "revealed": False,
+                "path": str(archive),
+                "detail": "The verified update package could not be located safely: {}.".format(exc),
+            }
 
         system = platform.system()
         if system == "Darwin":
-            command = ["/usr/bin/open", page]
+            command = ["/usr/bin/open", "-R", str(resolved)]
         elif system == "Windows":
-            command = ["cmd", "/c", "start", "", page]
+            command = ["explorer.exe", "/select,{}".format(resolved)]
         else:
-            command = ["xdg-open", page]
+            return {
+                "revealed": False,
+                "path": str(resolved),
+                "detail": "Desktop update packages are only distributed for macOS and Windows.",
+            }
         try:
-            done = subprocess.run(command, capture_output=True, timeout=15)
-            opened = done.returncode == 0
+            done = subprocess.run(command, capture_output=True, timeout=15, check=False)
+            revealed = done.returncode == 0
         except (OSError, subprocess.SubprocessError):
-            opened = False
-        return {"opened": opened, "url": page}
+            revealed = False
+        return {
+            "revealed": revealed,
+            "path": str(resolved),
+            "detail": (
+                "The verified update package is selected in your file manager."
+                if revealed else
+                "The file manager could not be opened. Use the exact saved path shown here."
+            ),
+        }
 
     def set_window_state(self, state: str, detail: Optional[str] = None) -> None:
         if state not in {"starting", "native", "headless", "failed"}:
@@ -1331,22 +1354,81 @@ class CompanionService:
         result = self_update.read_and_clear_last_result()
         if result is None:
             return
+        self._apply_install_result(result)
+        self_update.prune_transactions()
+
+    def _apply_install_result(self, result: Dict[str, Any]) -> None:
+        """Apply one helper result to the running app's persistent status."""
+
         detail = str(result.get("detail") or "")
-        if not result.get("success"):
-            self._desktop_update_state = (
-                DesktopUpdateState.ROLLED_BACK
-                if result.get("rolledBack") else DesktopUpdateState.INSTALL_FAILED
-            )
-            self._desktop_update_detail = detail or "The update could not be installed."
-        elif "could not restart" in detail:
-            self._desktop_update_state = DesktopUpdateState.RESTART_REQUIRED
-            self._desktop_update_detail = detail
-        else:
-            self._desktop_update_state = DesktopUpdateState.UP_TO_DATE
-            self._desktop_update_detail = "Updated to {}.".format(self.version)
+        with self._lock:
+            if not result.get("success"):
+                self._desktop_update_state = (
+                    DesktopUpdateState.ROLLED_BACK
+                    if result.get("rolledBack") else DesktopUpdateState.INSTALL_FAILED
+                )
+                self._desktop_update_detail = detail or "The update could not be installed."
+            elif "could not restart" in detail:
+                self._desktop_update_state = DesktopUpdateState.RESTART_REQUIRED
+                self._desktop_update_detail = detail
+            else:
+                self._desktop_update_state = DesktopUpdateState.UP_TO_DATE
+                self._desktop_update_detail = detail or "Updated to {}.".format(self.version)
+
+    def watch_install_result(self, journal_path: Path, timeout: float = 90.0) -> None:
+        """Receive the helper result in this restarted process, without another restart."""
+
+        expected = Path(journal_path)
+
+        def watch() -> None:
+            deadline = time.monotonic() + timeout
+            result_path = expected.parent / "result.json"
+            while time.monotonic() < deadline:
+                try:
+                    result = jsontext.loads(result_path.read_text(encoding="utf-8"))
+                    journal = self_update.load_journal(expected)
+                    if result.get("transactionId") != journal["transactionId"]:
+                        raise ValueError("the install result identifies another transaction")
+                    self._apply_install_result(result)
+                    global_result = self_update.read_and_clear_last_result()
+                    if (
+                        global_result is not None
+                        and global_result.get("transactionId") != result.get("transactionId")
+                    ):
+                        # Another transaction's result is never silently
+                        # consumed. Put its exact data back atomically.
+                        self_update._atomic_json(
+                            self_update.staging_dir() / "last-install-result.json",
+                            global_result,
+                        )
+                    self_update.prune_transactions()
+                    return
+                except (OSError, ValueError, self_update.SelfUpdateError):
+                    time.sleep(0.2)
+
+        threading.Thread(target=watch, daemon=True).start()
+
+    def _reset_desktop_operation_locked(self) -> Optional[Path]:
+        old_transaction = self._desktop_transaction_root
+        self._staged_install = None
+        self._staged_target_version = ""
+        self._desktop_transaction_root = None
+        self._desktop_journal_path = None
+        self._desktop_archive_path = None
+        self._desktop_asset_digest = ""
+        self._desktop_asset_name = ""
+        self._desktop_release_tag = ""
+        self._desktop_downloaded_bytes = 0
+        self._desktop_download_total = None
+        self._desktop_operation_generation += 1
+        return old_transaction
 
     def _desktop_update_payload(self) -> Dict[str, Any]:
         with self._lock:
+            manual_package = (
+                self._desktop_archive_path
+                if self._desktop_update_state is DesktopUpdateState.PREFLIGHT_FAILED else None
+            )
             return {
                 "state": self._desktop_update_state.value,
                 "installedVersion": self.version,
@@ -1369,7 +1451,18 @@ class CompanionService:
                     DesktopUpdateState.VERIFYING,
                     DesktopUpdateState.STAGING,
                 ),
-                "savedPackagePath": str(self._desktop_archive_path or ""),
+                # Use the same canonical path the reveal operation returns.
+                # On macOS /var is a symlink to /private/var; presenting one
+                # spelling and returning the other makes the UI look as if a
+                # different file was selected even though it was not.
+                "savedPackagePath": (
+                    str(manual_package.resolve()) if manual_package else ""
+                ),
+                "revealAction": (
+                    "Reveal in Finder" if platform.system() == "Darwin"
+                    else "Show in File Explorer" if platform.system() == "Windows"
+                    else "Show downloaded file"
+                ),
             }
 
     def trigger_update_check(self) -> None:
@@ -1399,15 +1492,24 @@ class CompanionService:
                 DesktopUpdateState.DOWNLOADING,
                 DesktopUpdateState.VERIFYING,
                 DesktopUpdateState.STAGING,
+                DesktopUpdateState.READY_TO_RESTART,
                 DesktopUpdateState.INSTALLING,
             ):
                 return {"started": False, "detail": "An update is already being prepared."}
+            old_transaction = self._reset_desktop_operation_locked()
+            operation = self._desktop_operation_generation
             self._desktop_update_state = DesktopUpdateState.DOWNLOADING
             self._desktop_update_detail = "Preparing the exact selected release…"
-            self._desktop_downloaded_bytes = 0
-            self._desktop_download_total = None
             self._desktop_cancel = threading.Event()
-        threading.Thread(target=self._download_desktop_update_worker, daemon=True).start()
+        if old_transaction is not None:
+            try:
+                self_update.discard_unstarted_transaction(old_transaction)
+            except self_update.SelfUpdateError:
+                pass
+        threading.Thread(
+            target=self._download_desktop_update_worker,
+            args=(operation,), daemon=True,
+        ).start()
         return {"started": True}
 
     def cancel_desktop_update(self) -> Dict[str, Any]:
@@ -1422,12 +1524,18 @@ class CompanionService:
             self._desktop_update_detail = "Cancelling the desktop update…"
         return {"cancelled": True}
 
-    def _fail_desktop_update(self, state: DesktopUpdateState, detail: str) -> None:
+    def _fail_desktop_update(self, state: DesktopUpdateState, detail: str,
+                             operation: Optional[int] = None) -> None:
         with self._lock:
+            if (
+                operation is not None
+                and operation != self._desktop_operation_generation
+            ):
+                return
             self._desktop_update_state = state
             self._desktop_update_detail = detail
 
-    def _download_desktop_update_worker(self) -> None:
+    def _download_desktop_update_worker(self, operation: int) -> None:
         transaction_root = None
         try:
             checked = self.desktop_updates.cached_status()
@@ -1439,10 +1547,12 @@ class CompanionService:
                     if self.desktop_updates.last_check_failed
                     else DesktopUpdateState.UP_TO_DATE
                 )
-                self._fail_desktop_update(state, checked.detail)
+                self._fail_desktop_update(state, checked.detail, operation)
                 return
             if not checked.can_apply:
-                self._fail_desktop_update(DesktopUpdateState.DOWNLOAD_FAILED, checked.detail)
+                self._fail_desktop_update(
+                    DesktopUpdateState.DOWNLOAD_FAILED, checked.detail, operation
+                )
                 return
 
             tag = str(checked.latest or "")
@@ -1453,22 +1563,62 @@ class CompanionService:
                 self._fail_desktop_update(
                     DesktopUpdateState.DOWNLOAD_FAILED,
                     "That release has no {} package to download.".format(asset),
+                    operation,
                 )
                 return
-            expected = self.desktop_updates.expected_sha256(release, asset)
+            # Authenticate the release's own description of itself before
+            # anything in it is believed -- including the digest below, which
+            # otherwise arrives from the same listing as the URL it describes.
+            try:
+                manifest = self.desktop_updates.signed_manifest(release, tag)
+            except release_manifest.ManifestError as exc:
+                self._fail_desktop_update(
+                    DesktopUpdateState.VERIFY_FAILED, str(exc), operation
+                )
+                return
+            if manifest is not None:
+                refusal = release_manifest.check_desktop_supported(
+                    manifest, version=self.version,
+                    system=self.desktop_updates.system,
+                    machine=self.desktop_updates.machine,
+                )
+                if refusal:
+                    self._fail_desktop_update(
+                        DesktopUpdateState.DOWNLOAD_FAILED, refusal, operation
+                    )
+                    return
+                signed_asset = release_manifest.desktop_asset_for(
+                    manifest, self.desktop_updates.system, self.desktop_updates.machine,
+                )
+                if signed_asset != asset:
+                    self._fail_desktop_update(
+                        DesktopUpdateState.VERIFY_FAILED,
+                        "Version {} signs {} for this computer, not {}.".format(
+                            release_manifest.declared_version(manifest), signed_asset, asset
+                        ),
+                        operation,
+                    )
+                    return
+            expected = self.desktop_updates.expected_sha256(release, asset, manifest)
             if not expected:
                 self._fail_desktop_update(
                     DesktopUpdateState.VERIFY_FAILED,
                     "That release publishes no checksum for its package, so it was not downloaded.",
+                    operation,
                 )
                 return
 
             transaction_root = self_update.new_transaction_dir()
             with self._lock:
+                if operation != self._desktop_operation_generation:
+                    self_update.discard_unstarted_transaction(transaction_root)
+                    return
                 self._desktop_transaction_root = transaction_root
             try:
                 def progress(written, total):
                     with self._lock:
+                        if operation != self._desktop_operation_generation:
+                            return
                         self._desktop_downloaded_bytes = written
                         self._desktop_download_total = total
                         self._desktop_update_detail = (
@@ -1479,30 +1629,40 @@ class CompanionService:
                     url, transaction_root, cancel_event=self._desktop_cancel, progress=progress
                 )
             except InterruptedError:
-                self_update.clean_transaction(transaction_root)
+                self_update.discard_unstarted_transaction(transaction_root)
                 with self._lock:
                     self._desktop_transaction_root = None
                 self._fail_desktop_update(
                     DesktopUpdateState.CANCELLED,
                     "The download was cancelled. The installed application was not changed.",
+                    operation,
                 )
                 return
             except Exception as exc:
+                try:
+                    self_update.discard_unstarted_transaction(transaction_root)
+                except self_update.SelfUpdateError:
+                    pass
                 self._fail_desktop_update(
                     DesktopUpdateState.DOWNLOAD_FAILED,
                     "The download did not finish: {}".format(exc),
+                    operation,
                 )
                 return
 
             with self._lock:
+                if operation != self._desktop_operation_generation:
+                    return
                 self._desktop_update_state = DesktopUpdateState.VERIFYING
                 self._desktop_update_detail = "Verifying the release SHA-256…"
                 self._desktop_archive_path = path
             if not self.desktop_updates.verify(path, expected):
+                self_update.discard_unstarted_transaction(transaction_root)
                 self._fail_desktop_update(
                     DesktopUpdateState.VERIFY_FAILED,
                     "The download did not match the checksum this release publishes, "
                     "so it was not installed.",
+                    operation,
                 )
                 return
 
@@ -1510,6 +1670,8 @@ class CompanionService:
             if self._desktop_cancel.is_set():
                 raise InterruptedError("the update was cancelled")
             with self._lock:
+                if operation != self._desktop_operation_generation:
+                    return
                 self._desktop_update_state = DesktopUpdateState.STAGING
                 self._desktop_update_detail = "Validating the packaged application…"
             try:
@@ -1518,8 +1680,13 @@ class CompanionService:
                     system=self.desktop_updates.system, machine=self.desktop_updates.machine,
                 )
             except self_update.SelfUpdateError as exc:
-                self._fail_desktop_update(DesktopUpdateState.VERIFY_FAILED, str(exc))
+                self_update.discard_unstarted_transaction(transaction_root)
+                self._fail_desktop_update(
+                    DesktopUpdateState.VERIFY_FAILED, str(exc), operation
+                )
                 return
+            if self._desktop_cancel.is_set():
+                raise InterruptedError("the update was cancelled")
 
             # Persist the exact verified target before the desktop can exit.
             txid = transaction_root.name.removeprefix("transaction-")
@@ -1527,6 +1694,10 @@ class CompanionService:
                 target_version, tag=tag, transaction_id=txid, asset_sha256=expected
             )
             try:
+                if os.environ.get("PITRAC_FAILURE_INJECT_PREFLIGHT") == "1":
+                    raise self_update.SelfUpdateError(
+                        "automatic replacement refusal injected by packaged CI"
+                    )
                 journal_path = self_update.prepare_transaction(
                     archive_path=path,
                     staged=staged,
@@ -1543,14 +1714,28 @@ class CompanionService:
                     relaunch_arguments=self._desktop_relaunch_arguments,
                 )
             except self_update.SelfUpdateError as exc:
+                self_update.retain_manual_package(transaction_root, path)
                 self._fail_desktop_update(
                     DesktopUpdateState.PREFLIGHT_FAILED,
                     "Automatic installation was refused: {} The verified package is saved at {}."
                     .format(exc, path),
+                    operation,
+                )
+                return
+            if self._desktop_cancel.is_set():
+                self_update.abort_prepared_transaction(journal_path)
+                with self._lock:
+                    self._desktop_transaction_root = None
+                self._fail_desktop_update(
+                    DesktopUpdateState.CANCELLED,
+                    "The update was cancelled. The installed application was not changed.",
+                    operation,
                 )
                 return
 
             with self._lock:
+                if operation != self._desktop_operation_generation:
+                    return
                 self._staged_install = staged
                 self._staged_target_version = target_version
                 self._desktop_journal_path = journal_path
@@ -1565,16 +1750,19 @@ class CompanionService:
             if isinstance(exc, InterruptedError):
                 if transaction_root is not None:
                     try:
-                        self_update.clean_transaction(transaction_root)
+                        self_update.discard_unstarted_transaction(transaction_root)
                     except Exception:
                         pass
                 self._fail_desktop_update(
                     DesktopUpdateState.CANCELLED,
                     "The update was cancelled. The installed application was not changed.",
+                    operation,
                 )
                 return
             self._fail_desktop_update(
-                DesktopUpdateState.DOWNLOAD_FAILED, "The update could not be prepared: {}".format(exc)
+                DesktopUpdateState.DOWNLOAD_FAILED,
+                "The update could not be prepared: {}".format(exc),
+                operation,
             )
 
     def install_and_restart(self) -> Dict[str, Any]:
@@ -1589,13 +1777,42 @@ class CompanionService:
             staged = self._staged_install
             target = self._staged_target_version
             journal_path = self._desktop_journal_path
-        if staged is None or journal_path is None:
+            state = self._desktop_update_state
+            expected_tag = self._desktop_release_tag
+            expected_asset = self._desktop_asset_name
+            expected_digest = self._desktop_asset_digest
+            transaction_root = self._desktop_transaction_root
+        if (
+            state is not DesktopUpdateState.READY_TO_RESTART
+            or staged is None
+            or journal_path is None
+            or transaction_root is None
+        ):
             return {"applied": False, "detail": "No verified update is ready to install yet."}
 
-        with self._lock:
-            self._desktop_update_state = DesktopUpdateState.INSTALLING
         try:
-            self_update.load_journal(journal_path)
+            journal = self_update.load_journal(journal_path)
+            transaction_id = transaction_root.name.removeprefix("transaction-")
+            exact = (
+                journal["phase"] == "prepared"
+                and journal["transactionId"] == transaction_id
+                and journal["targetVersion"] == target
+                and journal["expectedReleaseTag"] == expected_tag == "v" + target
+                and journal["assetName"] == expected_asset
+                and secrets.compare_digest(journal["assetSha256"], expected_digest)
+                and Path(journal["stagingPath"]).resolve() == staged.install_root.resolve()
+                and str(self.store.get("updateTransactionId", "") or "") == transaction_id
+            )
+            if not exact:
+                raise self_update.SelfUpdateError(
+                    "the active update fields do not agree with the verified journal"
+                )
+            with self._lock:
+                if self._desktop_update_state is not DesktopUpdateState.READY_TO_RESTART:
+                    raise self_update.SelfUpdateError(
+                        "the update is no longer ready to restart"
+                    )
+                self._desktop_update_state = DesktopUpdateState.INSTALLING
             self_update.spawn_helper(journal_path, wait_pid=os.getpid())
         except Exception as exc:
             detail = "The installer could not be started: {}".format(exc)

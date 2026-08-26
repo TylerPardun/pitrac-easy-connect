@@ -155,6 +155,21 @@ def test_removed_browser_options_are_rejected():
         parser.parse_args(["--window"])
 
 
+def test_packaged_smoke_version_override_is_double_gated(monkeypatch):
+    args = app.build_parser().parse_args([
+        "--packaged-smoke-installed-version", "0.7.0",
+    ])
+    with pytest.raises(ValueError):
+        app._runtime_version(args)
+
+    args.smoke_test = True
+    with pytest.raises(ValueError):
+        app._runtime_version(args)
+
+    monkeypatch.setenv("PITRAC_PACKAGED_UPDATE_SMOKE", "1")
+    assert app._runtime_version(args) == "0.7.0"
+
+
 # --- The shape of the window -----------------------------------------------
 #
 # The window opened at 480x900: a tall narrow strip, the shape of a phone. On a

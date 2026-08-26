@@ -109,6 +109,41 @@ def manages_hostname(args) -> bool:
     return not args.simulate
 
 
+def _acknowledge_update_health(service, portal, args) -> None:
+    """Tell a waiting update guard that this release actually works.
+
+    Only reached once the state files have been read back, the listeners hold
+    their ports, and the first refresh has produced a report -- everything the
+    pre-swap import probe cannot see. On almost every boot there is no
+    transaction waiting and this does nothing at all.
+
+    A failure here is deliberately not fatal and deliberately not hidden: the
+    guard treats a missing acknowledgement as a failed update and puts the
+    previous release back, which is the safe direction to fail in, and the
+    reason has to be in the journal for anyone asking why.
+    """
+
+    from . import update_guard
+
+    try:
+        acknowledged = update_guard.acknowledge_health(
+            state_dir=Path(args.state_dir),
+            version=__version__,
+            release_path=update_guard.running_release_path(),
+            proofs=dict(service.update_health_proofs(),
+                        portalListening=portal.server_port > 0),
+        )
+    except Exception as exc:
+        print(
+            "Could not acknowledge the pending update: {}. The update guard will "
+            "restore the previous version.".format(exc),
+            file=sys.stderr,
+        )
+        return
+    if acknowledged:
+        print("Acknowledged the pending update to {}.".format(__version__))
+
+
 def main(argv=None) -> int:
     args = build_parser().parse_args(argv)
     backend = build_backend(args)
@@ -144,6 +179,8 @@ def main(argv=None) -> int:
         if args.portal_port < 1024:
             print("Ports below 1024 need root. Try --portal-port 8088.", file=sys.stderr)
         return 1
+
+    _acknowledge_update_health(service, portal, args)
 
     identity = service.identity
     print("PiTrac Easy-Connect {} is running.".format(__version__))

@@ -20,9 +20,12 @@ dependencies = []
 # pytest can do on its own.
 [project.optional-dependencies]
 test = ["pytest", "pytest-xdist"]
+# Only macOS and Windows are built, tested, or published as a desktop
+# application; see docs/distribution.md. This extra installs plain pywebview
+# everywhere rather than pywebview[gtk] on Linux, because that GTK backend
+# implies a supported Linux desktop build this project does not ship.
 desktop = [
-    "pywebview>=6.0; sys_platform != 'linux'",
-    "pywebview[gtk]>=6.0; sys_platform == 'linux'",
+    "pywebview>=6.0",
     "psutil>=5.9",
 ]
 

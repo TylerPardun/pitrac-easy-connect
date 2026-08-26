@@ -148,6 +148,12 @@ class DiscoveryResponder:
         self._thread.start()
         return self.port
 
+    @property
+    def listening(self) -> bool:
+        """Whether the beacon socket is actually bound."""
+
+        return self._sock is not None
+
     def stop(self) -> None:
         self._stop.set()
         if self._sock is not None:

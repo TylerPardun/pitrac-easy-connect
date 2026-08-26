@@ -20,17 +20,26 @@ An eavesdropper on the LAN sees only challenges and HMACs, and an old exchange
 cannot be replayed because the challenge is fresh every time.
 """
 
+import hmac
 import json
+import re
 
 from . import jsontext
 import socket
 import threading
 import time
-from typing import Any, Callable, Dict, Optional
+from hashlib import sha256
+from typing import Any, Callable, Dict, Optional, Tuple
 
 #: Bumped when a frame's meaning changes in a way an older peer would
 #: misinterpret. Mismatches produce PT-LINK-003, which names the side to update.
-PROTOCOL_VERSION = 1
+#:
+#: Bumped to 2 for per-frame sequence numbers and HMAC tags on
+#: command/commandResult/shot/shotResult/enclosureStatus/simulatorStatus/
+#: simulatorMessage -- see SecureFrameStream. A v1 peer does not send or check
+#: either field, so letting a v1 peer through unprotected would be silent, not
+#: refused; check_protocol() refuses the mismatch outright instead.
+PROTOCOL_VERSION = 2
 
 #: The Companion connects here. Chosen above 1024 so the service never needs to
 #: bind a privileged port.
@@ -59,6 +68,74 @@ class TerminalLinkError(LinkError):
     def __init__(self, info: Dict[str, Any]):
         super().__init__(info.get("failed", "PiTrac refused the connection"))
         self.info = dict(info)
+
+
+class FrameIntegrityError(LinkError):
+    """A protected frame was missing its proof, out of order, or tampered.
+
+    Deliberately a LinkError subclass: every existing ``except (LinkClosed,
+    LinkError)`` around a pump loop already tears the connection down on one
+    of these without being told anything new. The one thing this type adds
+    is that a caller who wants to distinguish "the network went away" from
+    "someone is interfering with an authenticated session" can.
+    """
+
+
+#: Frame types exchanged only before a session's directional keys exist
+#: (the handshake itself) or that carry no state-changing meaning (a bare
+#: liveness check). Everything else that crosses an authenticated session --
+#: command, commandResult, shot, shotResult, enclosureStatus,
+#: simulatorStatus, simulatorMessage -- is sequenced and tagged.
+UNPROTECTED_TYPES = {"hello", "auth", "authOk", "error", "ping", "pong"}
+
+#: The field names carrying the sequence number and HMAC tag on a protected
+#: frame. Deliberately not named "sequence": shot() and shotResult() already
+#: use that field for the application-level golf-shot ordering PiTrac and the
+#: simulator agree on, which is a different number with a different meaning.
+SEQ_FIELD = "linkSeq"
+TAG_FIELD = "linkTag"
+
+#: Domain-separation labels. Used both to derive two independent directional
+#: keys from one shared base key and, again, inside every tag's own MAC'd
+#: material -- so a frame tagged for one direction cannot verify in the
+#: other even if a key were ever mixed up, not only because the keys differ.
+DIRECTION_PI_TO_COMPANION = "pi->companion"
+DIRECTION_COMPANION_TO_PI = "companion->pi"
+
+
+def session_keys(secret: str, challenge: str) -> Dict[str, bytes]:
+    """Two directional session keys, fresh for one connection.
+
+    Derived from the long-lived pairing secret and this connection's
+    handshake challenge, which is why a session's keys are useless for
+    replaying a frame into any *other* session: every connection gets a
+    fresh challenge (``PairingManager.new_challenge``), so it gets fresh
+    keys, and a tag computed under an old connection's key does not verify
+    under a new one's.
+    """
+
+    base = hmac.new(
+        secret.encode("utf-8"), ("link-session|" + str(challenge)).encode("utf-8"), sha256
+    ).digest()
+    return {
+        DIRECTION_PI_TO_COMPANION: hmac.new(
+            base, DIRECTION_PI_TO_COMPANION.encode("utf-8"), sha256
+        ).digest(),
+        DIRECTION_COMPANION_TO_PI: hmac.new(
+            base, DIRECTION_COMPANION_TO_PI.encode("utf-8"), sha256
+        ).digest(),
+    }
+
+
+def _canonical(frame: Dict[str, Any]) -> bytes:
+    """The exact bytes a tag covers, independent of dict insertion order."""
+
+    return json.dumps(frame, sort_keys=True, separators=(",", ":")).encode("utf-8")
+
+
+def _frame_tag(key: bytes, direction: str, seq: int, frame_with_seq: Dict[str, Any]) -> str:
+    material = "{}|{}|".format(direction, seq).encode("utf-8") + _canonical(frame_with_seq)
+    return hmac.new(key, material, sha256).hexdigest()
 
 
 class FrameStream:
@@ -125,6 +202,84 @@ class FrameStream:
             self.sock.close()
         except OSError:
             pass
+
+
+class SecureFrameStream:
+    """Wraps an authenticated FrameStream: sequence numbers and HMAC tags on
+    every protected frame, in both directions, using session_keys().
+
+    Constructed once per connection, right after the handshake proves the
+    pairing and the fresh challenge is known -- never before, because the
+    keys do not exist yet, and never reused across a reconnect, because a
+    new connection gets a new challenge and therefore new keys.
+
+    ``send_direction``/``receive_direction`` are the two session_keys()
+    labels: the Pi passes (PI_TO_COMPANION, COMPANION_TO_PI), the Companion
+    passes the reverse. Getting them backwards is a same-session,
+    fail-closed bug -- the first frame in the wrong direction would fail its
+    own tag check -- not a silent cross-wire.
+    """
+
+    def __init__(self, stream: FrameStream, *, keys: Dict[str, bytes],
+                send_direction: str, receive_direction: str):
+        self._stream = stream
+        self._send_key = keys[send_direction]
+        self._receive_key = keys[receive_direction]
+        self._send_direction = send_direction
+        self._receive_direction = receive_direction
+        self._send_seq = 0
+        self._expected_receive_seq = 0
+        # A shot from the relay's thread and a commandResult from the pump
+        # thread can both be in flight for one session at once. Without this,
+        # two sends racing the same counter can both claim sequence N -- the
+        # peer would then reject the second as a duplicate and tear the link
+        # down, exactly the kind of self-inflicted "tampering" this exists to
+        # rule out. receive() needs no such lock: exactly one thread ever
+        # reads from a given direction (the pump loop that owns this stream).
+        self._send_lock = threading.Lock()
+
+    def send(self, frame: Dict[str, Any]) -> None:
+        if frame.get("type") in UNPROTECTED_TYPES:
+            self._stream.send(frame)
+            return
+        with self._send_lock:
+            seq = self._send_seq
+            envelope = dict(frame)
+            envelope[SEQ_FIELD] = seq
+            envelope[TAG_FIELD] = _frame_tag(self._send_key, self._send_direction, seq, envelope)
+            self._stream.send(envelope)
+            self._send_seq = seq + 1
+
+    def receive(self, timeout: Optional[float] = None) -> Dict[str, Any]:
+        frame = self._stream.receive(timeout=timeout)
+        if frame.get("type") in UNPROTECTED_TYPES:
+            return frame
+        self._verify(frame)
+        self._expected_receive_seq += 1
+        return frame
+
+    def _verify(self, frame: Dict[str, Any]) -> None:
+        seq = frame.get(SEQ_FIELD)
+        tag = frame.get(TAG_FIELD)
+        if not isinstance(seq, int) or not isinstance(tag, str) or not tag:
+            raise FrameIntegrityError(
+                "a protected frame arrived with no sequence number or tag"
+            )
+        # One rule catches a missing, duplicated, or reordered frame: each
+        # protected frame has exactly one valid position in this direction.
+        if seq != self._expected_receive_seq:
+            raise FrameIntegrityError(
+                "expected link sequence {}, received {}".format(
+                    self._expected_receive_seq, seq
+                )
+            )
+        unsigned = {key: value for key, value in frame.items() if key != TAG_FIELD}
+        expected = _frame_tag(self._receive_key, self._receive_direction, seq, unsigned)
+        if not hmac.compare_digest(expected, tag):
+            raise FrameIntegrityError("a protected frame's tag did not verify")
+
+    def close(self) -> None:
+        self._stream.close()
 
 
 def _decode(line: bytes) -> Dict[str, Any]:
