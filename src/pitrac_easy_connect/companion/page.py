@@ -1049,16 +1049,17 @@ function renderDesktopUpdateCard(host, desktop, plan){
 
   if(state==="cancelled" || state==="preflight-failed" || state==="rolled-back" ||
      state==="download-failed" || state==="verify-failed" || state==="install-failed"){
+    const manual=!!desktop.savedPackagePath;
     host.innerHTML='<div class="update"><span>'+esc(desktop.detail||
       "That update could not be completed.")+'</span>'+
       '<span class="update-actions">'+
       '<button class="quiet" id="retryUpdate">Try again</button>'+
-      '<button class="quiet" id="getUpdate">Manual instructions</button></span></div>';
+      (manual?'<button class="quiet" id="getUpdate">'+esc(desktop.revealAction||
+        "Show downloaded file")+'</button>':'')+'</span></div>';
     $("retryUpdate").addEventListener("click",e=>run(e.target, async()=>{
       await api("/api/update/download",{});
     }));
-    wireDesktopDownload(host, desktop.savedPackagePath||plan.downloadUrl, plan.targetVersion,
-      !!desktop.savedPackagePath);
+    if(manual) wireDesktopDownload(host, desktop.savedPackagePath, plan.targetVersion, true);
     return;
   }
 
@@ -1118,11 +1119,24 @@ function renderUpdate(update){
   if(get) wireDesktopDownload(host,update.downloadUrl);
 }
 
-function wireDesktopDownload(host,url,target,isLocalPackage){
+function wireDesktopDownload(host,savedPath,target,isLocalPackage){
   const get=$("getUpdate");
   if(!get) return;
   get.addEventListener("click",e=>run(e.target,async()=>{
-    if(!url) return;
+    if(isLocalPackage){
+      const result=await api("/api/update/reveal",{});
+      const exact=result.path||savedPath||"";
+      host.innerHTML='<div class="update"><span>'+esc(result.detail||
+        "Use the verified update package saved by Easy-Connect.")+
+        (exact?'<br><code>'+esc(exact)+'</code>':'')+'</span>'+
+        (exact?'<button class="quiet" id="copyUpdate">Copy path</button>':'')+'</div>';
+      const copy=$("copyUpdate");
+      if(copy) copy.addEventListener("click",async event=>{
+        const copied=await copyText(exact);
+        event.target.textContent=copied?"Path copied":"Copy failed — use the path shown";
+      });
+      return;
+    }
     if(target){
       const prepared=await api("/api/update/prepare",{targetTag:target});
       if(!prepared.prepared){
@@ -1131,25 +1145,10 @@ function wireDesktopDownload(host,url,target,isLocalPackage){
         return;
       }
     }
-    // Open it, rather than printing the address and hoping. This used to
-    // render the URL as text with a Copy button: the text was not a link, so
-    // there was nothing to click, and the copy silently did nothing in a
-    // WKWebView without clipboard permission. The address stays below as a
-    // fallback for when the browser cannot be opened at all.
-    let opened=false;
-    try{ opened=!!(await api("/api/open-release",{url:url})).opened; }catch(e){}
-    host.innerHTML='<div class="update"><span>'+esc(opened
-      ? "Opened the download page in your browser. Download the file for this computer, then replace the app with it."
-      : "Open this address in your browser to download the new version:")+'<br>'+
-      '<code>'+esc(url)+'</code></span>'+
-      '<button class="quiet" id="copyUpdate">'+(opened?"Open again":"Open in browser")+'</button></div>';
-    $("copyUpdate").addEventListener("click",async e=>{
-      const again=await api("/api/open-release",{url:url}).catch(()=>({opened:false}));
-      if(!again.opened){
-        const copied=await copyText(url);
-        e.target.textContent=copied?"Address copied":"Could not open";
-      }
-    });
+    const started=await api("/api/update/download",{});
+    host.innerHTML='<div class="update"><span>'+esc(started.detail||
+      (started.started?"Downloading the update inside Easy-Connect…":
+        "Easy-Connect could not start the update download."))+'</span></div>';
   }));
 }
 

@@ -357,6 +357,18 @@ class PairingManager:
 
         return self._tag(self._secret_for(pairing_id), challenge, "server")
 
+    def session_keys(self, pairing_id: str, challenge: str):
+        """This connection's two directional link keys.
+
+        Kept on PairingManager, not derived by the caller directly, so the
+        raw pairing secret never has to leave this module -- link_server.py
+        gets keys, not the thing the keys are made from.
+        """
+
+        from ..common.link import session_keys
+
+        return session_keys(self._secret_for(pairing_id), challenge)
+
     def verify(self, pairing_id: str, challenge: str, proof: str) -> None:
         rate_key = pairing_id or "unknown"
         with self._lock:

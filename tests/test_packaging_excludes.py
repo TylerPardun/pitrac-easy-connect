@@ -58,15 +58,27 @@ def test_the_window_backend_is_named_for_both_platforms():
     assert "webview.platforms.edgechromium" in source
 
 
-def test_linux_freezes_the_glib_override_used_by_pywebview():
-    """Raw GLib expects priority first; pywebview uses the override API."""
+def test_the_spec_carries_no_linux_window_backend():
+    """Linux desktop distribution was removed; replaces a test that pinned it.
+
+    The GTK/gi hidden-imports below used to be required so a frozen Linux
+    build's window backend would actually load: PyInstaller cannot see a
+    backend pywebview selects at runtime, so leaving these out meant
+    ``import webview`` raised on Linux the same way excluding bottle did on
+    every platform (see the module docstring). Now that no Linux desktop
+    build is published or tested (docs/distribution.md,
+    test_distribution_shape.py), keeping them would silently commit to
+    correctly bundling a target nothing here can verify. Removing them here
+    is a deliberate decision to stop trying, not an oversight to guard
+    against -- so this asserts the opposite of what the test it replaces did.
+    """
 
     source = SPEC.read_text()
-    assert '"webview.platforms.gtk"' in source
-    assert '"gi.repository.GLib"' in source
-    assert '"gi.overrides.GLib"' in source
-    assert '"gi.repository.Gtk"' in source
-    assert '"gi.repository.WebKit2"' in source
+    for gone in (
+        "LINUX", '"webview.platforms.gtk"', '"gi.repository.GLib"',
+        '"gi.overrides.GLib"', '"gi.repository.Gtk"', '"gi.repository.WebKit2"',
+    ):
+        assert gone not in source, "{} still names a removed Linux desktop path".format(gone)
 
 
 def test_macos_uses_the_supported_onedir_bundle_shape():

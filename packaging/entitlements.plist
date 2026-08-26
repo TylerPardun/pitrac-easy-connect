@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+    "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Hardened runtime entitlements for the packaged macOS app and its updater
+  helper.
+
+  Hardened runtime requires every loaded binary to be signed, including the
+  interpreter's own extension modules and the third-party dylibs PyInstaller
+  bundles (libssl, libcrypto, WebKit/AppKit/Foundation bridging code). Those
+  are signed by their own authors, not this project's team, so library
+  validation has to be relaxed for the app to start at all. Refusing that
+  would mean refusing to launch a normal PyInstaller build under hardened
+  runtime, not a real security boundary this app can meet.
+
+  cffi/ctypes, which the packaged Python interpreter and this project's own
+  Ed25519 verification (common/signing.py) both use, generates and executes
+  code at runtime, which the JIT and unsigned-memory entitlements permit.
+
+  Deliberately absent: microphone, camera, and any sandbox container
+  entitlement. This is a distribution signing decision, not a change to what
+  the app is allowed to do. The Local Network usage description in
+  Info.plist remains the only permission macOS actually prompts for.
+-->
+<plist version="1.0">
+<dict>
+    <key>com.apple.security.cs.allow-jit</key>
+    <true/>
+    <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+    <true/>
+    <key>com.apple.security.cs.disable-library-validation</key>
+    <true/>
+    <key>com.apple.security.network.client</key>
+    <true/>
+    <key>com.apple.security.network.server</key>
+    <true/>
+</dict>
+</plist>

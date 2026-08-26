@@ -49,7 +49,6 @@ class FakeClock:
         ("Darwin", "x86_64", "PiTrac-Easy-Connect-macos-intel.zip"),
         ("Windows", "AMD64", "PiTrac-Easy-Connect-windows.zip"),
         ("Windows", "x86_64", "PiTrac-Easy-Connect-windows.zip"),
-        ("Linux", "x86_64", "PiTrac-Easy-Connect-linux-x86_64.zip"),
     ],
 )
 def test_the_right_asset_is_selected_for_each_platform(system, machine, expected):
@@ -62,7 +61,14 @@ def test_arm64_is_never_offered_the_intel_package_or_vice_versa():
 
 @pytest.mark.parametrize(
     "system,machine",
-    [("Darwin", "armv7l"), ("Windows", "arm64"), ("Linux", "arm64"), ("FreeBSD", "x86_64")],
+    [
+        ("Darwin", "armv7l"), ("Windows", "arm64"), ("Linux", "arm64"), ("FreeBSD", "x86_64"),
+        # Linux desktop distribution was removed (docs/distribution.md); this
+        # used to be a supported combination, resolving to a filename no
+        # release has published in years. It has to refuse cleanly now, the
+        # same as any other platform nothing is built for.
+        ("Linux", "x86_64"),
+    ],
 )
 def test_an_unsupported_platform_or_architecture_is_refused_not_defaulted(system, machine):
     with pytest.raises(EasyConnectError) as caught:
@@ -94,9 +100,9 @@ def _asset(name, digest=None):
 
 def test_v044_detects_v045():
     updater = DesktopReleaseUpdater(
-        "0.4.4", system="Linux", machine="x86_64",
+        "0.4.4", system="Windows", machine="x86_64",
         fetch_json=fake_release(
-            "v0.4.5", assets=[_asset("PiTrac-Easy-Connect-linux-x86_64.zip", "a" * 64)]
+            "v0.4.5", assets=[_asset("PiTrac-Easy-Connect-windows.zip", "a" * 64)]
         ),
     )
     status = updater.check()
@@ -112,7 +118,7 @@ def test_a_check_made_before_publication_detects_it_after_the_cache_window(monke
         return responses[0] if len(responses) == 1 else responses.pop(0)
 
     updater = DesktopReleaseUpdater(
-        "0.4.4", system="Linux", machine="x86_64", fetch_json=fetch, clock=clock
+        "0.4.4", system="Windows", machine="x86_64", fetch_json=fetch, clock=clock
     )
     first = updater.check()
     assert first.available is False
@@ -136,7 +142,7 @@ def test_a_forced_check_bypasses_the_cache_immediately():
         calls.append(1)
         return {"tag_name": "v0.4.4"}
 
-    updater = DesktopReleaseUpdater("0.4.4", system="Linux", machine="x86_64", fetch_json=counting)
+    updater = DesktopReleaseUpdater("0.4.4", system="Windows", machine="x86_64", fetch_json=counting)
     updater.check()
     updater.check()  # cached, no new call
     assert len(calls) == 1
@@ -153,7 +159,7 @@ def test_a_failed_check_retries_sooner_than_a_successful_one(monkeypatch):
         raise OSError("no network")
 
     updater = DesktopReleaseUpdater(
-        "0.4.4", system="Linux", machine="x86_64", fetch_json=explode, clock=clock
+        "0.4.4", system="Windows", machine="x86_64", fetch_json=explode, clock=clock
     )
     status = updater.check()
     assert "Could not check" in status.detail
@@ -182,7 +188,7 @@ def test_two_concurrent_checks_make_exactly_one_network_call():
         release_call.wait(timeout=5)
         return {"tag_name": "v0.4.5"}
 
-    updater = DesktopReleaseUpdater("0.4.4", system="Linux", machine="x86_64", fetch_json=slow)
+    updater = DesktopReleaseUpdater("0.4.4", system="Windows", machine="x86_64", fetch_json=slow)
 
     results = []
 
@@ -214,7 +220,7 @@ def test_cached_status_does_not_wait_for_a_network_check():
         return {"tag_name": "v0.4.5"}
 
     updater = DesktopReleaseUpdater(
-        "0.4.4", system="Linux", machine="x86_64", fetch_json=slow
+        "0.4.4", system="Windows", machine="x86_64", fetch_json=slow
     )
     checker = threading.Thread(target=updater.check)
     checker.start()
@@ -232,7 +238,7 @@ def test_cached_status_does_not_wait_for_a_network_check():
 
 def test_draft_and_prerelease_are_ignored_by_default():
     updater = DesktopReleaseUpdater(
-        "0.4.4", system="Linux", machine="x86_64",
+        "0.4.4", system="Windows", machine="x86_64",
         fetch_json=fake_release("v0.5.0", draft=True),
     )
     assert updater.check().available is False
@@ -240,7 +246,7 @@ def test_draft_and_prerelease_are_ignored_by_default():
 
 def test_prerelease_is_ignored_by_default_too():
     updater = DesktopReleaseUpdater(
-        "0.4.4", system="Linux", machine="x86_64",
+        "0.4.4", system="Windows", machine="x86_64",
         fetch_json=fake_release("v0.5.0", prerelease=True),
     )
     assert updater.check().available is False
@@ -248,9 +254,9 @@ def test_prerelease_is_ignored_by_default_too():
 
 def test_a_dev_setting_can_opt_into_prereleases():
     updater = DesktopReleaseUpdater(
-        "0.4.4", system="Linux", machine="x86_64", allow_prerelease=True,
+        "0.4.4", system="Windows", machine="x86_64", allow_prerelease=True,
         fetch_json=fake_release("v0.5.0", prerelease=True, assets=[
-            _asset("PiTrac-Easy-Connect-linux-x86_64.zip", "a" * 64)
+            _asset("PiTrac-Easy-Connect-windows.zip", "a" * 64)
         ]),
     )
     assert updater.check().available is True
@@ -258,7 +264,7 @@ def test_a_dev_setting_can_opt_into_prereleases():
 
 def test_a_downgrade_is_never_offered():
     updater = DesktopReleaseUpdater(
-        "0.9.0", system="Linux", machine="x86_64", fetch_json=fake_release("v0.4.5")
+        "0.9.0", system="Windows", machine="x86_64", fetch_json=fake_release("v0.4.5")
     )
     assert updater.check().available is False
 
@@ -266,15 +272,19 @@ def test_a_downgrade_is_never_offered():
 @pytest.mark.parametrize("payload", [{}, {"tag_name": ""}, {"tag_name": "not-a-version"}, {"other": 1}])
 def test_malformed_release_metadata_does_not_produce_an_update(payload):
     updater = DesktopReleaseUpdater(
-        "0.4.4", system="Linux", machine="x86_64", fetch_json=lambda _url, p=payload: p
+        "0.4.4", system="Windows", machine="x86_64", fetch_json=lambda _url, p=payload: p
     )
     assert updater.check().available is False
 
 
 def test_a_release_with_no_matching_asset_is_available_but_cannot_apply():
     updater = DesktopReleaseUpdater(
-        "0.4.4", system="Linux", machine="x86_64",
-        fetch_json=fake_release("v0.5.0", assets=[_asset("PiTrac-Easy-Connect-windows.zip", "a" * 64)]),
+        "0.4.4", system="Windows", machine="x86_64",
+        # A real asset name, but for a different platform than the one
+        # being checked -- so it must not resolve for Windows.
+        fetch_json=fake_release(
+            "v0.5.0", assets=[_asset("PiTrac-Easy-Connect-macos-intel.zip", "a" * 64)]
+        ),
     )
     status = updater.check()
     assert status.available is True
@@ -286,37 +296,37 @@ def test_a_release_with_no_matching_asset_is_available_but_cannot_apply():
 
 
 def test_the_digest_field_is_preferred_when_present():
-    updater = DesktopReleaseUpdater("0.4.4", system="Linux", machine="x86_64")
+    updater = DesktopReleaseUpdater("0.4.4", system="Windows", machine="x86_64")
     release = fake_release(
-        "v0.4.5", assets=[_asset("PiTrac-Easy-Connect-linux-x86_64.zip", "b" * 64)]
+        "v0.4.5", assets=[_asset("PiTrac-Easy-Connect-windows.zip", "b" * 64)]
     )("ignored")
-    assert updater.expected_sha256(release, "PiTrac-Easy-Connect-linux-x86_64.zip") == "b" * 64
+    assert updater.expected_sha256(release, "PiTrac-Easy-Connect-windows.zip") == "b" * 64
 
 
 def test_sha256sums_is_used_when_no_digest_field_is_published():
-    sums_text = "{}  PiTrac-Easy-Connect-linux-x86_64.zip\n{}  other-file.zip\n".format(
+    sums_text = "{}  PiTrac-Easy-Connect-windows.zip\n{}  other-file.zip\n".format(
         "c" * 64, "d" * 64
     )
-    updater = DesktopReleaseUpdater("0.4.4", system="Linux", machine="x86_64")
+    updater = DesktopReleaseUpdater("0.4.4", system="Windows", machine="x86_64")
     release = {
         "tag_name": "v0.4.5",
         "assets": [
-            {"name": "PiTrac-Easy-Connect-linux-x86_64.zip"},  # no digest field
+            {"name": "PiTrac-Easy-Connect-windows.zip"},  # no digest field
             {"name": "SHA256SUMS.txt", "browser_download_url": "https://example.invalid/SHA256SUMS.txt"},
         ],
     }
     updater._fetch_text = lambda _url: sums_text
-    assert updater.expected_sha256(release, "PiTrac-Easy-Connect-linux-x86_64.zip") == "c" * 64
+    assert updater.expected_sha256(release, "PiTrac-Easy-Connect-windows.zip") == "c" * 64
 
 
 def test_no_checksum_anywhere_is_reported_as_missing_not_guessed():
-    updater = DesktopReleaseUpdater("0.4.4", system="Linux", machine="x86_64")
-    release = {"tag_name": "v0.4.5", "assets": [{"name": "PiTrac-Easy-Connect-linux-x86_64.zip"}]}
-    assert updater.expected_sha256(release, "PiTrac-Easy-Connect-linux-x86_64.zip") is None
+    updater = DesktopReleaseUpdater("0.4.4", system="Windows", machine="x86_64")
+    release = {"tag_name": "v0.4.5", "assets": [{"name": "PiTrac-Easy-Connect-windows.zip"}]}
+    assert updater.expected_sha256(release, "PiTrac-Easy-Connect-windows.zip") is None
 
 
 def test_verify_detects_a_checksum_mismatch(tmp_path):
-    updater = DesktopReleaseUpdater("0.4.4", system="Linux", machine="x86_64")
+    updater = DesktopReleaseUpdater("0.4.4", system="Windows", machine="x86_64")
     path = tmp_path / "package.zip"
     path.write_bytes(b"real bytes")
     assert updater.verify(path, "0" * 64) is False
@@ -352,7 +362,7 @@ def test_a_download_within_limits_is_kept(tmp_path):
     payload = b"x" * (250 * 1024)
     url, stop = _serve_bytes(payload)
     try:
-        updater = DesktopReleaseUpdater("0.4.4", system="Linux", machine="x86_64")
+        updater = DesktopReleaseUpdater("0.4.4", system="Windows", machine="x86_64")
         path = updater.download(url, tmp_path)
         assert path.read_bytes() == payload
     finally:
@@ -363,7 +373,7 @@ def test_a_download_too_small_to_be_real_is_refused_and_cleaned_up(tmp_path):
     payload = b"tiny"
     url, stop = _serve_bytes(payload)
     try:
-        updater = DesktopReleaseUpdater("0.4.4", system="Linux", machine="x86_64")
+        updater = DesktopReleaseUpdater("0.4.4", system="Windows", machine="x86_64")
         with pytest.raises(ValueError):
             updater.download(url, tmp_path)
         assert not (tmp_path / "download.part").exists()
@@ -375,7 +385,7 @@ def test_an_oversized_download_is_rejected_and_cleaned_up(tmp_path):
     payload = b"y" * (300 * 1024)
     url, stop = _serve_bytes(payload)
     try:
-        updater = DesktopReleaseUpdater("0.4.4", system="Linux", machine="x86_64")
+        updater = DesktopReleaseUpdater("0.4.4", system="Windows", machine="x86_64")
         with pytest.raises(ValueError):
             updater.download(url, tmp_path, max_bytes=100 * 1024)
         assert not (tmp_path / "download.part").exists()
@@ -387,7 +397,7 @@ def test_cancelling_a_download_cleans_up_the_partial_file(tmp_path):
     payload = b"z" * (500 * 1024)
     url, stop = _serve_bytes(payload)
     try:
-        updater = DesktopReleaseUpdater("0.4.4", system="Linux", machine="x86_64")
+        updater = DesktopReleaseUpdater("0.4.4", system="Windows", machine="x86_64")
         cancel = threading.Event()
         cancel.set()  # cancelled before the first chunk is even read
         with pytest.raises(InterruptedError):

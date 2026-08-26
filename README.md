@@ -18,7 +18,7 @@ includes PiTrac's dashboard, shot history, and a practice range.
 A five-step guide walks you through the first setup. If you move the enclosure to another home, you only need to choose the new Wi-Fi network. You do not need to reconfigure PiTrac.
 
 - **Download:** <https://tylerpardun.github.io/pitrac-easy-connect/>
-- **Version:** 0.7.0
+- **Version:** 0.9.0
 - **License:** [MIT](LICENSE)
 
 ![The practice range](media/range.png)
@@ -38,7 +38,7 @@ A five-step guide walks you through the first setup. If you move the enclosure t
 | **Find and connect** | The app finds the enclosure automatically. One click links the app and enclosure, and other computers cannot connect unless the owner allows them |
 | **Simulator connection** | Sends each measured shot to GSPro or E6 Connect. PiTrac is pointed at Easy-Connect once, when the enclosure is set up, and never again — so a new router, a new address, or a move to another house does not break shot delivery. A **Simulator** page shows which one is selected, whether it is answering, and the steps to get it listening |
 | **Setup and system checks** | A five-step guide handles the first setup. The app also checks that the cameras, calibration, software, storage, and other essentials are ready, then explains anything that needs attention |
-| **Shot history and practice range** | Every shot is saved with the club it was hit with, including shots played through GSPro or E6 Connect — the club is read from the simulator, so changing club there is enough. The same shots build the practice range, which shows ball flight, distance, height, accuracy, and shot patterns without GSPro, E6 Connect, an account, or an internet connection. Recent shot images PiTrac has saved are shown separately |
+| **Shot history and practice range** | Every shot is saved with the club it was hit with, including shots played through GSPro or E6 Connect. The same shots build the practice range, which shows ball flight, distance, height, accuracy, and shot patterns without GSPro, E6 Connect, an account, or an internet connection. Recent shot images PiTrac has saved are shown separately |
 | **Dashboard and settings** | Includes PiTrac's dashboard and tools to back up, restore, update, or reset the enclosure for a new owner |
 
 ### What it looks like
@@ -136,19 +136,23 @@ run on Apple silicon and never the other way, so an Intel Mac given the Apple
 silicon build cannot start it at all. **Apple menu → About This Mac** says
 which you have: a chip beginning with M, or an Intel processor.
 
-The macOS and Windows builds do not carry code-signing certificates, so those
-operating systems warn the first time:
+The release workflow signs and notarizes macOS and Authenticode-signs Windows
+whenever the release environment holds the required certificates; a release
+that is not fully signed publishes as a GitHub pre-release rather than a
+final one, with the exact reason in its notes (see
+`packaging/release-signing-gate.py`). Until signed, or on any build you run
+from source, those operating systems warn the first time:
 
 | Platform | What to do |
 |---|---|
 | macOS | Right-click the app and choose **Open** rather than double-clicking |
 | Windows | Choose **More info**, then **Run anyway** |
 
-On Windows the installer places the application for you. On macOS, keep the `.app` whole and put it in Applications. The extracted `PiTrac Easy-Connect` directory
-together and start the executable inside it. A loose executable copied to
+On Windows the installer places the application for you. On macOS, keep the
+`.app` whole and put it in Applications. A loose executable copied to
 Downloads, Desktop, Documents, a home directory, or another unrelated folder
-will run, but automatic replacement is deliberately refused because that
-folder is not a disposable application installation.
+is not a supported installation, and automatic replacement is deliberately
+refused because that folder is not a disposable application installation.
 
 If macOS cannot find PiTrac, open **System Settings → Privacy & Security →
 Local Network** and allow PiTrac Easy-Connect, then search again.
@@ -165,16 +169,24 @@ To confirm a file came from this repository's own build, with the
 [GitHub CLI](https://cli.github.com):
 
 ```bash
-gh attestation verify PiTrac-Easy-Connect-windows.zip --repo TylerPardun/pitrac-easy-connect
+gh attestation verify PiTrac-Easy-Connect-windows-setup.exe --repo TylerPardun/pitrac-easy-connect
 ```
 
 That names the workflow, commit and run that produced it. To check the bytes
 alone, compare them against `SHA256SUMS.txt` — `shasum -a 256 -c` on macOS, `Get-FileHash` on Windows.
 
 This proves where a file came from. It is not the certificate that would stop
-the warnings above; those need paid programmes from Microsoft and Apple. The
-enclosure enforces the same idea for itself and refuses an update whose bytes
-do not match the checksum its release publishes.
+the warnings above; those need paid programmes from Microsoft and Apple.
+
+Every release from v0.9.0 onward also publishes a `release-manifest.json` and
+a detached Ed25519 signature over it, listing the exact assets, sizes and
+digests the release contains. Both the desktop app and the enclosure verify
+that signature against a public key built into the application before
+trusting anything in it, including the digest a download is checked against —
+a checksum served by the same API as the file it describes proves the bytes
+arrived intact, not that this project produced them, which is what the
+signature is for. A release that should carry one and does not, or whose
+signature does not check out, is refused rather than installed.
 
 Easy-Connect coordinates its two updates in one direction. If a newer release
 exists, install and restart the desktop app first. Only that current desktop
@@ -182,10 +194,6 @@ may ask the enclosure to install the exact same release tag. The app reports
 success only after the enclosure reconnects and both sides report that version.
 The versioned `.pyz` attached to each release is this verified Pi-service
 payload for the enclosure; it is not a desktop application.
-
-Version 0.4.5 predates the safe desktop updater, so moving from v0.4.5 to
-v0.4.6 is manual. Version 0.4.6 establishes the updater foundation; the first
-normal automatic desktop update will be v0.4.6 to v0.4.7.
 
 Open the app and follow five steps: find the enclosure, choose your simulator,
 open it, send a test shot, and play. The guide does not appear again after

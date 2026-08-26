@@ -6,6 +6,7 @@ documentation and the code drift apart.
 """
 
 import re
+from html.parser import HTMLParser
 from pathlib import Path
 
 import pytest
@@ -229,12 +230,59 @@ def test_public_downloads_are_the_shipped_release_assets():
     assets = (
         "PiTrac-Easy-Connect-macos-apple-silicon.zip",
         "PiTrac-Easy-Connect-macos-intel.zip",
-        "PiTrac-Easy-Connect-windows.zip",
+        "PiTrac-Easy-Connect-windows-setup.exe",
     )
     for asset in assets:
         assert "releases/latest/download/{}".format(asset) in public
     assert "Apple silicon (M1 or later)" in public
+    assert "releases/latest/download/PiTrac-Easy-Connect-windows.zip" not in public
     assert "linux" not in public.lower(), "a download is offered that is not built"
+
+
+def test_each_public_download_label_maps_to_its_exact_file():
+    """A filename elsewhere on the page cannot hide a mismatched button href."""
+
+    class DownloadCards(HTMLParser):
+        def __init__(self):
+            super().__init__()
+            self.href = None
+            self.in_file = False
+            self.cards = []
+
+        def handle_starttag(self, tag, attrs):
+            values = dict(attrs)
+            classes = values.get("class", "").split()
+            if tag == "a" and "dl" in classes:
+                self.href = values.get("href", "")
+            if tag == "div" and "dl-file" in classes and self.href is not None:
+                self.in_file = True
+
+        def handle_data(self, data):
+            if self.in_file and data.strip():
+                self.cards.append((data.strip(), self.href))
+
+        def handle_endtag(self, tag):
+            if tag == "div" and self.in_file:
+                self.in_file = False
+            if tag == "a":
+                self.href = None
+
+    parser = DownloadCards()
+    parser.feed(read(Path(__file__).resolve().parent.parent / "site" / "index.html"))
+    expected = {
+        "PiTrac-Easy-Connect-macos-apple-silicon.zip":
+            "PiTrac-Easy-Connect-macos-apple-silicon.zip",
+        "PiTrac-Easy-Connect-macos-intel.zip":
+            "PiTrac-Easy-Connect-macos-intel.zip",
+        "PiTrac-Easy-Connect-windows-setup.exe":
+            "PiTrac-Easy-Connect-windows-setup.exe",
+    }
+    assert len(parser.cards) == 3
+    for label, href in parser.cards:
+        assert label in expected
+        assert href.endswith("/releases/latest/download/" + expected[label]), (
+            "{} points to {}".format(label, href)
+        )
 
 
 def test_ci_smokes_the_normal_native_path_for_every_release_platform():
@@ -434,3 +482,61 @@ def test_no_error_code_is_hardcoded_outside_the_catalogue():
             if re.search(r'["\']PT-[A-Z]+-\d{3}["\']', line):
                 offenders.append("{}:{}".format(path.name, number))
     assert not offenders, "use the named constant instead: {}".format(offenders)
+
+
+def test_security_md_names_only_routes_that_actually_require_owner_proof():
+    """SECURITY.md's post-pairing claim, checked against the real tiers.
+
+    Used to describe the trust boundary as flat network presence for every
+    state-changing route, which stopped being true once owner-token/owner-card
+    protection was added -- see pi/portal.py's ROUTE_AUTHORIZATION and
+    _authorize_sensitive. This is not a full re-derivation of the security
+    model, just a guard against the two drifting apart silently again.
+    """
+
+    from pitrac_easy_connect.pi.portal import OWNER_ONLY, ROUTE_AUTHORIZATION
+
+    security = read(Path(__file__).resolve().parent.parent / "SECURITY.md")
+    assert "owner proof" in security, "the post-pairing protection is not documented"
+    assert "_authorize_sensitive" in security
+
+    owner_only_routes = {
+        path for path, tier in ROUTE_AUTHORIZATION.items() if tier == OWNER_ONLY
+    }
+    # Every route SECURITY.md calls out by consequence has to still require
+    # owner proof unconditionally (OWNER_ONLY), not merely before pairing.
+    for consequence, route in (
+        ("removing a trusted computer", "/api/pair-remove"),
+        ("factory-resetting", "/api/new-owner"),
+        ("shutting down", "/api/shutdown"),
+        ("rebooting", "/api/reboot"),
+        ("restoring a backup", "/api/backup/restore"),
+    ):
+        assert route in owner_only_routes, (
+            "{} ({}) is no longer OWNER_ONLY; SECURITY.md's claim is stale".format(
+                consequence, route
+            )
+        )
+
+
+def test_security_md_credits_link_frame_protection_for_closing_the_injection_gap():
+    """issueOwnerToken and prepareForNewOwner are reachable directly over the
+    companion link (pi/service.py's command handlers), not only the portal --
+    SECURITY.md has to say what actually stops an injected one now that
+    SecureFrameStream exists, not describe a gap link.py already closed.
+    """
+
+    security = read(Path(__file__).resolve().parent.parent / "SECURITY.md")
+    assert "SecureFrameStream" in security
+    assert "session_keys" in security or "session key" in security
+    assert "not encrypted" in security, (
+        "confidentiality is still a real, unminimized limitation"
+    )
+
+
+def test_security_md_names_the_confidentiality_gap_link_protection_does_not_close():
+    """Integrity and authenticity are not the same property as secrecy."""
+
+    security = read(Path(__file__).resolve().parent.parent / "SECURITY.md")
+    assert "plain JSON" in security
+    assert "read shot data" in security or "confidentiality" in security

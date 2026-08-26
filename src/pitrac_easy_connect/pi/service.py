@@ -36,6 +36,11 @@ from .selftest import SelfTest, state_for
 from .wifi import WifiProvisioner
 
 DEFAULT_STATE_DIR = Path("/var/lib/pitrac-easy-connect")
+#: The live symlink the service is imported through, and the versioned
+#: releases it selects between. Named here rather than written twice, because
+#: the update guard has to agree with the updater about both exactly.
+ENCLOSURE_LINK_PATH = Path("/usr/lib/pitrac-easy-connect")
+ENCLOSURE_RELEASES_DIR = Path("/usr/lib/pitrac-easy-connect-releases/releases")
 POLL_SECONDS = 2.0
 
 
@@ -138,10 +143,11 @@ class PiService:
         self.enclosure_updates = ArchiveUpdater(
             installed=version,
             app_dir=Path(__file__).resolve().parent.parent.parent,
-            link_path=Path("/usr/lib/pitrac-easy-connect"),
-            releases_dir=Path("/usr/lib/pitrac-easy-connect-releases/releases"),
+            link_path=ENCLOSURE_LINK_PATH,
+            releases_dir=ENCLOSURE_RELEASES_DIR,
             restart=self._restart_service,
             verify=_can_run,
+            arm_guard=self._arm_update_guard,
         )
         self.discovery = discovery.DiscoveryResponder(self.describe, port=discovery_port)
 
@@ -740,6 +746,63 @@ class PiService:
             return {"applied": False, "detail": checked.detail, "version": checked.latest}
         return updater.apply(target)
 
+    def _arm_update_guard(self, **details):
+        """Register the independent rollback guard before the symlink moves.
+
+        Restarting this service ends this process, so the updater's own
+        post-restart health check and rollback can never run on the enclosure.
+        Everything after the swap is therefore delegated to a component that
+        lives outside the release being replaced and is registered with
+        systemd, so a power cut in the middle still brings it back.
+        """
+
+        from . import update_guard
+
+        journal_path = update_guard.arm(
+            state_dir=self.paths.root,
+            link_path=ENCLOSURE_LINK_PATH,
+            releases_dir=ENCLOSURE_RELEASES_DIR,
+            **details,
+        )
+
+        def swapped() -> None:
+            journal = update_guard.load_journal(journal_path)
+            update_guard.write_journal(journal_path, journal, "symlink-moved")
+
+        return swapped
+
+    def update_health_proofs(self) -> Dict[str, bool]:
+        """What this running service can actually prove about itself.
+
+        Every one of these is something the pre-swap import probe cannot see,
+        which is the reason the probe alone was never enough: a release can
+        import perfectly and still fail to parse its settings or bind a port.
+        """
+
+        return {
+            "stateFilesLoaded": self._state_files_load(),
+            "linkListening": self.link_server.listening,
+            "discoveryListening": self.discovery.listening,
+            "refreshCompleted": self._last_report is not None,
+        }
+
+    def _state_files_load(self) -> bool:
+        """Re-read every persisted file from disk, rather than trusting memory.
+
+        A release that cannot parse the settings this enclosure already has is
+        exactly the failure the staged import probe cannot see, so this reads
+        the files again through the new code rather than reporting what was
+        loaded at construction.
+        """
+
+        try:
+            assert self.identity_store.identity.device_id
+            self.settings.all()
+            self.pairings.status()
+        except Exception:
+            return False
+        return True
+
     def _restart_service(self) -> None:
         # Restarting kills this process, so nothing after it in the update runs.
         # That is why the new copy is checked *before* the swap, not after.
@@ -843,23 +906,44 @@ def _can_run(package: "Path") -> bool:
         "assert p.__version__;"
         "print('ok')"
     ).format(str(package.parent))
+    sandbox = _unprivileged()
+    if sandbox is None:
+        # Refusing the update is the safe answer. Running freshly downloaded
+        # code as root to decide whether it is safe to install is not.
+        print(
+            "Refusing to check the downloaded update: this Pi has no unprivileged "
+            "account to run it as, and the check must not run as root.",
+            file=sys.stderr,
+        )
+        return False
     try:
         done = subprocess.run(
             [sys.executable, "-c", probe],
             capture_output=True, text=True, timeout=60,
-            **_unprivileged()
+            **sandbox
         )
     except (OSError, subprocess.SubprocessError):
         return False
     return done.returncode == 0 and "ok" in done.stdout
 
 
-def _unprivileged() -> Dict[str, Any]:
-    """How to run the probe as somebody other than root.
+#: Accounts the probe may be dropped to, most preferred first. Named
+#: explicitly: an account is on this list because it is known to own nothing,
+#: not because it happened to have a non-zero uid.
+UNPRIVILEGED_ACCOUNTS = ("nobody",)
+
+
+def _unprivileged() -> Optional[Dict[str, Any]]:
+    """How to run the probe as somebody other than root, or refuse to.
 
     The service runs as root, and the probe executes code that was just
     downloaded, trusted only as far as TLS to the release host. Running it as
     ``nobody`` means that trust does not have to extend to root as well.
+
+    Returning ``None`` means there is nobody to drop to. That used to return
+    "no options" instead, which is not the same thing at all: it ran the
+    freshly downloaded code as root, in the one situation the drop exists to
+    prevent, and said nothing. The caller fails closed on None.
 
     Popen switches user itself, in C, after the fork. The previous version
     passed a Python function as preexec_fn, which runs arbitrary Python
@@ -869,18 +953,23 @@ def _unprivileged() -> Dict[str, Any]:
     """
 
     if not (hasattr(os, "geteuid") and os.geteuid() == 0):
+        # Already unprivileged: there is nothing to drop, and nothing at risk.
         return {}
     try:
         import pwd
-
-        nobody = pwd.getpwnam("nobody")
-    except (ImportError, KeyError):             # pragma: no cover - root only
-        # No account to drop to. Running the probe as root is worse than not
-        # running it, because the probe is what proves the update works.
-        return {}
-    return {
-        "user": nobody.pw_uid,
-        "group": nobody.pw_gid,
-        # Without this the child keeps root's supplementary groups.
-        "extra_groups": [],
-    }
+    except ImportError:                         # pragma: no cover - root only
+        return None
+    for name in UNPRIVILEGED_ACCOUNTS:
+        try:
+            account = pwd.getpwnam(name)
+        except KeyError:
+            continue
+        if account.pw_uid == 0 or account.pw_gid == 0:
+            continue
+        return {
+            "user": account.pw_uid,
+            "group": account.pw_gid,
+            # Without this the child keeps root's supplementary groups.
+            "extra_groups": [],
+        }
+    return None

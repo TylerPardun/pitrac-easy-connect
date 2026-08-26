@@ -35,6 +35,9 @@ def build_parser() -> argparse.ArgumentParser:
         "--smoke-test", action="store_true",
         help="exercise guarded page requests in the real native window (release validation)",
     )
+    parser.add_argument(
+        "--packaged-smoke-installed-version", default="", help=argparse.SUPPRESS,
+    )
     # Internal restart proof. The helper supplies all four arguments; a normal
     # launch supplies none. They are deliberately not useful independently.
     parser.add_argument("--post-update-journal", type=Path, default=None, help=argparse.SUPPRESS)
@@ -46,9 +49,45 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _runtime_version(args) -> str:
+    """Allow only packaged CI to make the candidate exercise its updater.
+
+    The binary's real ``--version`` and restart acknowledgement always remain
+    the compiled version. This changes only the version supplied to the
+    updater service in the explicit native smoke process, so it can download
+    and verify the same candidate archive before preflight is deliberately
+    refused.
+    """
+
+    requested = str(args.packaged_smoke_installed_version or "").strip()
+    if not requested:
+        return __version__
+    if not (
+        args.smoke_test
+        and os.environ.get("PITRAC_PACKAGED_UPDATE_SMOKE") == "1"
+    ):
+        raise ValueError(
+            "the packaged-smoke version override is restricted to native release validation"
+        )
+    return requested
+
+
 def main(argv=None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     args = build_parser().parse_args(argv)
+    try:
+        runtime_version = _runtime_version(args)
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    if (
+        args.post_update_journal
+        and os.environ.get("PITRAC_PACKAGED_UPDATE_SMOKE") == "1"
+    ):
+        # Release CI starts the actual preceding artifact, which cannot know a
+        # future --smoke-test relaunch flag. The inherited, test-only
+        # environment makes only that post-update candidate exercise its page.
+        args.smoke_test = True
     if args.version_probe_output is not None:
         from . import self_update
         try:
@@ -56,12 +95,16 @@ def main(argv=None) -> int:
         except self_update.SelfUpdateError:
             return 1
         return 0
+    from . import self_update
+    restart_context = None
     if not args.post_update_journal:
         # If power/process interruption happened after promotion but before
-        # the helper-provided restart arguments arrived, a manual launch from
-        # the exact final path can still complete the recorded acknowledgement.
-        from . import self_update
-        self_update.recover_pending_restart(version=__version__, executable=Path(sys.executable))
+        # helper-provided restart arguments arrived, locate the transaction.
+        # This does not write an acknowledgement; only the native shown
+        # callback (or the explicitly gated headless health probe) may do that.
+        restart_context = self_update.recover_pending_restart(
+            version=__version__, executable=Path(sys.executable)
+        )
     relaunch_arguments = [
         "--port", str(args.port),
         "--gspro-port", str(args.gspro_port),
@@ -78,6 +121,8 @@ def main(argv=None) -> int:
         # A normal user launch never carries this flag, so production restarts
         # still reopen the native window.
         relaunch_arguments.append("--headless")
+    if args.smoke_test:
+        relaunch_arguments.append("--smoke-test")
     service = CompanionService(
         config_path=args.config,
         simulator_ports={Simulator.GSPRO: args.gspro_port, Simulator.E6: args.e6_port},
@@ -85,6 +130,7 @@ def main(argv=None) -> int:
         discovery_port=args.discovery_port,
         computer_name=args.computer_name,
         desktop_relaunch_arguments=relaunch_arguments,
+        version=runtime_version,
     )
     try:
         server = CompanionHTTPServer(("127.0.0.1", args.port), service)
@@ -92,7 +138,6 @@ def main(argv=None) -> int:
         return _handle_busy_port(args, service, exc)
     restart_ready = None
     if args.post_update_journal:
-        from . import self_update
         try:
             if os.environ.get("PITRAC_FAILURE_INJECT_NO_ACK") == "1":
                 journal = self_update.load_journal(args.post_update_journal)
@@ -106,28 +151,18 @@ def main(argv=None) -> int:
             # until pywebview has actually shown the native window. Otherwise
             # the helper could delete the rollback copy after a bound port but
             # before discovering that the desktop backend cannot start.
-            self_update.validate_restart(
+            _journal, actual = self_update.validate_restart(
                 args.post_update_journal,
                 args.post_update_token,
                 version=__version__,
                 executable=Path(sys.executable),
             )
-
-            def restart_ready():
-                self_update.acknowledge_restart(
-                    args.post_update_journal,
-                    args.post_update_token,
-                    version=__version__,
-                    executable=Path(sys.executable),
-                )
-                if args.post_update_helper_pid and args.post_update_helper_path:
-                    self_update.cleanup_independent_helper(
-                        args.post_update_helper_pid, args.post_update_helper_path
-                    )
-
-            if args.headless:
-                restart_ready()
-                restart_ready = None
+            restart_context = self_update.PendingRestart(
+                journal_path=args.post_update_journal,
+                token=str(args.post_update_token),
+                version=__version__,
+                executable=actual,
+            )
         except self_update.SelfUpdateError as exc:
             service.close()
             server.server_close()
@@ -137,6 +172,14 @@ def main(argv=None) -> int:
             else:
                 _say_it_failed(message)
             return 1
+    if restart_context is not None:
+        def restart_ready():
+            self_update.acknowledge_pending_restart(restart_context)
+            service.watch_install_result(restart_context.journal_path)
+            if args.post_update_helper_pid and args.post_update_helper_path:
+                self_update.cleanup_independent_helper(
+                    args.post_update_helper_pid, args.post_update_helper_path
+                )
     return _run(args, service, server, on_ready=restart_ready)
 
 
@@ -149,8 +192,49 @@ def _run(args, service, server, on_ready=None) -> int:
     try:
         if args.headless:
             service.set_window_state("headless")
+            health = {"passed": on_ready is None, "detail": ""}
+            if on_ready is not None:
+                if os.environ.get("PITRAC_ALLOW_HEADLESS_UPDATE_ACK") != "1":
+                    print(
+                        "A post-update headless restart cannot acknowledge outside "
+                        "the guarded packaged-test health path.",
+                        file=sys.stderr,
+                    )
+                    return 1
+
+                def prove_guarded_health():
+                    import urllib.request
+
+                    deadline = __import__("time").monotonic() + 20
+                    while __import__("time").monotonic() < deadline:
+                        try:
+                            request = urllib.request.Request(
+                                url + "/api/status", headers={"X-PiTrac-App": "1"}
+                            )
+                            with urllib.request.urlopen(request, timeout=2) as response:
+                                status = jsontext.loads(response.read().decode("utf-8"))
+                            if (
+                                status.get("version") == __version__
+                                and status.get("window", {}).get("state") == "headless"
+                            ):
+                                on_ready()
+                                health["passed"] = True
+                                return
+                        except Exception as exc:
+                            health["detail"] = str(exc)
+                        __import__("time").sleep(0.1)
+                    health["detail"] = health["detail"] or "guarded health request timed out"
+                    server.shutdown()
+
+                threading.Thread(target=prove_guarded_health, daemon=True).start()
             print("Headless mode is active. Press Control-C to stop it.")
             server.serve_forever()
+            if not health["passed"]:
+                print(
+                    "The guarded post-update health check failed: {}".format(health["detail"]),
+                    file=sys.stderr,
+                )
+                return 1
             return 0
 
         if args.smoke_test:

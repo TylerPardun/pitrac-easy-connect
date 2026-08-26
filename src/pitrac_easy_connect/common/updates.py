@@ -30,6 +30,7 @@ import hashlib
 import json
 
 from . import jsontext
+from . import release_manifest
 import os
 import platform
 import re
@@ -513,11 +514,16 @@ class DesktopUpdateState(str, Enum):
 #: matrix (see the EXPECTED array in its release job) -- reused verbatim,
 #: never reconstructed from a version number, so a naming change in the
 #: workflow is a naming change here too rather than a silent mismatch.
+#:
+#: Desktop, not enclosure: no Linux entry, because no Linux desktop build is
+#: published. A Linux desktop entry once claimed one existed, so a Linux
+#: desktop launch resolved a real-looking filename that no release has ever
+#: contained, discovering "unsupported" only as a download failure instead
+#: of immediately. select_desktop_asset() below now refuses cleanly instead.
 PLATFORM_ASSET_NAMES: Dict[Tuple[str, str], str] = {
     ("Darwin", "arm64"): "PiTrac-Easy-Connect-macos-apple-silicon.zip",
     ("Darwin", "x86_64"): "PiTrac-Easy-Connect-macos-intel.zip",
     ("Windows", "x86_64"): "PiTrac-Easy-Connect-windows.zip",
-    ("Linux", "x86_64"): "PiTrac-Easy-Connect-linux-x86_64.zip",
 }
 
 _ARCH_ALIASES = {
@@ -615,6 +621,9 @@ class DesktopReleaseUpdater:
         self._last: Optional[UpdateStatus] = None
         self._last_failed = False
         self._selected_releases: Dict[str, Dict[str, Any]] = {}
+        #: One verified manifest per tag, so a release is authenticated once
+        #: rather than on every status poll.
+        self._manifests: Dict[str, tuple] = {}
 
     def asset_name(self) -> str:
         return select_desktop_asset(self._system, self._machine)
@@ -811,16 +820,39 @@ class DesktopReleaseUpdater:
     def asset_download_url(self, release: Dict[str, Any], asset_name: str) -> str:
         return _find_asset_url(release, asset_name)
 
-    def expected_sha256(self, release: Dict[str, Any], asset_name: str) -> Optional[str]:
-        """The checksum this release publishes for one asset, if it publishes one.
+    def signed_manifest(self, release: Dict[str, Any], tag: str):
+        """This release's own signed description of itself, or None.
 
-        GitHub's own ``digest`` field on the asset is preferred -- it comes
-        from the same listing as the download URL, so trusting it does not
-        add a second host to the chain of trust. SHA256SUMS.txt, itself just
-        another release asset, is the fallback when a listing has no digest
-        field. Neither present is a hard refusal, never a silent skip.
+        None means the release predates signed manifests. Anything wrong --
+        missing where it is required, a bad signature, a manifest describing a
+        different release, or no way to check on this computer -- raises,
+        because a caller must not be able to mistake any of those for "fine".
         """
 
+        cached = self._manifests.get(str(tag))
+        if cached is not None:
+            return cached[0]
+        manifest = release_manifest.fetch_manifest(
+            release, self._fetch_bytes, tag=str(tag)
+        )
+        self._manifests[str(tag)] = (manifest,)
+        return manifest
+
+    def expected_sha256(self, release: Dict[str, Any], asset_name: str,
+                        manifest=None) -> Optional[str]:
+        """The checksum to hold the download to.
+
+        A signed manifest is preferred over everything else, because it is the
+        only digest here that is authenticated rather than merely co-located:
+        GitHub's own ``digest`` field arrives from the same listing as the
+        download URL, so whoever can answer as that listing can supply a
+        matching pair. The unsigned sources remain for releases published
+        before manifests existed. Neither present is a hard refusal, never a
+        silent skip.
+        """
+
+        if manifest is not None:
+            return release_manifest.expected_digest(manifest, asset_name)
         asset = _find_asset(release, asset_name)
         if asset:
             digest = str(asset.get("digest") or "")
@@ -846,6 +878,20 @@ class DesktopReleaseUpdater:
         request = urllib.request.Request(url, headers={"User-Agent": "PiTrac"})
         with urllib.request.urlopen(request, timeout=CHECK_TIMEOUT) as response:
             return response.read(1024 * 1024).decode("utf-8", errors="replace")
+
+    @staticmethod
+    def _fetch_bytes(url: str) -> bytes:
+        """Read one small unauthenticated document, with a hard ceiling.
+
+        The signature is checked after this returns, so everything it reads is
+        hostile until then -- including its length.
+        """
+
+        if not url:
+            raise release_manifest.ManifestError("the release names no manifest to download")
+        request = urllib.request.Request(url, headers={"User-Agent": "PiTrac"})
+        with urllib.request.urlopen(request, timeout=CHECK_TIMEOUT) as response:
+            return response.read(release_manifest.MAX_MANIFEST_BYTES + 1)
 
     def download(
         self,
@@ -975,6 +1021,21 @@ def _let_others_read(root: Path) -> None:
         pass
 
 
+def _fsync_directory(path: Path) -> None:
+    """Make a rename in this directory survive power loss."""
+
+    try:
+        descriptor = os.open(str(path), getattr(os, "O_DIRECTORY", os.O_RDONLY))
+    except OSError:
+        return
+    try:
+        os.fsync(descriptor)
+    except OSError:
+        pass
+    finally:
+        os.close(descriptor)
+
+
 class ArchiveUpdater:
     """Replaces an installed copy from a published release archive."""
 
@@ -990,6 +1051,7 @@ class ArchiveUpdater:
         verify: Optional[Callable[[Path], bool]] = None,
         fetch: Optional[Callable[[str], bytes]] = None,
         api_base: str = None,
+        arm_guard: Optional[Callable[..., Optional[Callable[[], None]]]] = None,
     ):
         self.installed = installed
         self.app_dir = Path(app_dir)
@@ -1004,10 +1066,17 @@ class ArchiveUpdater:
         #: On the enclosure this cannot be used, because the restart ends this
         #: process -- see ``verify``.
         self._healthy = healthy
-        #: Asked about the *staged* copy before anything is swapped. This is
-        #: the check that actually protects an enclosure: restarting kills the
-        #: updater, so a decision made after it can never be acted on.
+        #: Asked about the *staged* copy before anything is swapped. Necessary
+        #: but not sufficient: it catches a truncated download or an import
+        #: that no longer resolves, and cannot catch anything that only happens
+        #: once the real service runs. ``arm_guard`` is what covers the rest.
         self._verify = verify
+        #: Called just before the symlink moves, with everything an independent
+        #: component needs to put the previous release back. It returns a
+        #: callback to run once the link actually points at the candidate, or
+        #: None. Kept as a plain callable so this module, which the desktop
+        #: also imports, needs to know nothing about the enclosure's guard.
+        self._arm_guard = arm_guard
         self._fetch = fetch or _download
         self._api = (api_base or API_BASE).rstrip("/")
         self._lock = threading.RLock()
@@ -1086,7 +1155,19 @@ class ArchiveUpdater:
                 return {"applied": False,
                         "detail": "The downloaded file is not the right size to be an update."}
 
-            expected = self._archive_digest(release, tag)
+            try:
+                manifest = release_manifest.fetch_manifest(release, self._fetch, tag=tag)
+            except release_manifest.ManifestError as exc:
+                return {"applied": False, "detail": str(exc)}
+            if manifest is not None:
+                refusal = release_manifest.check_pi_supported(
+                    manifest, version=self.installed,
+                    python_version="{}.{}".format(*sys.version_info[:2]),
+                )
+                if refusal:
+                    return {"applied": False, "detail": refusal}
+
+            expected = self._archive_digest(release, tag, manifest=manifest)
             if expected:
                 actual = hashlib.sha256(blob).hexdigest()
                 if actual != expected:
@@ -1126,8 +1207,9 @@ class ArchiveUpdater:
 
             releases = self._uses_releases()
             try:
-                previous = (self._swap_release(staged, inside) if releases
-                            else self._swap(staged))
+                previous = (self._swap_release(staged, inside, tag=tag,
+                                               digest=self._archive_digest(release, tag) or "")
+                            if releases else self._swap(staged))
             except Exception as exc:
                 shutil.rmtree(staged.parent, ignore_errors=True)
                 return {"applied": False,
@@ -1193,16 +1275,20 @@ class ArchiveUpdater:
         return ""
 
     @staticmethod
-    def _archive_digest(release: Dict[str, Any], tag: str = "") -> str:
-        """The sha256 the release API states for the archive, if it states one.
+    def _archive_digest(release: Dict[str, Any], tag: str = "", manifest=None) -> str:
+        """The sha256 to hold the archive to.
 
-        The listing and the download come from different hosts: the API is
-        api.github.com, the bytes come from a content host. Checking the bytes
-        against the digest the API gave means the download has to match what
-        the release actually says it contains, not merely arrive over TLS.
+        A signed manifest wins when the release publishes one: it is the only
+        digest that is authenticated rather than merely co-located. Without
+        one, the release API's own digest still means the download has to
+        match what the release says it contains rather than merely arriving
+        over TLS -- which is better than nothing and less than a signature.
         """
 
         expected = _archive_name(tag) if tag else ""
+        if manifest is not None:
+            name = expected or str(manifest.get("pi", {}).get("asset") or "")
+            return release_manifest.expected_digest(manifest, name)
         for asset in release.get("assets") or []:
             name = str(asset.get("name") or "")
             if name == expected or (not expected and name.endswith(ARCHIVE_SUFFIX)):
@@ -1273,24 +1359,42 @@ class ArchiveUpdater:
             and self.link_path.is_symlink() and self.releases_dir.is_dir()
         )
 
-    def _swap_release(self, staged: Path, version: str) -> Path:
+    def _swap_release(self, staged: Path, version: str, *, tag: str = "",
+                      digest: str = "") -> Path:
         """Install as a new release and move the symlink onto it.
 
         The running release is never touched, so there is no moment where the
         application directory is missing and nothing to undo if the new one
         will not start -- the old release is still there and the symlink can
         simply be pointed back at it.
+
+        Pointing it back is the part this process cannot do. Restarting the
+        enclosure's service ends this process, so the guard is armed first:
+        the candidate tree and a journal naming both releases are on the card,
+        and an independent component is registered to run at the next boot,
+        before the link is allowed to move.
         """
 
         previous = self.link_path.resolve()
         destination = self._new_release_dir(version)
         shutil.move(str(staged), str(destination / "pitrac_easy_connect"))
 
+        swapped = None
+        if self._arm_guard is not None:
+            swapped = self._arm_guard(
+                previous=previous, candidate=destination,
+                installed_version=self.installed, expected_version=version,
+                expected_tag=tag or ("v" + version), asset_sha256=digest,
+            )
+
         temporary = self.link_path.with_name(self.link_path.name + ".new")
         if temporary.is_symlink() or temporary.exists():
             temporary.unlink()
         temporary.symlink_to(destination)
         os.replace(temporary, self.link_path)
+        _fsync_directory(self.link_path.parent)
+        if swapped is not None:
+            swapped()
         shutil.rmtree(staged.parent.parent, ignore_errors=True)
         return previous
 

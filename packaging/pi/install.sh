@@ -18,6 +18,11 @@ set -euo pipefail
 
 APP_ROOT=/usr/lib/pitrac-easy-connect-releases
 APP_DIR=/usr/lib/pitrac-easy-connect
+# The update guard lives outside both of those on purpose: it is what puts the
+# previous release back when a new one will not run, and restarting the
+# service ends the process that would otherwise do that.
+GUARD_DIR=/usr/lib/pitrac-easy-connect-guard
+GUARD_UNIT=/etc/systemd/system/pitrac-easy-connect-update-guard.service
 VERSION="$(python3 -c "import re,pathlib,sys; print(re.search(r'__version__ = \"([^\"]+)\"', pathlib.Path(sys.argv[1]).read_text()).group(1))" "$(dirname "$0")/../../src/pitrac_easy_connect/__init__.py" 2>/dev/null || echo unknown)"
 STATE_DIR=/var/lib/pitrac-easy-connect
 UNIT=/etc/systemd/system/pitrac-easy-connect.service
@@ -49,8 +54,9 @@ fi
 if [ "$UNINSTALL" = yes ]; then
     step "Removing PiTrac Easy Connect"
     systemctl disable --now "$SERVICE" 2>/dev/null || true
-    rm -f "$UNIT" /etc/avahi/services/pitrac-easy-connect.service
-    rm -rf "$APP_DIR" "$APP_ROOT" /usr/share/doc/pitrac-easy-connect
+    systemctl disable --now pitrac-easy-connect-update-guard.service 2>/dev/null || true
+    rm -f "$UNIT" "$GUARD_UNIT" /etc/avahi/services/pitrac-easy-connect.service
+    rm -rf "$APP_DIR" "$APP_ROOT" "$GUARD_DIR" /usr/share/doc/pitrac-easy-connect
 
     # Ours to remove: a drop-in that changed logging for the whole system.
     # This used to sit after the exit below, so it never ran.
@@ -186,6 +192,15 @@ say "Installed to $THIS_RELEASE"
 
 # Settings, pairings, and the device identity live here and survive upgrades.
 install -d -m 0750 "$STATE_DIR"
+
+# The update guard, placed now rather than only when an update needs it: a
+# mechanism that installs itself at the moment it is required is a mechanism
+# that has never been seen to work. It stays disabled; an update enables it
+# for the duration of that update and disables it again afterwards.
+install -d -m 0755 "$GUARD_DIR"
+install -m 0755 "$THIS_RELEASE/pitrac_easy_connect/pi/update_guard.py" \
+    "$GUARD_DIR/pitrac-update-guard.py"
+say "Update guard installed to $GUARD_DIR"
 
 step "Installing the service"
 HOSTNAME_FLAG=""

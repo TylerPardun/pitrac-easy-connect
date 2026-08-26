@@ -1,31 +1,15 @@
-"""A slow start is not a failed update.
+"""A slow acknowledgement succeeds; liveness without proof never does.
 
-What happened on a real Intel Mac, reconstructed from the transaction journal
-it left behind:
-
-    phase        = rolled-back
-    installRoot  = /Applications/PiTrac Easy-Connect.app
-    result       = "the new application did not acknowledge its exact path and
-                    version. The restored application did not acknowledge its
-                    relaunch automatically."
-    restart-ack  = version 0.4.6, written 2.5 seconds AFTER the helper gave up
-
-The update worked. The helper replaced the application, launched it, and the
-owner watched the new version start. The confirmation only fires once the
-window is on screen, and that took about forty-eight seconds against a
-forty-five second deadline -- so the helper undid a good installation. The old
-version it restored then missed the same deadline by two and a half seconds,
-which is how we know the deadline was the problem rather than the new build.
-
-The rule now: undo an update when the new application *dies*, never merely
-because it is slow. A user watching the new version start and then finding the
-old one back, with nothing said about why, is the worst outcome available.
+The Intel field launch established that 45 seconds is too short.  The timeout
+therefore stays generous, but expiry still means rollback: a process can remain
+alive while its only window is blank, hidden, or hung.
 """
 
 import json
 import os
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -37,47 +21,64 @@ from test_self_update import stage_fixture
 
 
 @pytest.mark.skipif(os.name == "nt", reason="the script install fixture is POSIX; the decision itself is covered on every platform by test_liveness_does_not_depend_on_psutil")
-def test_a_live_but_slow_application_keeps_its_update(tmp_path, monkeypatch):
-    """The exact shape of the field failure: running, but not yet confirmed."""
+def test_a_slow_application_that_eventually_acknowledges_keeps_its_update(
+    tmp_path, monkeypatch
+):
+    """Simulate the measured 48-120 second range without making the suite wait."""
 
-    state, install, journal = stage_fixture(tmp_path, monkeypatch, acknowledge=False)
+    _state, install, journal = stage_fixture(tmp_path, monkeypatch, acknowledge=False)
 
     class StillStarting:
         pid = 4242
+        def poll(self):
+            return None
 
-    # Alive throughout, and it never writes an acknowledgement.
-    monkeypatch.setattr(su, "_process_tree_alive", lambda pid, known, *a, **k: True)
+    def start_then_show(_arguments):
+        def acknowledge_after_visible_delay():
+            deadline = time.monotonic() + 2
+            while time.monotonic() < deadline:
+                if su.load_journal(journal)["phase"] == "awaiting-restart-verification":
+                    time.sleep(0.25)
+                    su.acknowledge_restart(
+                        journal, su.load_journal(journal)["restartToken"],
+                        version="0.4.6",
+                        executable=su.executable_path(install, system="Linux"),
+                    )
+                    return
+                time.sleep(0.01)
+        threading.Thread(target=acknowledge_after_visible_delay, daemon=True).start()
+        return StillStarting()
 
-    code = su.run_helper(journal, 999999, timeout=0.01, ack_timeout=0.4,
+    code = su.run_helper(journal, 999999, timeout=0.01, ack_timeout=1.0,
                          process_tree_alive=lambda pid, known: False,
-                         launcher=lambda arguments: StillStarting())
+                         launcher=start_then_show)
 
-    assert code == 0, "a running application had its update undone"
+    assert code == 0, "an application that gave exact delayed proof was rolled back"
     installed = json.loads((install / su.INSTALL_MANIFEST).read_text())
-    assert installed["version"] == "0.4.6", (
-        "the update was rolled back even though the application was still running"
-    )
+    assert installed["version"] == "0.4.6"
     result = json.loads((su.staging_dir() / "last-install-result.json").read_text())
     assert result["success"] is True and result["rolledBack"] is False
-    assert "had not confirmed itself" in result["detail"], result["detail"]
+    assert "verified after restart" in result["detail"]
 
 
 @pytest.mark.skipif(os.name == "nt", reason="the script install fixture is POSIX; the decision itself is covered on every platform by test_liveness_does_not_depend_on_psutil")
-def test_an_application_that_dies_without_confirming_is_still_rolled_back(tmp_path, monkeypatch):
-    """The safety this must not lose."""
+def test_an_application_alive_forever_without_acknowledging_is_rolled_back(
+    tmp_path, monkeypatch
+):
+    """A blank/hung process is not a usable native application."""
 
-    state, install, journal = stage_fixture(tmp_path, monkeypatch, acknowledge=False)
+    _state, install, journal = stage_fixture(tmp_path, monkeypatch, acknowledge=False)
 
-    class Died:
+    class Hung:
         pid = 4243
+        def poll(self):
+            return None
 
-    monkeypatch.setattr(su, "_process_tree_alive", lambda pid, known, *a, **k: False)
-
-    code = su.run_helper(journal, 999999, timeout=0.01, ack_timeout=0.4,
+    code = su.run_helper(journal, 999999, timeout=0.01, ack_timeout=1.0,
                          process_tree_alive=lambda pid, known: False,
-                         launcher=lambda arguments: Died())
+                         launcher=lambda arguments: Hung())
 
-    assert code == 1, "an application that died without confirming was not rolled back"
+    assert code == 1, "a hung application was treated as a successful update"
     installed = json.loads((install / su.INSTALL_MANIFEST).read_text())
     assert installed["version"] == "0.4.5", "the previous version was not restored"
 

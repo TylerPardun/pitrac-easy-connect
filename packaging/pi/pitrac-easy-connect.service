@@ -39,6 +39,13 @@ ReadWritePaths=/usr/lib/pitrac-easy-connect
 # Versioned releases live here and the symlink above points into them,
 # so a self-update writes here rather than into the symlink itself.
 ReadWritePaths=/usr/lib/pitrac-easy-connect-releases
+# The update guard, which has to survive the release it is guarding against.
+# Restarting this service ends the process performing the update, so the
+# component that decides whether the new release works, and puts the old one
+# back if it does not, cannot live inside either path above. The leading "-"
+# keeps an older installation that has no such directory yet from failing to
+# start at all.
+ReadWritePaths=-/usr/lib/pitrac-easy-connect-guard
 ProtectKernelTunables=yes
 ProtectKernelModules=yes
 ProtectControlGroups=yes

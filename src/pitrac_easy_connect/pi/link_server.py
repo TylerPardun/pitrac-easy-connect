@@ -68,6 +68,12 @@ class CompanionLinkServer:
         self._thread.start()
         return self.port
 
+    @property
+    def listening(self) -> bool:
+        """Whether the port is actually held, not merely configured."""
+
+        return self._server is not None
+
     def stop(self) -> None:
         self._stop.set()
         if self._server is not None:
@@ -153,6 +159,16 @@ class CompanionLinkServer:
         session.authenticated = True
         _try_send(
             stream, link.auth_ok(self.pairings.server_proof(session.pairing_id, challenge))
+        )
+        # Wrapped only now: authOk itself is unprotected (session_keys()
+        # depends on nothing the Companion could not already prove it has --
+        # the challenge and the secret -- but the keys are pointless before
+        # both sides agree the handshake actually succeeded).
+        keys = self.pairings.session_keys(session.pairing_id, challenge)
+        session.stream = link.SecureFrameStream(
+            stream, keys=keys,
+            send_direction=link.DIRECTION_PI_TO_COMPANION,
+            receive_direction=link.DIRECTION_COMPANION_TO_PI,
         )
         self.on_attach(session)
         try:

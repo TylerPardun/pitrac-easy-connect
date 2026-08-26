@@ -1,9 +1,10 @@
 Download the build for your computer.
 
-**Windows** — `PiTrac-Easy-Connect-windows.zip`. Extract the dedicated
-`PiTrac Easy-Connect` folder as a unit. Do not copy the executable out of that
-folder. Windows may warn that it does not recognise the program; choose
-**More info**, then **Run anyway**.
+**Windows** — download and run
+`PiTrac-Easy-Connect-windows-setup.exe`. The installer puts the complete app
+in its supported per-user location and adds the Start-menu shortcut. Windows
+may warn that it does not recognise the program; choose **More info**, then
+**Run anyway**.
 
 **macOS** — use `PiTrac-Easy-Connect-macos-apple-silicon.zip` for an M1 or
 later Mac, or `PiTrac-Easy-Connect-macos-intel.zip` for a real Intel Mac.
@@ -16,7 +17,7 @@ Every release file is covered by GitHub build provenance and `SHA256SUMS.txt`.
 For example:
 
 ```
-gh attestation verify PiTrac-Easy-Connect-windows.zip --repo TylerPardun/pitrac-easy-connect
+gh attestation verify PiTrac-Easy-Connect-windows-setup.exe --repo TylerPardun/pitrac-easy-connect
 ```
 
 This provenance is not a paid Windows or Apple code-signing certificate, so
