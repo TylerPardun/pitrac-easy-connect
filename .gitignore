@@ -27,3 +27,6 @@ docs/licensing/
 # Virtual environments
 .venv/
 venv/
+
+# Local check environment, see packaging/check.sh
+.check/

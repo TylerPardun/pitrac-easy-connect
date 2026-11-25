@@ -24,16 +24,13 @@ project cares about most. Say so plainly and it will go to the front.
 
 - Open an issue first for anything larger than a fix. It may already be on the
   list, or deliberately out of scope.
-- Install what the suite needs once:
-
-  ```
-  python3 -m pip install -e ".[test]"
-  ```
-
-  Then `python3 -m pytest -q` must pass. It runs without hardware, against a
-  simulated Raspberry Pi, and takes about two minutes. The suite runs in
-  parallel, so `pytest` alone is not enough — without `pytest-xdist` it will
-  not start at all.
+- Run `./packaging/check.sh` before pushing. It sets up what it needs under
+  `.check/`, runs the suite against a simulated Raspberry Pi, and runs the part
+  that talks to PiTrac against PiTrac's real web server. It takes about two
+  minutes. `--pitrac main` tries PiTrac as it is today, and `--quick` runs the
+  suite alone.
+- Nothing runs on GitHub by itself. The build workflow is started by hand, so
+  that it costs minutes only when somebody wants a build.
 - New behaviour needs a test. Failure paths especially: most of this codebase
   exists to handle things going wrong.
 - The Python that ships has **no third-party dependencies** and must stay that

@@ -1,11 +1,14 @@
 name: Test, build, and publish
 
+# Only when somebody asks for it. This is a private repository with a small
+# allowance of minutes, and this workflow runs on nine machines, four of them
+# macOS at ten times the price. Everyday checks run locally instead:
+#
+#     ./packaging/check.sh
+#
+# To make a release, run this by hand and choose the tag as its ref.
 on:
   workflow_dispatch:
-  push:
-    branches: [main]
-    tags: ["v*"]
-  pull_request:
 
 # Read-only by default. Only the job that publishes a release is given write.
 permissions:
