@@ -1,8 +1,7 @@
 name: Test, build, and publish
 
-# Only when somebody asks for it. This is a private repository with a small
-# allowance of minutes, and this workflow runs on nine machines, four of them
-# macOS at ten times the price. Everyday checks run locally instead:
+# Only when somebody asks for it. It runs on nine machines and takes a while.
+# Everyday checks run locally instead:
 #
 #     ./packaging/check.sh
 #
@@ -39,7 +38,8 @@ jobs:
       matrix:
         # macOS stands in for the Pi during development, Windows is the app's
         # real target, and Linux is the closest runner to the enclosure itself.
-        os: [macos-latest, windows-latest, ubuntu-latest]
+        # Linux is named because 26.04, now ubuntu-latest, has no Python 3.9.
+        os: [macos-latest, windows-latest, ubuntu-24.04]
         python: ["3.9", "3.13"]
     runs-on: ${{ matrix.os }}
     steps:
