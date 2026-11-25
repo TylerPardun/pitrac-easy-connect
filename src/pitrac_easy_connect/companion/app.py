@@ -8,7 +8,7 @@ from pathlib import Path
 
 from .. import __version__
 from ..common import jsontext
-from ..common import discovery
+from ..common import discovery, updates
 from ..models import Simulator
 from .service import CompanionService
 from .web import CompanionHTTPServer
@@ -131,6 +131,7 @@ def main(argv=None) -> int:
         computer_name=args.computer_name,
         desktop_relaunch_arguments=relaunch_arguments,
         version=runtime_version,
+        updates_published=updates.PUBLISHED,
     )
     try:
         server = CompanionHTTPServer(("127.0.0.1", args.port), service)

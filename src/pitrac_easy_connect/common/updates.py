@@ -55,6 +55,12 @@ from .versions import compare, is_newer, parse
 #: exercised against a stand-in rather than against GitHub.
 REPOSITORY = os.environ.get("PITRAC_UPDATE_REPOSITORY", "TylerPardun/pitrac-easy-connect")
 
+#: Whether there is anywhere to look for a newer version. There is not: the
+#: repository is private, so asking would fail every time and put a warning in
+#: front of somebody who can do nothing about it. New versions come as an
+#: installer. Naming a repository turns the whole update path back on.
+PUBLISHED = "PITRAC_UPDATE_REPOSITORY" in os.environ or "PITRAC_UPDATE_API" in os.environ
+
 #: The base of the release API. Overridable for the same reason.
 API_BASE = os.environ.get("PITRAC_UPDATE_API", "https://api.github.com")
 RELEASES_API = API_BASE + "/repos/{}/releases/latest"

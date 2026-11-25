@@ -1,3 +1,3 @@
 """PiTrac Easy Connect: beginner-facing networking and simulator link for PiTrac."""
 
-__version__ = "0.9.1"
+__version__ = "0.10.0"

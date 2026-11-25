@@ -17,8 +17,7 @@ includes PiTrac's dashboard, shot history, and a practice range.
 
 A five-step guide walks you through the first setup. If you move the enclosure to another home, you only need to choose the new Wi-Fi network. You do not need to reconfigure PiTrac.
 
-- **Download:** <https://tylerpardun.github.io/pitrac-easy-connect/>
-- **Version:** 0.9.1
+- **Version:** 0.10.0
 - **License:** [MIT](LICENSE)
 
 ![The practice range](media/range.png)
@@ -96,19 +95,12 @@ A newer PiTrac may work. Easy-Connect checks what PiTrac answers and says so
 plainly when it cannot use it, but PiTrac's own update button can move it past
 what has been tested.
 
-Once PiTrac is working, copy this repository to the Pi. From your own computer:
+Once PiTrac is working, copy the kit's source zip to the Pi, then on the Pi:
 
 ```bash
-git clone https://github.com/TylerPardun/pitrac-easy-connect
-cd pitrac-easy-connect
-scp -r . <username>@<Pi name>.local:~/easy-connect
-```
-
-Then on the Pi:
-
-```bash
-cd ~/easy-connect
-sudo ./packaging/pi/install.sh
+unzip "PiTrac Easy-Connect"*source.zip
+cd PiTrac-Easy-Connect
+sudo bash packaging/pi/install.sh
 ```
 
 If `pitrac.local` does not answer, use the Pi's IP address instead — your
@@ -134,42 +126,24 @@ unavailable.
 
 ## Install the desktop app
 
-Download the build for your computer from
-<https://tylerpardun.github.io/pitrac-easy-connect/>:
+Everything comes in one folder, the **kit**, made for a USB stick and for places
+with no internet: the Mac and Windows installers, what the Raspberry Pi needs, a
+blank owner card, and a short `READ ME FIRST.txt`.
 
-| Platform | File |
+| Computer | File |
 |---|---|
-| macOS 11+, Apple silicon (M1 or later) | [`PiTrac-Easy-Connect-macos-apple-silicon.zip`](https://github.com/TylerPardun/pitrac-easy-connect/releases/latest/download/PiTrac-Easy-Connect-macos-apple-silicon.zip) |
-| macOS 11+, Intel | [`PiTrac-Easy-Connect-macos-intel.zip`](https://github.com/TylerPardun/pitrac-easy-connect/releases/latest/download/PiTrac-Easy-Connect-macos-intel.zip) |
-| Windows 11 | [`PiTrac-Easy-Connect-windows-setup.exe`](https://github.com/TylerPardun/pitrac-easy-connect/releases/latest/download/PiTrac-Easy-Connect-windows-setup.exe) |
+| Mac | `PiTrac Easy-Connect <version> (Mac ...).dmg`. Drag the app into Applications |
+| Windows 11 | `PiTrac Easy-Connect <version> (Windows).exe` |
 
-On Windows, download the `windows-setup.exe` file above. Do not download the
-similarly named `windows.zip`; that ZIP is published only for the installed
-app's automatic updater.
+Neither is signed with a paid certificate, so each system asks the first time:
 
-The two Mac builds are not interchangeable. Rosetta translates Intel code to
-run on Apple silicon and never the other way, so an Intel Mac given the Apple
-silicon build cannot start it at all. **Apple menu → About This Mac** says
-which you have: a chip beginning with M, or an Intel processor.
-
-The release workflow signs and notarizes macOS and Authenticode-signs Windows
-whenever the release environment holds the required certificates. Certificates
-are optional: a complete, tested build still publishes as a stable release,
-with its exact signing state in the notes (see
-`packaging/release-signing-gate.py`). Until a build is signed, or on any build
-you run from source, those operating systems warn the first time:
-
-| Platform | What to do |
+| Computer | What to do |
 |---|---|
-| macOS | Right-click the app and choose **Open** rather than double-clicking |
-| Windows | Choose **More info**, then **Run anyway** |
+| Mac | Open it once, then **System Settings → Privacy & Security → Open Anyway** |
+| Windows | **More info**, then **Run anyway** |
 
-On Windows the installer places the application and its updater for you. On
-macOS, keep the `.app` whole and put it in Applications. A loose Windows
-executable can launch, but it is not a complete installation and cannot update
-itself. Automatic replacement from Downloads, Desktop, Documents, a home
-directory, or another unrelated folder is deliberately refused because that
-folder is not a disposable application installation.
+Installing a later kit over the top keeps pairing, Wi-Fi, calibration, settings,
+and shot history. Use the same kit for the Pi and for every computer.
 
 If macOS cannot find PiTrac, open **System Settings → Privacy & Security →
 Local Network** and allow PiTrac Easy-Connect, then search again.
@@ -179,63 +153,36 @@ Wi-Fi network of its own. Join it from your computer's Wi-Fi menu with the
 password on the owner card, and the app asks which network to use. A phone can do
 the same at `http://10.42.0.1` if there is no computer to hand.
 
-### Checking a download
-
-Every release is signed at build time, and each one ships a `SHA256SUMS.txt`.
-To confirm a file came from this repository's own build, with the
-[GitHub CLI](https://cli.github.com):
-
-```bash
-gh attestation verify PiTrac-Easy-Connect-windows-setup.exe --repo TylerPardun/pitrac-easy-connect
-```
-
-That names the workflow, commit and run that produced it. To check the bytes
-alone, compare them against `SHA256SUMS.txt` — `shasum -a 256 -c` on macOS, `Get-FileHash` on Windows.
-
-This proves where a file came from. It is not the certificate that would stop
-the warnings above; those need paid programmes from Microsoft and Apple.
-
-Every release from v0.9.0 onward also publishes a `release-manifest.json` and
-a detached Ed25519 signature over it, listing the exact assets, sizes and
-digests the release contains. Both the desktop app and the enclosure verify
-that signature against a public key built into the application before
-trusting anything in it, including the digest a download is checked against —
-a checksum served by the same API as the file it describes proves the bytes
-arrived intact, not that this project produced them, which is what the
-signature is for. A release that should carry one and does not, or whose
-signature does not check out, is refused rather than installed.
-
-Easy-Connect coordinates its two updates in one direction. If a newer release
-exists, install and restart the desktop app first. Only that current desktop
-may ask the enclosure to install the exact same release tag. The app reports
-success only after the enclosure reconnects and both sides report that version.
-The versioned `.pyz` attached to each release is this verified Pi-service
-payload for the enclosure; it is not a desktop application.
-
 Open the app, find the enclosure, choose Local Range or GSPro, and play. GSPro
 adds two steps: opening it, and one test shot. The guide does not appear again after
 the first-time setup, but you can reopen it with **Advanced → Run setup again**.
 
 ---
 
-## Build the app from source (optional)
+## Build the installers
 
-Building from source requires Python 3.10 or newer for the desktop dependencies.
-PyInstaller bundles the interpreter for the platform on which it runs, so each
-artifact must be built on its own operating system. Cross-compiling is not
-supported.
+Each is built on the kind of computer it is for, because it bundles that
+computer's Python. Nothing is uploaded, and no GitHub minutes are used.
+
+**On a Mac**, with Python 3.10 to 3.13:
 
 ```bash
-git clone https://github.com/TylerPardun/pitrac-easy-connect
-cd pitrac-easy-connect
-./packaging/build-app.sh
+python3 packaging/make_installer.py
 ```
 
-The build is written to `dist/` as `PiTrac Easy-Connect.app` on macOS,
-`PiTrac Easy-Connect.exe` on Windows. The
-script installs the pinned build dependencies. To launch from source instead,
-run `python3 -m pip install -e ".[desktop]"` and then `pitrac-easy-connect`.
-Use `pitrac-easy-connect --headless` only for CI, API tests, or service use.
+Python from [python.org](https://www.python.org/downloads/macos/) makes an app
+that runs on older versions of macOS too. Homebrew's makes one only for the
+version it was built on. The build says which it made.
+
+**On Windows**, unpack the source and double-click **Build Windows Installer**. It
+asks before installing Python or Inno Setup.
+
+Either one installs what it built, opens it, uses it, and removes it again before
+putting it in `dist/`. To run the app from source instead:
+
+```bash
+python3 -m pip install -e ".[desktop]" && pitrac-easy-connect
+```
 
 ---
 

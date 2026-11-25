@@ -50,6 +50,7 @@ from ..common.updates import (
     SOURCE,
     DesktopReleaseUpdater,
     DesktopUpdateState,
+    UpdateCoordination,
     UpdateStatus,
     Updater,
     coordinate_update,
@@ -146,9 +147,13 @@ class CompanionService:
         discovery_targets: Optional[List[str]] = None,
         periodic_update_check_seconds: float = PERIODIC_DESKTOP_UPDATE_CHECK_SECONDS,
         startup_update_check: bool = True,
+        updates_published: bool = True,
         desktop_relaunch_arguments: Optional[List[str]] = None,
     ):
         self.version = version
+        #: False when there is nowhere to look for a newer one; see
+        #: ``updates.PUBLISHED``.
+        self.updates_published = updates_published
         self._desktop_relaunch_arguments = list(desktop_relaunch_arguments or [])
         self.simulator_host = simulator_host
         self.discovery_port = discovery_port
@@ -305,9 +310,9 @@ class CompanionService:
         # timer for as long as the app stays open -- the immediate check
         # alone is what a v0.4.4 process left running would have relied on,
         # and it goes stale the moment a new release ships while it is idle.
-        if startup_update_check:
+        if startup_update_check and updates_published:
             self._schedule_update_check()
-        if not self._uses_git_updater:
+        if not self._uses_git_updater and updates_published:
             if periodic_update_check_seconds > 0:
                 threading.Thread(
                     target=self._periodic_update_check_loop,
@@ -1760,7 +1765,8 @@ class CompanionService:
         runs. A cache hit makes this a no-op; force is deliberately not used
         here, so this never fights a check already legitimately in flight."""
 
-        self._schedule_update_check()
+        if self.updates_published:
+            self._schedule_update_check()
 
     def download_desktop_update(self) -> Dict[str, Any]:
         """Start the background download-verify-stage sequence.
@@ -2131,7 +2137,11 @@ class CompanionService:
         status["versionsMatch"] = (
             not enclosure_version or enclosure_version == self.version
         )
-        plan = coordinate_update(checked, enclosure_version, pending_target)
+        if self.updates_published:
+            plan = coordinate_update(checked, enclosure_version, pending_target)
+        else:
+            plan = self._private_update_plan(enclosure_version)
+            status["detail"] = plan.detail
         status["coordination"] = plan.as_dict()
         status["desktop"] = self._desktop_update_payload()
         # Forget the saved plan once it is finished -- either both halves
@@ -2142,8 +2152,24 @@ class CompanionService:
             self._remember_update_target("")
         return status
 
+    def _private_update_plan(self, enclosure_version: str) -> UpdateCoordination:
+        """Nothing to download, but the two halves should still match."""
+
+        if enclosure_version and enclosure_version != self.version:
+            return UpdateCoordination(
+                "blocked", self.version, enclosure_version, "", "",
+                detail=(
+                    "PiTrac is running {} and this app is {}. Install both from the same "
+                    "kit so they match."
+                ).format(enclosure_version, self.version),
+            )
+        return UpdateCoordination(
+            "private", self.version, enclosure_version, "", "",
+            detail="New versions come as an installer. There is nothing to check for.",
+        )
+
     def check_for_updates(self) -> Dict[str, Any]:
-        started = self._schedule_update_check(force=True)
+        started = self.updates_published and self._schedule_update_check(force=True)
         status = self._update_status()
         status["checkStarted"] = started
         return status

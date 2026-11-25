@@ -81,9 +81,8 @@ step "Native app"
 case "$(uname -s 2>/dev/null || echo Windows)" in
         Darwin)
             say "$OUT/PiTrac Easy-Connect.app ($(du -sh "$OUT/PiTrac Easy-Connect.app" | cut -f1))"
-            printf '\n  \033[1mUnsigned.\033[0m macOS will refuse to open it after download until it is\n'
-            printf '  signed and notarised. Until then: right-click the app and choose Open,\n'
-            printf '  or run  xattr -d com.apple.quarantine "%s/PiTrac Easy-Connect.app"\n' "$OUT"
+            printf '\n  The app alone, for trying things. For an installer somebody can keep:\n'
+            printf '    python3 packaging/make_installer.py\n'
             ;;
         MINGW*|MSYS*|CYGWIN*|Windows*)
             say "$OUT/PiTrac Easy-Connect.exe"
