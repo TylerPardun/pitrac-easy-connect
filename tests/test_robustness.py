@@ -140,8 +140,10 @@ def test_shots_the_computer_never_confirms_are_given_up_on(monkeypatch):
         sock = socket.create_connection(("127.0.0.1", relay.ports[Simulator.GSPRO]), timeout=5)
         for _ in range(40):
             sock.sendall(json.dumps({"BallData": {"Speed": 100}}).encode("utf-8"))
-        time.sleep(0.6)
-        relay.sweep()
+        deadline = time.monotonic() + 8
+        while relay.shots_failed < 40 and time.monotonic() < deadline:
+            time.sleep(0.05)
+            relay.sweep()
 
         assert relay._pending == {}, "unanswered shots must not accumulate"
         assert relay.shots_failed == 40
@@ -205,6 +207,15 @@ def test_relay_threads_do_not_accumulate():
     try:
         relay.attach_companion(lambda frame: None)
         port = relay.ports[Simulator.GSPRO]
+        # Once it has noticed one it is accepting. Before that only a few may
+        # wait, and any more are turned away.
+        first = socket.create_connection(("127.0.0.1", port), timeout=5)
+        deadline = time.monotonic() + 5
+        while not relay._connections and time.monotonic() < deadline:
+            time.sleep(0.01)
+        first.close()
+        while relay._connections and time.monotonic() < deadline:
+            time.sleep(0.01)
         before = threading.active_count()
         for _ in range(30):
             sock = socket.create_connection(("127.0.0.1", port), timeout=5)
@@ -214,6 +225,38 @@ def test_relay_threads_do_not_accumulate():
         time.sleep(1.0)
         assert threading.active_count() <= before + 2
     finally:
+        relay.stop()
+
+
+def test_an_old_connection_never_takes_the_place_of_a_new_one(monkeypatch):
+    """Each was recorded by its own thread. One that ran late replaced the
+    connection that came after it, and closed it, though it was the live one."""
+
+    relay = ShotRelay(ports={Simulator.GSPRO: 0})
+    real, served = relay._serve_pitrac, []
+
+    def first_runs_late(*arguments):
+        served.append(1)
+        if len(served) == 1:
+            time.sleep(0.6)
+        return real(*arguments)
+
+    monkeypatch.setattr(relay, "_serve_pitrac", first_runs_late)
+    relay.start()
+    old = new = None
+    try:
+        address = ("127.0.0.1", relay.ports[Simulator.GSPRO])
+        old = socket.create_connection(address, timeout=5)
+        time.sleep(0.1)
+        new = socket.create_connection(address, timeout=5)
+        time.sleep(1.0)
+        relay.handle_simulator_message({"Code": 201})
+        new.settimeout(3)
+        assert b"201" in new.recv(1000), "the connection in use was closed"
+    finally:
+        for sock in (old, new):
+            if sock is not None:
+                sock.close()
         relay.stop()
 
 

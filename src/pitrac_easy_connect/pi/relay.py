@@ -291,22 +291,28 @@ class ShotRelay:
                 continue
             except OSError:
                 return
+            # Here rather than in its own thread, so that connections replace
+            # each other in the order they came. Left to the threads, an old
+            # one running late took the place of the new one and closed it.
+            sock.settimeout(ACCEPT_POLL_SECONDS)
+            connection = _PitracConnection(sock, simulator)
+            with self._lock:
+                if self._stop.is_set():
+                    connection.close()
+                    return
+                previous = self._connections.get(simulator)
+                self._connections[simulator] = connection
+            if previous is not None:
+                previous.close()
             thread = threading.Thread(
-                target=self._serve_pitrac, args=(sock, simulator), daemon=True
+                target=self._serve_pitrac, args=(connection,), daemon=True
             )
             thread.start()
 
-    def _serve_pitrac(self, sock: socket.socket, simulator: Simulator) -> None:
-        connection = _PitracConnection(sock, simulator)
-        with self._lock:
-            previous = self._connections.get(simulator)
-            self._connections[simulator] = connection
-        if previous is not None:
-            previous.close()
-
+    def _serve_pitrac(self, connection: _PitracConnection) -> None:
+        sock, simulator = connection.sock, connection.simulator
         buffer = ""
         decoder = json.JSONDecoder()
-        sock.settimeout(ACCEPT_POLL_SECONDS)
         try:
             while not self._stop.is_set():
                 try:

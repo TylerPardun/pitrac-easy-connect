@@ -46,7 +46,18 @@ class Pitrac:
     def __init__(self, rig):
         self.sock = socket.create_connection(
             ("127.0.0.1", rig.pi.relay.ports[Simulator.GSPRO]), timeout=5)
+        # Connected is not the same as noticed, and only then is it told things.
+        assert wait_for(lambda: self.noticed(rig.pi.relay))
         self.heard = []
+
+    def noticed(self, relay):
+        for connection in list(relay._connections.values()):
+            try:
+                if connection.sock.getpeername() == self.sock.getsockname():
+                    return True
+            except OSError:
+                pass                    # the one before, already closed
+        return False
 
     def send(self, message):
         self.sock.sendall(json.dumps(message).encode())
