@@ -38,6 +38,9 @@ KEEPALIVE_SECONDS = 5.0
 #: How long to wait for what was said before a shot to be answered.
 SETTLE_SECONDS = 0.5
 
+#: How long a shot may be owed an answer before something else has to be said.
+OWED_SECONDS = 10.0
+
 #: How long a shot may still be in the air, or rolling, or being watched.
 RESULT_SECONDS = 60.0
 
@@ -122,39 +125,62 @@ class OpenGolfSimSession(SimulatorSession):
         host: str = "127.0.0.1",
         port: Optional[int] = None,
         on_message: Optional[Callable[[Dict[str, Any]], None]] = None,
-        on_result: Optional[Callable[[str, Dict[str, float]], None]] = None,
+        on_result: Optional[Callable[[str, Dict[str, float], bool], None]] = None,
+        on_late_answer: Optional[Callable[[str, Delivery], None]] = None,
+        on_lost: Optional[Callable[[], None]] = None,
     ):
-        super().__init__(Simulator.OGS, host, port, on_message)
+        super().__init__(Simulator.OGS, host, port, on_message, on_late_answer, on_lost)
         self.on_result = on_result
         self._ready = False
         # Held for a whole exchange, so that nothing else is said between a
         # shot and its answer and mistaken for part of it.
         self._gap_lock = threading.RLock()
         self._unanswered = 0
+        self._ahead = 0
+        self._is_shots = False
         self._last_sent = 0.0
         self._airborne: List[Dict[str, Any]] = []
-        self._keepalive: Optional[threading.Thread] = None
+        self._owed_since = 0.0
 
     # --- Connecting -------------------------------------------------------
 
     def connect(self) -> None:
         already = self.connected
+        if not already:
+            self._unanswered = self._ahead = 0
         super().connect()
         if already:
             return
         self.send(device_message(self._ready))
-        if self._keepalive is None or not self._keepalive.is_alive():
-            self._keepalive = threading.Thread(target=self._keep_alive, daemon=True)
-            self._keepalive.start()
+        threading.Thread(target=self._keep_alive, args=(self.generation,), daemon=True).start()
 
-    def _keep_alive(self) -> None:
-        while not self._stop.wait(KEEPALIVE_SECONDS):
-            if not self.connected:
+    def _keep_alive(self, generation: int) -> None:
+        """One for each connection, which ends with it."""
+
+        while True:
+            self._stop.wait(KEEPALIVE_SECONDS)
+            if not self.connected or self.generation != generation:
                 return
             try:
-                self.send(device_message(self._ready))
+                self._say(device_message(self._ready))
             except OSError:
                 return
+
+    def _say(self, message: Dict[str, Any]) -> None:
+        """Something that is not a shot.
+
+        Everything is answered in the same words, so while a shot is owed an
+        answer nothing else may be asked: the reply would be taken for it. Wait
+        a while for it, then start again on a connection where nothing is owed.
+        """
+
+        with self._gap_lock:
+            if self._owed is not None:
+                if time.monotonic() - self._owed_since < OWED_SECONDS:
+                    return
+                self.reconnect()
+                return
+            self.send(message)
 
     def set_ready(self, ready: bool) -> None:
         """Whether there is a ball to hit."""
@@ -162,7 +188,7 @@ class OpenGolfSimSession(SimulatorSession):
         self._ready = ready
         if self.connected:
             try:
-                self.send(device_message(ready))
+                self._say(device_message(ready))
             except OSError:
                 pass
 
@@ -185,13 +211,19 @@ class OpenGolfSimSession(SimulatorSession):
             self._last_sent = time.monotonic()
 
     def _settle(self) -> None:
-        """Let anything already said be answered first. Answers have no names on
-        them, so the next one is taken to be about the latest message."""
+        """Let anything already said be answered first.
 
+        Answers have no names on them. They do come in order, so whatever is
+        still owed one when a shot goes out is counted, and that many answers
+        are somebody else's. If they never come, neither is anything taken for
+        the shot's, which leaves it "no answer" rather than wrong.
+        """
+
+        self._owe_nothing()
         deadline = time.monotonic() + SETTLE_SECONDS
         while self._unanswered > 0 and self.connected and time.monotonic() < deadline:
             time.sleep(0.01)
-        self._unanswered = 0
+        self._ahead = self._unanswered
 
     def deliver(self, payload: Dict[str, Any], shot_id: str = "") -> Delivery:
         message = shot_message(payload)
@@ -200,15 +232,26 @@ class OpenGolfSimSession(SimulatorSession):
         with self._lock:
             now = time.monotonic()
             self._airborne = [s for s in self._airborne if now - s["at"] < RESULT_SECONDS]
-            self._airborne.append({"at": now, "shot": message["shot"], "id": shot_id})
         with self._gap_lock:
             self._settle()
-            reply = self._answer_to(message, lambda reply: "status" in reply)
+            with self._lock:
+                self._airborne.append({"at": now, "shot": message["shot"], "id": shot_id,
+                                       "on": self.generation})
+            self._owed_since = time.monotonic()
+            reply = self._answer_to(message, shot_id)
         if reply is None:
             return Delivery(UNKNOWN, "sent to OpenGolfSim, which has not answered")
+        delivery = self._judge(reply)
+        if delivery.outcome == REJECTED:
+            self._forget(shot_id)
+        return delivery
+
+    def _answers(self, reply: Dict[str, Any]) -> bool:
+        return "status" in reply and self._is_shots
+
+    def _judge(self, reply: Dict[str, Any]) -> Delivery:
         if reply.get("status") == 200:
             return Delivery(ACCEPTED, "OpenGolfSim took it")
-        self._forget(shot_id)
         return Delivery(REJECTED, str(reply.get("error") or "OpenGolfSim refused it"))
 
     def _forget(self, shot_id: str) -> None:
@@ -220,6 +263,8 @@ class OpenGolfSimSession(SimulatorSession):
     def _dispatch(self, message: Dict[str, Any]) -> None:
         if "status" in message:
             self._unanswered = max(0, self._unanswered - 1)
+            self._is_shots = self._ahead == 0
+            self._ahead = max(0, self._ahead - 1)
         if message.get("type") == "result":
             self._landed(message)
         super()._dispatch(message)
@@ -237,14 +282,18 @@ class OpenGolfSimSession(SimulatorSession):
             return
         now = time.monotonic()
         with self._lock:
-            found = next((s for s in self._airborne
-                          if now - s["at"] < RESULT_SECONDS and _same(s["shot"], echoed)), None)
-            if found is None:
+            fit = [s for s in self._airborne
+                   if now - s["at"] < RESULT_SECONDS and _same(s["shot"], echoed)]
+            if len(fit) != 1:
+                # Nobody's, or it could be more than one's. Saying nothing is
+                # better than crediting a swing that was never played.
                 return
+            found = fit[0]
             self._airborne.remove(found)
+            current = found["on"] == self.generation
         if self.on_result is not None:
             try:
-                self.on_result(found["id"], result)
+                self.on_result(found["id"], result, current)
             except Exception:
                 pass
 
@@ -253,12 +302,12 @@ class OpenGolfSimSession(SimulatorSession):
         seen: List[Dict[str, float]] = []
         real = self.on_result
 
-        def landed(shot_id: str, result: Dict[str, float]) -> None:
+        def landed(shot_id: str, result: Dict[str, float], current: bool) -> None:
             if shot_id == "test":
                 seen.append(result)
                 played.set()
             elif real is not None:
-                real(shot_id, result)
+                real(shot_id, result, current)
 
         self.on_result = landed
         try:
@@ -275,7 +324,9 @@ class OpenGolfSimSession(SimulatorSession):
 
 def _same(sent: Dict[str, Any], echoed: Dict[str, Any]) -> bool:
     for key, tolerance in (("ballSpeed", 0.15), ("verticalLaunchAngle", 0.15),
-                           ("horizontalLaunchAngle", 0.15), ("spinSpeed", 2.0)):
+                           ("horizontalLaunchAngle", 0.15), ("spinSpeed", 2.0),
+                           # Signed. A hook and a slice can agree on all the rest.
+                           ("spinAxis", 0.15)):
         theirs = _number(echoed.get(key))
         if theirs is None or abs(theirs - sent[key]) > tolerance:
             return False

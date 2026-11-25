@@ -293,6 +293,15 @@ class PiBackend:
 
         raise NotImplementedError
 
+    def board_serial(self) -> str:
+        """The Raspberry Pi's own serial number, or an empty string.
+
+        Burned into the hardware, so unlike the enclosure's identity it does
+        not travel in a backup.
+        """
+
+        return ""
+
     def system_facts(self) -> SystemFacts:
         raise NotImplementedError
 

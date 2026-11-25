@@ -266,3 +266,14 @@ if sys.platform == "win32":
         done = subprocess.run(["cmd", "/c", str(BATCH), "--help"], input="\n",
                               capture_output=True, text=True, timeout=60)
         assert "usage" in done.stdout or "Python 3.13" in done.stdout
+
+
+def test_rebuilding_never_erases_a_filled_in_owner_card(kit):
+    """It may be the only copy of the way back in."""
+
+    make.finish_kit(kit, "1.2.3")
+    card = kit / "Owner card.txt"
+    assert "Setup password" in card.read_text(encoding="utf-8")
+    card.write_text("Setup password: ABCD", encoding="utf-8")
+    make.finish_kit(kit, "1.2.3")
+    assert card.read_text(encoding="utf-8") == "Setup password: ABCD"

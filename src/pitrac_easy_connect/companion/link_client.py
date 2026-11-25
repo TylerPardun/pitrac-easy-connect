@@ -60,6 +60,7 @@ class CompanionLinkClient:
         reconnect_seconds: float = RECONNECT_SECONDS,
         fallback_hosts: Optional[List[str]] = None,
         expected_device_id: str = "",
+        more_hosts: Optional[Callable[[], List[str]]] = None,
     ):
         self.host = host
         self.port = port
@@ -72,6 +73,7 @@ class CompanionLinkClient:
         self.on_state = on_state
         self.on_enclosure_status = on_enclosure_status
         self.reconnect_seconds = reconnect_seconds
+        self._more_hosts = more_hosts
         self._hosts = list(dict.fromkeys([host, *(fallback_hosts or [])]))
 
         self._lock = threading.RLock()
@@ -114,6 +116,17 @@ class CompanionLinkClient:
 
     # --- The loop ---------------------------------------------------------
 
+    def _candidates(self) -> List[str]:
+        """Everywhere worth trying this time round, best first."""
+
+        extra: List[str] = []
+        if self._more_hosts is not None:
+            try:
+                extra = self._more_hosts()
+            except Exception:
+                pass
+        return list(dict.fromkeys([*self._hosts, *extra]))
+
     def _run(self) -> None:
         while not self._stop.is_set():
             # A structured error learned from one candidate this cycle (the
@@ -122,7 +135,7 @@ class CompanionLinkClient:
             # (typically a DNS lookup that fails for an mDNS hostname).
             structured_this_cycle: Optional[Dict[str, Any]] = None
             terminal = False
-            for candidate in self._hosts:
+            for candidate in self._candidates():
                 if self._stop.is_set():
                     return
                 with self._lock:
@@ -150,7 +163,8 @@ class CompanionLinkClient:
                     # Keep the address that just worked first and retry it on
                     # the next cycle. Fallbacks remain available if the next
                     # connection attempt itself fails.
-                    self._hosts.remove(candidate)
+                    if candidate in self._hosts:
+                        self._hosts.remove(candidate)
                     self._hosts.insert(0, candidate)
                     break
                 if terminal:

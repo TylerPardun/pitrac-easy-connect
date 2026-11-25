@@ -565,22 +565,31 @@ $("bkFile").addEventListener("change",async event=>{
     const info=await api("/api/backup/inspect",{file:text});
     $("bkPreview").innerHTML=`<div class="note"><strong>${esc(info.displayName)}</strong>,
       ${esc(info.createdText)}<br>${info.sectionLabels.map(esc).join(", ")}
-      ${info.sameDevice?"":"<br><span style='color:var(--amber)'>From a different enclosure.</span>"}
+      ${info.sameDevice&&info.sameHardware!==false?"":"<br><span style='color:var(--amber)'>From a different enclosure.</span>"}
       </div><button class="quiet" id="doRestore" style="margin-top:9px">Restore this</button>`;
     $("doRestore").addEventListener("click",b=>run(b.target, async()=>{
       // Calibration belongs to one particular pair of cameras. Sending the
       // override without asking left an amber note as the only thing between
       // somebody and a machine calibrated for a different enclosure.
-      if(!info.sameDevice){
+      const elsewhere=!info.sameDevice||info.sameHardware===false;
+      if(elsewhere){
         if(!confirm("This backup is from a different PiTrac.\n\n"+
             "Its camera calibration describes that enclosure's cameras, not "+
             "this one's. Restoring it will make this PiTrac measure shots "+
             "incorrectly until it is calibrated again.\n\n"+
             "Restore it anyway?")) return;
       }
+      // How hard the strobe is driven is only right for one circuit board, and
+      // too hard for it can damage it. Only offered on the same Raspberry Pi,
+      // and even then only the owner knows whether the board was changed.
+      const sameBoard=info.canRestoreStrobe && confirm(
+        "Restore the strobe settings too?\n\n"+
+        "Press OK only if the connector board and strobe have NOT been changed since "+
+        "this backup was made. The wrong settings can damage the strobe.\n\n"+
+        "Cancel keeps the settings this PiTrac has now. Everything else is restored either way.");
       const result=await api("/api/backup/restore",{file:text, calibration:true, preferences:true,
         identity:info.sections.includes("identity"), pairings:info.sections.includes("pairings"),
-        confirmDifferentDevice:!info.sameDevice});
+        confirmDifferentDevice:elsewhere, confirmSameBoard:sameBoard});
       $("bkPreview").innerHTML="";
       if(result.needsRestart){
         $("note").innerHTML='<div class="note">Restored. Restarting PiTrac so it '+

@@ -9,7 +9,7 @@ import time
 import pytest
 
 from pitrac_easy_connect.companion.page import PAGE
-from pitrac_easy_connect.companion.service import COMMAND_TIMEOUTS, SETUP_ADDRESS
+from pitrac_easy_connect.companion.service import COMMAND_TIMEOUTS
 from pitrac_easy_connect.common.errors import EasyConnectError
 from pitrac_easy_connect.pi.service import SLOW_COMMANDS
 
@@ -130,7 +130,7 @@ def test_everything_slow_is_given_long_enough_and_its_own_thread():
 def test_a_paired_computer_looks_for_it_on_its_own_wifi(rig):
     """Somewhere new, that is the only place it is."""
 
-    assert SETUP_ADDRESS in rig.companion._link._hosts
+    assert "10.42.0.1" in rig.companion._link._candidates()
 
 
 # --- In the window ----------------------------------------------------------------

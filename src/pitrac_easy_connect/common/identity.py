@@ -28,9 +28,9 @@ MAX_DISPLAY_NAME = 40
 DEVICE_ID_LENGTH = 8
 SETUP_PASSWORD_LENGTH = 12
 
-#: NetworkManager's shared-address mode always puts the enclosure at this
-#: address on its own hotspot, so this URL is correct on every enclosure and can
-#: be printed before the device is ever powered on.
+#: Where NetworkManager's shared-address mode puts the enclosure on its own
+#: hotspot, unless the enclosure is also plugged into a network that uses it.
+#: The app works the address out for itself, so this is only for a phone.
 HOTSPOT_ADDRESS = "10.42.0.1"
 HOTSPOT_SETUP_URL = "http://" + HOTSPOT_ADDRESS
 
@@ -110,8 +110,10 @@ class DeviceIdentity:
                 "",
                 "  Setup Wi-Fi name:     {}".format(self.setup_ssid),
                 "  Setup Wi-Fi password: {}".format(self.setup_password),
-                "  Setup page:           {}".format(HOTSPOT_SETUP_URL),
-                "  Backup address:       {}".format(self.recovery_address),
+                "",
+                "Join it from your computer and open PiTrac Easy-Connect, which does",
+                "the rest. From a phone, open {} instead.".format(HOTSPOT_SETUP_URL),
+                "If that does not open, try {}.".format(self.recovery_address),
                 "",
                 "Keep this card. The password is unique to this enclosure and",
                 "is the only way back in if it cannot reach your network.",

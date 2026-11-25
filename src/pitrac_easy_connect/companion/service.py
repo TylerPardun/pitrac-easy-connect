@@ -135,9 +135,6 @@ def default_computer_name() -> str:
         return "This computer"
 
 
-#: Where an enclosure answers on its own setup hotspot.
-SETUP_ADDRESS = "10.42.0.1"
-
 #: How long to wait for an enclosure to do something. A radio needs longer.
 COMMAND_TIMEOUT = 20.0
 COMMAND_TIMEOUTS = {
@@ -984,9 +981,6 @@ class CompanionService:
             # Records written before hostname persistence still have a stable
             # device id from which every enclosure hostname is derived.
             candidates.append("pitrac-{}.local".format(device_id.lower()))
-        # Where every enclosure is while it is being its own Wi-Fi. Which
-        # enclosure answers there is checked like any other address.
-        candidates.append(SETUP_ADDRESS)
         candidates = list(dict.fromkeys(candidate for candidate in candidates if candidate))
 
         self.disconnect()
@@ -1001,6 +995,9 @@ class CompanionService:
             on_state=self._on_link_state,
             on_enclosure_status=self._on_enclosure_status,
             fallback_hosts=candidates[1:],
+            # Looked up every time, because it depends on which network this
+            # computer is on, and moving between them is the whole situation.
+            more_hosts=discovery.setup_addresses,
             expected_device_id=device_id,
         )
         with self._lock:
@@ -1057,9 +1054,11 @@ class CompanionService:
             return opengolfsim.OpenGolfSimSession(
                 self.simulator_host, port,
                 on_message=self._on_opengolfsim_message, on_result=self._on_shot_played,
+                on_late_answer=self._on_late_answer, on_lost=self._on_simulator_lost,
             )
         return SimulatorSession(
             simulator, self.simulator_host, port, on_message=self._on_simulator_message,
+            on_late_answer=self._on_late_answer, on_lost=self._on_simulator_lost,
         )
 
     def _on_opengolfsim_message(self, message: Dict[str, Any]) -> None:
@@ -1073,15 +1072,40 @@ class CompanionService:
             self.shots.set_club(club)
             self._tell_pitrac_the_club()
 
-    def _on_shot_played(self, shot_id: str, result: Dict[str, float]) -> None:
+    def _on_shot_played(self, shot_id: str, result: Dict[str, float], current: bool) -> None:
         """The simulator finished with a shot, and said where it went."""
 
-        found = dict(result, outcome=PLAYED, delivered=True)
+        self._learn(shot_id, dict(result, outcome=PLAYED, delivered=True))
+        if current:
+            self._prove_the_simulator()
+
+    def _on_late_answer(self, shot_id: str, delivery: Delivery) -> None:
+        """A shot was answered after it had been given up on."""
+
+        self._learn(shot_id, {"outcome": delivery.outcome, "delivered": _as_delivered(delivery)})
+        if delivery.outcome == ACCEPTED and self.mode is PlayMode.GSPRO:
+            self._prove_the_simulator()
+        elif delivery.outcome == REJECTED:
+            with self._lock:
+                self._test_shot_accepted = False
+                self._last_simulator_error = SIM_REJECTED_SHOT.as_dict(delivery.message)
+            self._report_simulator_state()
+
+    def _on_simulator_lost(self) -> None:
+        """Whatever was shown about that connection was about that connection."""
+
+        with self._lock:
+            news, self._test_shot_accepted = self._test_shot_accepted, False
+        if news:
+            self._report_simulator_state()
+
+    def _learn(self, shot_id: str, found: Dict[str, Any]) -> None:
+        if not shot_id:
+            return
         if not self.shots.amend(shot_id, **found):
-            # It landed before it was even written down.
+            # Heard about before it was even written down.
             with self._lock:
                 self._landed_early[shot_id] = found
-        self._prove_the_simulator()
 
     def _prove_the_simulator(self) -> None:
         """A real swing that counted proves more than any test shot could."""
@@ -1440,13 +1464,14 @@ class CompanionService:
         # Only the enclosure knows whether its cameras are attached, its
         # calibration is present, and its measurement program is running, so
         # this step is answered from the enclosure's own self-test.
-        measuring, measuring_detail = self._enclosure_measuring(linked, pi_status)
+        measuring, measuring_detail, measuring_next = self._enclosure_measuring(linked, pi_status)
         steps: List[Dict[str, Any]] = [
             {
                 "key": "pitrac",
                 "title": "PiTrac is measuring",
                 "ok": measuring,
                 "detail": measuring_detail,
+                "next": measuring_next,
             },
             {
                 "key": "link",
@@ -1487,7 +1512,11 @@ class CompanionService:
             step["blocking"] = not step["ok"]
         return steps
 
-    #: Enclosure self-test checks this computer cannot evaluate for itself.
+    #: What this computer knows for itself, better than it can be told.
+    OUR_OWN_CHECKS = ("companion", "simulator")
+
+    #: What play has always depended on, for an enclosure too old to say which
+    #: of its checks are critical.
     ENCLOSURE_CHECKS = (
         "hardware", "cameras", "pitracWeb", "calibration", "strobe",
         "pitracMeasurement", "pitracTarget",
@@ -1497,22 +1526,32 @@ class CompanionService:
         """Whether the enclosure says it can actually measure a shot."""
 
         if not linked:
-            return False, "Not connected to PiTrac"
+            return False, "Not connected to PiTrac", ""
 
         report = pi_status.get("selfTest")
         if not report:
             # The enclosure pushes its state on connecting; until it arrives,
             # this is genuinely unknown and must not be shown as fine.
-            return False, "Waiting for the enclosure"
+            return False, "Waiting for the enclosure", ""
 
+        # Everything the enclosure itself says stops play, rather than a list of
+        # names kept here. The list missed the models, the memory card, the heat
+        # and the power, and would have missed whatever was added next.
         failing = [
             check
             for check in report.get("checks", [])
-            if check.get("key") in self.ENCLOSURE_CHECKS and check.get("status") != "pass"
+            if check.get("status") != "pass"
+            and check.get("key") not in self.OUR_OWN_CHECKS
+            and (check.get("critical") or check.get("key") in self.ENCLOSURE_CHECKS)
         ]
         if failing:
-            return False, failing[0].get("detail") or failing[0].get("title", "")
-        return True, "The launch monitor is running"
+            first = failing[0]
+            return (
+                False,
+                first.get("detail") or first.get("title", ""),
+                (first.get("error") or {}).get("nextStep", ""),
+            )
+        return True, "The launch monitor is running", ""
 
     def state(self) -> State:
         """The one word shown on this computer, derived from the chain.

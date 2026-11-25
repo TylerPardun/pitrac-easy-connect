@@ -626,6 +626,11 @@ class NmcliBackend(PiBackend):
 
     # --- The rest of the machine -----------------------------------------
 
+    def board_serial(self) -> str:
+        serial = _read_text("/proc/device-tree/serial-number").replace("\x00", "").strip()
+        # All zeros is what a board with no serial says.
+        return serial if serial.strip("0") else ""
+
     def system_facts(self) -> SystemFacts:
         model = _read_text("/proc/device-tree/model").replace("\x00", "").strip()
         os_name = ""

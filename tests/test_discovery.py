@@ -4,6 +4,8 @@ import json
 import socket
 import types
 
+import pytest
+
 from pitrac_easy_connect.common import discovery
 
 
@@ -114,3 +116,34 @@ def test_every_active_ipv4_directed_broadcast_is_used(monkeypatch):
     assert discovery._network_broadcasts() == [
         "255.255.255.255", "10.0.0.255", "192.168.64.255"
     ]
+
+
+# --- An enclosure on its own Wi-Fi -------------------------------------------
+
+
+@pytest.mark.parametrize("own, expected", [
+    (["10.42.0.57"], ["10.42.0.1"]),
+    (["192.168.1.20", "10.42.1.83"], ["10.42.1.1", "10.42.0.1"]),
+    (["192.168.1.20"], ["10.42.0.1"]),
+    (["10.43.0.9", "not an address"], ["10.42.0.1"]),
+    ([], ["10.42.0.1"]),
+])
+def test_where_an_enclosure_is_on_its_own_wifi(own, expected):
+    """NetworkManager picks another when something already uses the usual one,
+    such as the network an enclosure is plugged into."""
+
+    assert discovery.setup_addresses(own) == expected
+
+
+def test_it_is_worked_out_again_each_time(monkeypatch):
+    """The computer moving between networks is the whole situation."""
+
+    from pitrac_easy_connect.companion.link_client import CompanionLinkClient
+
+    here = ["192.168.1.20"]
+    client = CompanionLinkClient(
+        "192.168.1.9", 1, "p", "s", "v", "pc", on_shot=None,
+        more_hosts=lambda: discovery.setup_addresses(here))
+    assert client._candidates() == ["192.168.1.9", "10.42.0.1"]
+    here[:] = ["10.42.3.40"]
+    assert client._candidates() == ["192.168.1.9", "10.42.3.1", "10.42.0.1"]

@@ -41,7 +41,7 @@ CALIBRATION = {
 }
 
 
-def build(tmp_path, name="a"):
+def build(tmp_path, name="a", serial="pi-same"):
     root = tmp_path / name
     root.mkdir(parents=True, exist_ok=True)
     identity = IdentityStore(root / "device.json")
@@ -49,7 +49,8 @@ def build(tmp_path, name="a"):
     pitrac = make_pitrac(root, relay_ports={Simulator.GSPRO: 9210, Simulator.E6: 9248})
     pitrac.api.calibration = copy.deepcopy(CALIBRATION)
     pairings = PairingManager(root / "pairings.json", identity.identity.device_id)
-    manager = BackupManager(identity, settings, pitrac, pairings, root / "backups")
+    manager = BackupManager(identity, settings, pitrac, pairings, root / "backups",
+                            board_serial=lambda: serial)
     return identity, settings, pitrac, pairings, manager
 
 
@@ -608,28 +609,130 @@ def test_calibration_pitrac_partly_refuses_is_put_back_as_it_was(tmp_path):
     assert pitrac.api.calibration == {"gs_config": {"cameras": {"marker": "newer"}}}
 
 
-def test_strobe_calibration_is_never_taken_from_another_enclosure(tmp_path):
-    """It sets how hard that board's strobe is driven. Wrong can mean damage."""
-
-    _i, _s, first_pitrac, _p, first = build(tmp_path, "a")
-    _i, _s, second_pitrac, _p, second = build(tmp_path, "b")
-    first_pitrac.api.calibration["gs_config"]["strobing"] = {"kDAC_setting": 200}
-    backup = first.create_bytes()
-
-    second_pitrac.api.calibration["gs_config"]["strobing"] = {"kDAC_setting": 90}
-    second.restore(backup, confirm_different_device=True)
-    assert second_pitrac.api.calibration["gs_config"]["strobing"] == {"kDAC_setting": 90}
-
-    second_pitrac.api.calibration["gs_config"].pop("strobing")
-    second.restore(backup, confirm_different_device=True)
-    assert "kDAC_setting" not in second_pitrac.api.calibration["gs_config"]["strobing"]
+# --- The strobe, which the wrong settings can damage -------------------------
 
 
-def test_strobe_calibration_comes_back_to_the_enclosure_it_came_from(tmp_path):
-    _identity, _settings, pitrac, _pairings, manager = build(tmp_path)
-    pitrac.api.calibration["gs_config"]["strobing"] = {"kDAC_setting": 200}
-    backup = manager.create_bytes()
-    pitrac.api.calibration = {}
+def strobe(pitrac, where="calibration"):
+    held = pitrac.api.calibration if where == "calibration" else pitrac.api.user_settings
+    return (held.get("gs_config") or {}).get("strobing")
 
-    manager.restore(backup)
-    assert pitrac.api.calibration["gs_config"]["strobing"] == {"kDAC_setting": 200}
+
+def set_strobe(pitrac, drive, board="3"):
+    pitrac.api.calibration.setdefault("gs_config", {})["strobing"] = {"kDAC_setting": drive}
+    pitrac.api.user_settings.setdefault("gs_config", {})["strobing"] = {
+        "kConnectionBoardVersion": board}
+
+
+MINE = ({"kDAC_setting": 90}, {"kConnectionBoardVersion": "3"})
+
+
+def two_machines(tmp_path):
+    first = build(tmp_path, "a", serial="pi-a")
+    second = build(tmp_path, "b", serial="pi-b")
+    set_strobe(first[2], 200, board="2")
+    set_strobe(second[2], 90, board="3")
+    return first, second
+
+
+@pytest.mark.parametrize("options", [
+    {"confirm_different_device": True},
+    {"confirm_different_device": True, "identity": True},
+    {"confirm_different_device": True, "confirm_same_board": True},
+    {"confirm_different_device": True, "identity": True, "confirm_same_board": True},
+])
+def test_another_boards_strobe_settings_are_never_taken(tmp_path, options):
+    """However it is asked for, and whichever section they are hiding in. The
+    board version is one of them: an older one switches PiTrac's check off."""
+
+    first, second = two_machines(tmp_path)
+    result = second[4].restore(first[4].create_bytes(include_identity=True), **options)
+    assert (strobe(second[2]), strobe(second[2], "settings")) == MINE
+    assert result.strobe_restored is False
+
+
+def test_sharing_an_identity_does_not_make_them_the_same_board(tmp_path):
+    """Restoring identity copies it, so afterwards every later restore looked
+    like one onto the same enclosure."""
+
+    first, second = two_machines(tmp_path)
+    backup = first[4].create_bytes(include_identity=True)
+    second[4].restore(backup, identity=True, confirm_different_device=True)
+    assert second[4].inspect(backup).same_device is True
+    second[4].restore(backup, confirm_different_device=True, confirm_same_board=True)
+    assert (strobe(second[2]), strobe(second[2], "settings")) == MINE
+
+
+def test_sharing_an_identity_does_not_make_the_cameras_the_same_either(tmp_path):
+    first, second = two_machines(tmp_path)
+    backup = first[4].create_bytes(include_identity=True)
+    with pytest.raises(EasyConnectError) as caught:
+        second[4].restore(backup, identity=True)
+    assert caught.value.info.code == "PT-CFG-004"
+
+
+def test_a_machine_with_no_strobe_settings_is_left_without_any(tmp_path):
+    """PiTrac then refuses to fire it until it is calibrated, which is right."""
+
+    first, second = two_machines(tmp_path)
+    second[2].api.calibration = {}
+    second[2].api.user_settings = {}
+    second[4].restore(first[4].create_bytes(), confirm_different_device=True)
+    assert strobe(second[2]) is None and strobe(second[2], "settings") is None
+
+
+def test_a_new_memory_card_gets_them_back_when_the_owner_says_so(tmp_path):
+    """What the backup is for: the same Pi, the same board, a new card."""
+
+    before = build(tmp_path, "before", serial="pi-a")
+    set_strobe(before[2], 200)
+    backup = before[4].create_bytes(include_identity=True)
+    after = build(tmp_path, "after", serial="pi-a")
+    after[2].api.calibration = {}
+
+    assert after[4].inspect(backup).can_restore_strobe is True
+    result = after[4].restore(backup, identity=True, confirm_same_board=True)
+    assert strobe(after[2]) == {"kDAC_setting": 200}
+    assert result.strobe_restored is True
+
+
+def test_the_same_pi_is_not_enough_without_the_owners_word(tmp_path):
+    """Only they know whether the board plugged into it was changed."""
+
+    before = build(tmp_path, "a", serial="pi-a")
+    set_strobe(before[2], 200)
+    backup = before[4].create_bytes()
+    set_strobe(before[2], 90)
+    before[4].restore(backup)
+    assert strobe(before[2]) == {"kDAC_setting": 90}
+
+
+@pytest.mark.parametrize("theirs, ours", [("", "pi-a"), ("pi-a", ""), ("", "")])
+def test_not_knowing_which_pi_it_was_is_not_knowing(tmp_path, theirs, ours):
+    """Including every backup made before this was recorded."""
+
+    before = build(tmp_path, "a", serial=theirs)
+    set_strobe(before[2], 200)
+    backup = before[4].create_bytes(include_identity=True)
+    after = build(tmp_path, "b", serial=ours)
+    set_strobe(after[2], 90)
+    info = after[4].inspect(backup)
+    assert info.same_hardware is None and info.can_restore_strobe is False
+    after[4].restore(backup, identity=True, confirm_same_board=True)
+    assert strobe(after[2]) == {"kDAC_setting": 90}
+
+
+def test_the_owner_is_asked_and_the_safe_answer_is_no():
+    from pitrac_easy_connect.companion.page import PAGE as desktop
+    from pitrac_easy_connect.pi.portal_page import PAGE as portal
+
+    for page in (desktop, portal):
+        assert "info.canRestoreStrobe && confirm(" in page
+        assert "Cancel keeps the settings" in page
+
+
+def test_a_pi_with_no_serial_number_is_not_given_one(tmp_path, monkeypatch):
+    from pitrac_easy_connect.pi import nmcli_backend
+
+    for text, expected in (("10000000abcdef01\x00", "10000000abcdef01"), ("0000000000000000\x00", ""), ("", "")):
+        monkeypatch.setattr(nmcli_backend, "_read_text", lambda path: text)
+        assert nmcli_backend.NmcliBackend().board_serial() == expected

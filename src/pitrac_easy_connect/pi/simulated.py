@@ -69,6 +69,7 @@ class SimulatedPi(PiBackend):
     services: Dict[str, bool] = field(default_factory=lambda: {"pitrac-web.service": True})
     running_processes: List[str] = field(default_factory=lambda: ["pitrac_lm"])
     host_name: str = "pitrac"
+    serial: str = "10000000abcdef01"
     supports_checkpoints: bool = True
     scans_while_hotspot: bool = False
     #: Set by a test to make the next network operation raise, standing in for
@@ -365,6 +366,9 @@ class SimulatedPi(PiBackend):
         return True if access_point.isolates_clients else bool(active.gateway)
 
     # --- The rest of the machine -----------------------------------------
+
+    def board_serial(self) -> str:
+        return self.serial
 
     def system_facts(self) -> SystemFacts:
         return SystemFacts(

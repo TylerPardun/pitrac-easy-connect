@@ -24,10 +24,15 @@ accepting it would give a plausible-looking but incorrect ball flight, which is
 worse than refusing. So calibration coming from a different device ID needs an
 explicit acknowledgement.
 
-**Strobe calibration belongs to one circuit board.** It sets how hard the strobe
-is driven, so a value from another board is a risk to the hardware rather than
-just a wrong number. It is never taken from another enclosure, acknowledged or
-not; this enclosure keeps its own.
+**Strobe settings belong to one circuit board.** They set how hard the strobe is
+driven, and which board PiTrac believes it is driving, so values from another are
+a risk to the hardware rather than just wrong numbers. They are restored only to
+the Raspberry Pi they were read from, and only when its owner says the board
+attached to it has not been changed. Otherwise this enclosure keeps its own, and
+if it has none PiTrac asks for the strobe to be calibrated.
+
+The enclosure's identity is no evidence of that. Restoring identity copies it, so
+afterwards two machines have the same one. The Pi's serial number does not copy.
 """
 
 import copy
@@ -36,7 +41,7 @@ import time
 from dataclasses import dataclass, field
 from hashlib import sha256
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Callable, Dict, List, Optional
 
 from .. import __version__
 from ..common import jsontext
@@ -69,8 +74,10 @@ SECTION_LABELS = {
     SECTION_IDENTITY: "Enclosure identity and setup Wi-Fi password",
     SECTION_PAIRINGS: "Paired computers",
 }
-#: How hard this enclosure's own strobe board is driven.
-STROBE_KEY = "gs_config.strobing.kDAC_setting"
+#: How this enclosure's own strobe board is driven. The whole section, in the
+#: settings as well as the calibration: which version the board is lives in the
+#: settings, and telling PiTrac it is an older one turns its safety check off.
+STROBE_SECTION = "gs_config.strobing"
 
 #: Where PiTrac has kept its simulator destinations. Wiring, not a preference:
 #: a backup must never redirect where this enclosure's shots go.
@@ -99,6 +106,14 @@ class BackupInfo:
     sections: List[str]
     same_device: bool
     contains_secrets: bool
+    #: Whether it was made on this very Raspberry Pi. ``None`` when either side
+    #: cannot say.
+    same_hardware: Optional[bool] = None
+    has_strobe: bool = False
+
+    @property
+    def can_restore_strobe(self) -> bool:
+        return self.has_strobe and self.same_hardware is True
 
     @property
     def created_text(self) -> str:
@@ -116,6 +131,8 @@ class BackupInfo:
             "sectionLabels": [SECTION_LABELS.get(s, s) for s in self.sections],
             "sameDevice": self.same_device,
             "containsSecrets": self.contains_secrets,
+            "sameHardware": self.same_hardware,
+            "canRestoreStrobe": self.can_restore_strobe,
         }
 
 
@@ -125,6 +142,8 @@ class RestoreResult:
     skipped: List[str] = field(default_factory=list)
     pre_restore_backup: str = ""
     needs_restart: bool = False
+    #: Whether the strobe settings came from the backup, or were kept.
+    strobe_restored: bool = False
 
     def as_dict(self) -> Dict[str, Any]:
         return {
@@ -132,6 +151,7 @@ class RestoreResult:
             "skipped": [SECTION_LABELS.get(s, s) for s in self.skipped],
             "preRestoreBackup": self.pre_restore_backup,
             "needsRestart": self.needs_restart,
+            "strobeRestored": self.strobe_restored,
         }
 
 
@@ -144,7 +164,9 @@ class BackupManager:
         pairings,
         backup_dir: Path,
         version: str = __version__,
+        board_serial: Callable[[], str] = lambda: "",
     ):
+        self.board_serial = board_serial
         self.identity_store = identity_store
         self.settings = settings
         self.pitrac = pitrac
@@ -191,6 +213,7 @@ class BackupManager:
                 "deviceId": identity.device_id,
                 "displayName": identity.display_name,
                 "hardwareProfile": identity.hardware_profile,
+                "hardwareSerial": self.board_serial(),
             },
         }
 
@@ -246,6 +269,7 @@ class BackupManager:
         payload = document["payload"]
         device = payload.get("device") or {}
         sections = [s for s in payload.get("sections", []) if s in SECTION_LABELS]
+        theirs, ours = str(device.get("hardwareSerial") or ""), self.board_serial()
         return BackupInfo(
             device_id=str(device.get("deviceId", "")),
             display_name=str(device.get("displayName", "PiTrac")),
@@ -255,6 +279,12 @@ class BackupManager:
             sections=sections,
             same_device=str(device.get("deviceId", "")) == self.identity_store.identity.device_id,
             contains_secrets=bool(set(sections) & SECRET_SECTIONS),
+            same_hardware=(theirs == ours) if theirs and ours else None,
+            has_strobe=bool(
+                _dig(payload.get(SECTION_CALIBRATION) or {}, STROBE_SECTION)
+                or _dig((payload.get(SECTION_PREFERENCES) or {}).get("pitracSettings") or {},
+                        STROBE_SECTION)
+            ),
         )
 
     def _parse(self, data: Any) -> Dict[str, Any]:
@@ -309,6 +339,7 @@ class BackupManager:
         identity: bool = False,
         pairings: bool = False,
         confirm_different_device: bool = False,
+        confirm_same_board: bool = False,
     ) -> RestoreResult:
         document = self._parse(data)
         payload = document["payload"]
@@ -319,7 +350,12 @@ class BackupManager:
         # Restoring identity makes this enclosure become the one in the backup,
         # so the calibration is no longer from "a different enclosure".
         becoming_same_device = identity and SECTION_IDENTITY in available
-        if wants_calibration and not info.same_device and not becoming_same_device:
+        # Unless the hardware says otherwise. Two enclosures given the same
+        # identity are still two pairs of cameras.
+        elsewhere = info.same_hardware is False or (
+            not info.same_device and not becoming_same_device
+        )
+        if wants_calibration and elsewhere:
             if not confirm_different_device:
                 raise EasyConnectError(
                     CFG_BACKUP_WRONG_DEVICE,
@@ -351,7 +387,7 @@ class BackupManager:
         # Always take a snapshot first, so a restore can itself be undone.
         snapshot = self._snapshot(exported)
         result = RestoreResult(pre_restore_backup=snapshot)
-        own_calibration = info.same_device or becoming_same_device
+        same_board = confirm_same_board and info.can_restore_strobe
 
         # What each thing being changed looked like beforehand, so a failure
         # can be undone directly. Replaying a restore from the snapshot would
@@ -360,7 +396,7 @@ class BackupManager:
         try:
             return self._apply(payload, available, result, wants_calibration,
                                calibration, preferences, identity, pairings,
-                               exported, own_calibration)
+                               exported, same_board)
         except Exception:
             self._put_back(undo)
             raise
@@ -433,16 +469,17 @@ class BackupManager:
 
     def _apply(self, payload, available, result, wants_calibration,
                calibration, preferences, identity, pairings,
-               exported, own_calibration) -> RestoreResult:
+               exported, same_board) -> RestoreResult:
         if wants_calibration:
-            self._restore_calibration(payload[SECTION_CALIBRATION], exported, own_calibration)
+            self._restore_calibration(payload[SECTION_CALIBRATION], exported, same_board)
+            result.strobe_restored = same_board
             result.restored.append(SECTION_CALIBRATION)
             result.needs_restart = True
         elif calibration:
             result.skipped.append(SECTION_CALIBRATION)
 
         if preferences and SECTION_PREFERENCES in available:
-            self._restore_preferences(payload[SECTION_PREFERENCES])
+            self._restore_preferences(payload[SECTION_PREFERENCES], exported, same_board)
             result.restored.append(SECTION_PREFERENCES)
             result.needs_restart = True
         elif preferences:
@@ -479,18 +516,13 @@ class BackupManager:
             self.pairings.validate(payload[SECTION_PAIRINGS])
 
     def _restore_calibration(
-        self, wanted: Any, exported: Dict[str, Any], own_calibration: bool
+        self, wanted: Any, exported: Dict[str, Any], same_board: bool
     ) -> None:
         if not isinstance(wanted, dict):
             raise EasyConnectError(CFG_BACKUP_INVALID, "the calibration in the backup is not readable")
         restored = copy.deepcopy(wanted)
-        if not own_calibration:
-            # PiTrac replaces the whole section, so leaving the key out would
-            # erase this board's own value rather than keep it.
-            _uproot(restored, STROBE_KEY)
-            mine = _dig(exported.get("calibration_data") or {}, STROBE_KEY)
-            if mine is not None:
-                _plant(restored, STROBE_KEY, mine)
+        if not same_board:
+            _keep_own(restored, exported.get("calibration_data") or {}, STROBE_SECTION)
         try:
             refused = self.pitrac.import_(calibration_data=restored)
         except PitracApiError as exc:
@@ -502,7 +534,9 @@ class BackupManager:
                 "; ".join("{}: {}".format(key, why) for key, why in sorted(refused.items())),
             )
 
-    def _restore_preferences(self, section: Dict[str, Any]) -> None:
+    def _restore_preferences(
+        self, section: Dict[str, Any], exported: Dict[str, Any], same_board: bool
+    ) -> None:
         settings = section.get("settings")
         if isinstance(settings, dict):
             self.settings.replace(settings)
@@ -524,6 +558,8 @@ class BackupManager:
             restored = copy.deepcopy(pitrac_settings)
             for dotted in SIMULATOR_SETTINGS:
                 _uproot(restored, dotted)
+            if not same_board:
+                _keep_own(restored, exported.get("user_settings") or {}, STROBE_SECTION)
             try:
                 # Values this PiTrac no longer accepts are left out by PiTrac;
                 # for a preference that is the right outcome.
@@ -611,6 +647,19 @@ def _plant(document: Dict[str, Any], dotted: str, value: Any) -> None:
             node[part] = nxt
         node = nxt
     node[parts[-1]] = value
+
+
+def _keep_own(restored: Dict[str, Any], mine: Dict[str, Any], dotted: str) -> None:
+    """Put this machine's value over the backup's, or remove the backup's.
+
+    PiTrac replaces a whole section at once, so simply leaving something out of
+    what is restored would erase it here rather than keep it.
+    """
+
+    _uproot(restored, dotted)
+    value = _dig(mine, dotted)
+    if value is not None:
+        _plant(restored, dotted, copy.deepcopy(value))
 
 
 def _uproot(document: Dict[str, Any], dotted: str) -> None:

@@ -57,7 +57,19 @@ class SimulatorSession:
         host: str = "127.0.0.1",
         port: Optional[int] = None,
         on_message: Optional[Callable[[Dict[str, Any]], None]] = None,
+        on_late_answer: Optional[Callable[[str, Delivery], None]] = None,
+        on_lost: Optional[Callable[[], None]] = None,
     ):
+        #: Told when a shot is answered after it was given up on.
+        self.on_late_answer = on_late_answer
+        #: Told when the connection goes, however it went.
+        self.on_lost = on_lost
+        #: Which connection this is. What one connection showed is no evidence
+        #: about the next: the program may have been closed and reopened.
+        self.generation = 0
+        #: The shot still owed an answer. Answers carry no names, so at most one
+        #: may be owed at a time or nobody could say whose the next one is.
+        self._owed: Optional[str] = None
         self.simulator = simulator
         self.host = host
         self.port = port if port is not None else simulator.default_port
@@ -71,7 +83,7 @@ class SimulatorSession:
         self._reader: Optional[threading.Thread] = None
         self._stop = threading.Event()
         self._waiters: list = []
-        self._listeners: List[Callable[[Dict[str, Any]], None]] = []
+        self._listener: Optional[Callable[[Dict[str, Any]], None]] = None
         self.last_error = ""
         self.messages_sent = 0
         self.messages_received = 0
@@ -96,6 +108,8 @@ class SimulatorSession:
             sock.settimeout(0.5)
             self._prepare(sock)
             self._sock = sock
+            self.generation += 1
+            self._owed = None
             self.last_error = ""
             self._stop.clear()
             self._reader = threading.Thread(target=self._read_loop, args=(sock,), daemon=True)
@@ -108,10 +122,17 @@ class SimulatorSession:
         except OSError:
             return False
 
+    def reconnect(self) -> None:
+        """Start again on a connection where nothing is owed."""
+
+        self.close()
+        self.connect()
+
     def close(self) -> None:
         self._stop.set()
         with self._lock:
             sock, self._sock = self._sock, None
+            self._owed = None
         if sock is not None:
             try:
                 sock.shutdown(socket.SHUT_RDWR)
@@ -125,16 +146,31 @@ class SimulatorSession:
         if reader is not None and reader is not threading.current_thread():
             reader.join(timeout=2)
         self._reader = None
+        if sock is not None:
+            self._say_lost()
 
-    def _drop(self, reason: str) -> None:
+    def _say_lost(self) -> None:
+        if self.on_lost is not None:
+            try:
+                self.on_lost()
+            except Exception:
+                pass
+
+    def _drop(self, reason: str, sock: Optional[socket.socket] = None) -> None:
         with self._lock:
+            if self._sock is None or (sock is not None and sock is not self._sock):
+                # Already gone, or somebody else's: an old connection noticing
+                # it has closed must not take down the new one.
+                return
             self._sock = None
+            self._owed = None
             self.last_error = reason
             waiters = list(self._waiters)
             self._waiters.clear()
         for event, slot in waiters:
             slot.append(None)
             event.set()
+        self._say_lost()
 
     # --- Reading ----------------------------------------------------------
 
@@ -147,15 +183,15 @@ class SimulatorSession:
             except socket.timeout:
                 continue
             except OSError:
-                self._drop("the simulator closed the connection")
+                self._drop("the simulator closed the connection", sock)
                 return
             if not chunk:
-                self._drop("the simulator closed the connection")
+                self._drop("the simulator closed the connection", sock)
                 return
             try:
                 buffer += chunk.decode("utf-8")
             except UnicodeDecodeError:
-                self._drop("the simulator sent text we could not read")
+                self._drop("the simulator sent text we could not read", sock)
                 return
 
             while True:
@@ -178,12 +214,19 @@ class SimulatorSession:
             self.last_message_at = time.time()
             waiters = list(self._waiters)
             self._waiters.clear()
-            listeners = list(self._listeners)
+            listen, owed = None, None
+            if self._owed is not None and self._answers(message):
+                listen, owed, self._owed = self._listener, self._owed, None
         for event, slot in waiters:
             slot.append(message)
             event.set()
-        for listen in listeners:
+        if listen is not None:
             listen(message)
+        elif owed is not None and self.on_late_answer is not None:
+            try:
+                self.on_late_answer(owed, self._judge(message))
+            except Exception:
+                pass
         self.messages_seen += 1
         if self.on_message is not None:
             try:
@@ -209,17 +252,38 @@ class SimulatorSession:
         2xx codes about the player, and those are not answers to anything.
         """
 
-        reply = self._answer_to(payload, _answers_a_shot)
+        self._owe_nothing()
+        reply = self._answer_to(payload, shot_id)
         if reply is None:
             return Delivery(UNKNOWN, "sent to {}, which has not answered".format(self.simulator.label))
+        return self._judge(reply)
+
+    def _answers(self, reply: Dict[str, Any]) -> bool:
+        """Whether this is an answer to a shot, rather than something else said."""
+
+        code = reply.get("Code")
+        return code == 200 or (isinstance(code, int) and code >= 500)
+
+    def _judge(self, reply: Dict[str, Any]) -> Delivery:
         if reply.get("Code") == 200:
             return Delivery(ACCEPTED, "{} took it".format(self.simulator.label))
         return Delivery(REJECTED, str(reply.get("Message") or "{} refused it".format(
             self.simulator.label)))
 
-    def _answer_to(
-        self, message: Dict[str, Any], answers: Callable[[Dict[str, Any]], bool]
-    ) -> Optional[Dict[str, Any]]:
+    def _owe_nothing(self) -> None:
+        """Make sure the next answer can only be about what is sent next.
+
+        A shot that was never answered leaves a question open. If its answer
+        came in the meantime it has been credited to it. If not, it might arrive
+        any moment and be taken for the next shot's, so that connection is
+        finished with. Only when there is a next shot: one that is merely slow
+        is not cut off for being slow.
+        """
+
+        if self._owed is not None:
+            self.reconnect()
+
+    def _answer_to(self, message: Dict[str, Any], shot_id: str) -> Optional[Dict[str, Any]]:
         """Send, and wait briefly for something that answers it.
 
         Raises ``OSError`` if the connection goes while waiting: a write to a
@@ -230,24 +294,26 @@ class SimulatorSession:
         found: List[Dict[str, Any]] = []
 
         def listen(reply: Dict[str, Any]) -> None:
-            if not found and answers(reply):
-                found.append(reply)
-                answered.set()
+            found.append(reply)
+            answered.set()
 
         with self._lock:
-            self._listeners.append(listen)
+            self._listener = listen
+            self._owed = shot_id
+            generation = self.generation
         try:
             self.send(message)
             deadline = time.monotonic() + ANSWER_SECONDS
             while not answered.wait(0.05):
-                if not self.connected:
+                if not self.connected or self.generation != generation:
                     raise OSError("the simulator closed the connection")
                 if time.monotonic() >= deadline:
-                    return None
-            return found[0]
+                    break
         finally:
             with self._lock:
-                self._listeners.remove(listen)
+                self._listener = None
+        # Read once nothing can be added: an answer is either this or late.
+        return found[0] if found else None
 
     def send(self, message: Dict[str, Any]) -> None:
         with self._lock:
@@ -258,7 +324,7 @@ class SimulatorSession:
         try:
             sock.sendall(payload)
         except OSError:
-            self._drop("the connection to the simulator was lost")
+            self._drop("the connection to the simulator was lost", sock)
             raise
         with self._lock:
             self.messages_sent += 1
@@ -332,11 +398,6 @@ class SimulatorSession:
                 "messagesReceived": self.messages_received,
                 "lastError": self.last_error,
             }
-
-
-def _answers_a_shot(reply: Dict[str, Any]) -> bool:
-    code = reply.get("Code")
-    return code == 200 or (isinstance(code, int) and code >= 500)
 
 
 def _friendly(simulator: Simulator, error: BaseException) -> str:

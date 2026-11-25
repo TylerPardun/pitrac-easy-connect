@@ -309,6 +309,42 @@ def _dedupe(values: Sequence[str]) -> List[str]:
     return list(dict.fromkeys(value for value in values if value))
 
 
+#: NetworkManager gives a shared connection the first of these that nothing else
+#: is using: 10.42.0.1, and then 10.42.1.1 and so on.
+SETUP_NETWORKS = ipaddress.IPv4Network("10.42.0.0/16")
+USUAL_SETUP_ADDRESS = "10.42.0.1"
+
+
+def setup_addresses(own: Optional[Sequence[str]] = None) -> List[str]:
+    """Where an enclosure answers on its own Wi-Fi, judged from this computer's.
+
+    A computer that has joined that Wi-Fi was given an address beside the
+    enclosure's, so the enclosure's is the first in the same network. The usual
+    one is always tried too. Whatever answers still has to prove which enclosure
+    it is.
+    """
+
+    found = []
+    for address in _own_addresses() if own is None else own:
+        try:
+            here = ipaddress.IPv4Address(address)
+        except ValueError:
+            continue
+        if here in SETUP_NETWORKS:
+            found.append(str(ipaddress.IPv4Network("{}/24".format(here), strict=False)[1]))
+    return _dedupe([*found, USUAL_SETUP_ADDRESS])
+
+
+def _own_addresses() -> List[str]:
+    try:
+        import psutil
+
+        return [entry.address for entries in psutil.net_if_addrs().values()
+                for entry in entries if entry.family == socket.AF_INET]
+    except Exception:
+        return []
+
+
 def _network_broadcasts() -> List[str]:
     """Broadcast targets for every active, broadcast-capable IPv4 adapter."""
 

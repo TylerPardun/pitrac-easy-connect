@@ -586,8 +586,7 @@ function wizardView(data){
 
   if(steps.pitrac && !steps.pitrac.ok) return {step:"find",
     dot:"bad", head:"PiTrac needs attention", sub:esc(steps.pitrac.detail),
-    why:"Connected, but the launch monitor cannot measure a shot yet. This is "+
-        "usually the cameras. Fix it on PiTrac's own page, then come back.",
+    why:steps.pitrac.next || "Connected, but the launch monitor cannot measure a shot yet.",
     actions:[{label:"Open the PiTrac setup page", id:"setup", primary:true}]};
 
   if(!wizard.simPicked) return {step:"sim",
@@ -935,7 +934,7 @@ function present(data){
 
   if(steps.pitrac && !steps.pitrac.ok) return {
     dot:"bad", head:"PiTrac needs attention", sub:esc(steps.pitrac.detail),
-    why:"Easy-Connect is connected, but the launch monitor cannot measure a shot yet.",
+    why:steps.pitrac.next || "Easy-Connect is connected, but the launch monitor cannot measure a shot yet.",
     actions:[{label:"Open the PiTrac setup page", id:"setup", primary:true}]};
 
   if(isLocal(data)) return sim.ready ? {
@@ -1604,23 +1603,32 @@ $("bkFile").addEventListener("change",async event=>{
     const info=await api("/api/backup/inspect",{file:text});
     $("bkPreview").innerHTML=`<div class="note"><strong>${esc(info.displayName)}</strong>,
       ${esc(info.createdText)}<br>${info.sectionLabels.map(esc).join(", ")}
-      ${info.sameDevice?"":"<br><span style='color:var(--amber)'>From a different enclosure.</span>"}
+      ${info.sameDevice&&info.sameHardware!==false?"":"<br><span style='color:var(--amber)'>From a different enclosure.</span>"}
       </div><button class="quiet" id="doRestore" style="margin-top:9px">Restore this</button>`;
     $("doRestore").addEventListener("click",b=>run(b.target, async()=>{
       // Calibration describes one particular pair of cameras in one
       // particular enclosure. Sending the override without asking meant an
       // amber note was the only thing between somebody and a machine
       // calibrated for a different unit.
-      if(!info.sameDevice){
+      const elsewhere=!info.sameDevice||info.sameHardware===false;
+      if(elsewhere){
         if(!confirm("This backup is from a different PiTrac.\n\n"+
             "Its camera calibration describes that enclosure's cameras, not "+
             "this one's. Restoring it will make this PiTrac measure shots "+
             "incorrectly until it is calibrated again.\n\n"+
             "Restore it anyway?")) return;
       }
+      // How hard the strobe is driven is only right for one circuit board, and
+      // too hard for it can damage it. Only offered on the same Raspberry Pi,
+      // and even then only the owner knows whether the board was changed.
+      const sameBoard=info.canRestoreStrobe && confirm(
+        "Restore the strobe settings too?\n\n"+
+        "Press OK only if the connector board and strobe have NOT been changed since "+
+        "this backup was made. The wrong settings can damage the strobe.\n\n"+
+        "Cancel keeps the settings this PiTrac has now. Everything else is restored either way.");
       const result=await api("/api/backup/restore",{file:text, calibration:true, preferences:true,
         identity:info.sections.includes("identity"), pairings:info.sections.includes("pairings"),
-        confirmDifferentDevice:!info.sameDevice});
+        confirmDifferentDevice:elsewhere, confirmSameBoard:sameBoard});
       $("bkPreview").innerHTML="";
       // PiTrac reads its calibration at startup, so it keeps using the old
       // one until it is restarted. Saying "Restored" and stopping there left

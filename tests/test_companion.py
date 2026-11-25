@@ -913,3 +913,62 @@ def test_the_enclosure_learns_that_the_simulator_closed(rig):
     while rig.pi._simulator_status.get("connected") and time.monotonic() < deadline:
         time.sleep(0.05)
     assert rig.pi._simulator_status["connected"] is False
+
+
+# --- The computer never says ready when the enclosure does not -----------------
+
+
+def _lose_models(rig):
+    import shutil
+
+    shutil.rmtree(rig.pi.selftest.models_dir)
+
+
+def _crash_the_camera_check(rig):
+    def explode():
+        raise RuntimeError("the camera check crashed")
+
+    rig.pi.backend.cameras = explode
+
+
+@pytest.mark.parametrize("label, break_it, said", [
+    ("models", _lose_models, "Not installed"),
+    ("memory card", lambda rig: setattr(rig.pi.backend, "free_bytes", 10**8), "GB free"),
+    ("heat", lambda rig: setattr(rig.pi.backend, "temperature_c", 90.0), "90"),
+    ("power", lambda rig: setattr(rig.pi.backend, "throttled_flags", 1), "Not enough power"),
+    ("crash", _crash_the_camera_check, "camera check crashed"),
+    ("cameras", lambda rig: setattr(rig.pi.backend, "camera_count", 1), "1 of 2"),
+])
+def test_both_halves_agree_about_being_ready(rig, label, break_it, said):
+    """The computer kept its own list of what matters, and it was short."""
+
+    rig.companion.select_simulator("local")
+    rig.pi.command("joinNetwork", {"ssid": "Ferndale", "password": "GoodPassword1"})
+    rig.pair()
+    assert rig.wait_state(State.READY_TO_PLAY.value)
+
+    break_it(rig)
+    rig.pi.refresh()
+    assert rig.wait_state(State.RECOVERY_REQUIRED.value)
+    assert rig.pi.state is State.RECOVERY_REQUIRED
+    step = next(s for s in rig.companion.chain() if s["key"] == "pitrac")
+    assert said in step["detail"], step
+    assert rig.companion.status()["ready"] is False
+
+
+def test_what_to_do_about_it_is_passed_on(rig):
+    rig.companion.select_simulator("local")
+    rig.pi.command("joinNetwork", {"ssid": "Ferndale", "password": "GoodPassword1"})
+    rig.pair()
+    assert rig.wait_state(State.READY_TO_PLAY.value)
+    _lose_models(rig)
+    rig.pi.refresh()
+    assert rig.wait_state(State.RECOVERY_REQUIRED.value)
+    step = next(s for s in rig.companion.chain() if s["key"] == "pitrac")
+    assert "models" in step["next"].lower()
+
+
+def test_an_older_enclosure_that_does_not_say_what_is_critical_is_still_judged(rig):
+    measuring, detail, _next = rig.companion._enclosure_measuring(
+        True, {"selfTest": {"checks": [{"key": "cameras", "status": "fail", "detail": "none"}]}})
+    assert (measuring, detail) == (False, "none")

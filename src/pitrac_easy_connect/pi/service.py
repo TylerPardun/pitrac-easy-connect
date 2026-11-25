@@ -135,6 +135,7 @@ class PiService:
             self.pairings,
             self.paths.backups,
             version=version,
+            board_serial=backend.board_serial,
         )
         # An enclosure installed by install.sh has no git checkout, so the
         # source updater has nothing to pull. It fetches the release archive
@@ -793,6 +794,7 @@ class PiService:
             identity=bool(arguments.get("identity", False)),
             pairings=bool(arguments.get("pairings", False)),
             confirm_different_device=bool(arguments.get("confirmDifferentDevice", False)),
+            confirm_same_board=bool(arguments.get("confirmSameBoard", False)),
         )
         # A restore can change the enclosure's name, identity, and the settings
         # PiTrac reads, so everything downstream is rebuilt from disk.

@@ -440,3 +440,39 @@ def test_one_model_present_is_still_not_ready(tmp_path):
     check = find(report, "pitracModels")
     assert "yolo26-ball-detector" in check.detail
     assert "spin-predictor" not in check.detail
+
+
+# --- A check that crashes -----------------------------------------------------
+
+
+@pytest.mark.parametrize("name", [
+    "_hardware", "_storage", "_temperature", "_power", "_cameras", "_pitrac_web", "_calibration",
+    "_strobe", "_pitrac_measurement", "_pitrac_models", "_pitrac_target", "_network", "_companion",
+    "_simulator",
+])
+def test_not_being_able_to_check_stops_play(tmp_path, monkeypatch, name):
+    """A camera check that crashed left the enclosure ready."""
+
+    from pitrac_easy_connect.pi.selftest import WHAT_CHECKS_ARE
+
+    _backend, _pitrac, selftest = build(tmp_path)
+    key = WHAT_CHECKS_ARE[name][0]
+    assert key in {check.key for check in selftest.run().checks}, "called something else"
+
+    def explode():
+        raise RuntimeError("it fell over")
+
+    explode.__name__ = name
+    monkeypatch.setattr(selftest, name, explode)
+    report = selftest.run()
+    assert report.ready is False
+    assert find(report, key).status == UNAVAILABLE
+    assert "it fell over" in find(report, key).detail
+
+
+def test_every_check_has_a_name_for_when_it_cannot_give_its_own(tmp_path):
+    from pitrac_easy_connect.pi.selftest import WHAT_CHECKS_ARE
+
+    _backend, _pitrac, selftest = build(tmp_path)
+    assert {check.key for check in selftest.run().checks} == {
+        key for key, _title, _critical in WHAT_CHECKS_ARE.values()}

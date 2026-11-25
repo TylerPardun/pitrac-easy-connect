@@ -603,7 +603,10 @@ def finish_kit(kit, version, root=ROOT):
 
     source = kit / "{} {} source.zip".format(APP, version)
     write_source(source, root)
-    (kit / "Owner card.txt").write_text(OWNER_CARD, encoding="utf-8")
+    card = kit / "Owner card.txt"
+    if not card.exists():
+        # Somebody may have filled it in, and it may be the only copy.
+        card.write_text(OWNER_CARD, encoding="utf-8")
     names = sorted(path.name for path in kit.iterdir() if path.suffix in (".dmg", ".exe", ".zip"))
     (kit / "READ ME FIRST.txt").write_text(
         read_me(version, names, tested_pitrac(root)), encoding="utf-8")

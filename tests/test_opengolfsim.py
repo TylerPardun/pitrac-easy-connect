@@ -385,3 +385,235 @@ def test_every_outcome_has_words():
     body = PAGE.split("function outcomeText(s){")[1].split("\n}")[0]
     for outcome in (s.PLAYED, s.ACCEPTED, s.UNKNOWN, s.REJECTED, s.UNDELIVERED, s.LOCAL):
         assert 'case "{}"'.format(outcome) in body
+
+
+# --- Whose answer is it -----------------------------------------------------------
+
+
+HOOK = swing(BackSpin=7000.0, SideSpin=-900.0, TotalSpin=7058.0)
+SLICE = swing(BackSpin=7000.0, SideSpin=900.0, TotalSpin=7058.0)
+
+
+def outcomes(rig):
+    """Oldest first."""
+
+    return [shot["outcome"] for shot in reversed(rig.companion.shots.recent())]
+
+
+@pytest.mark.parametrize("played, expected", [(0, ["played", "accepted"]), (1, ["accepted", "played"])])
+def test_a_hook_is_not_mistaken_for_the_slice_that_matches_it(rig, pitrac, ogs, played, expected):
+    ogs.on_a_hole = False
+    for shot in (HOOK, SLICE):
+        pitrac.send(shot)
+    assert wait_for(lambda: outcomes(rig) == ["accepted", "accepted"])
+    ogs.finish(ogs.shots[played])
+    assert wait_for(lambda: outcomes(rig) == expected)
+
+
+def test_a_result_that_fits_two_swings_is_given_to_neither(rig, pitrac, ogs):
+    ogs.on_a_hole = False
+    for _ in range(2):
+        pitrac.send(SHOT)
+    assert wait_for(lambda: outcomes(rig) == ["accepted", "accepted"])
+    ogs.finish(ogs.shots[0])
+    time.sleep(0.4)
+    assert outcomes(rig) == ["accepted", "accepted"]
+
+
+class Holding:
+    """Keeps back what it would have said to each shot, until told."""
+
+    def __init__(self, server, is_shot):
+        self.server, self.is_shot, self.waiting = server, is_shot, []
+        self.real, server.heard = server.heard, self.heard
+
+    def heard(self, client, data):
+        if self.is_shot(data):
+            self.server.received.append(__import__("json").loads(data))
+            self.waiting.append(client)
+        else:
+            self.real(client, data)
+
+
+def ogs_holding(ogs):
+    return Holding(ogs, lambda data: b'"shot"' in data)
+
+
+def test_a_late_yes_is_not_given_to_a_shot_that_was_refused(rig, ogs):
+    holding = ogs_holding(ogs)
+    rig.companion._forward_shot(1, "gspro", swing(Speed=120.0))
+    assert outcomes(rig) == ["unknown"]
+
+    import threading
+
+    def then():
+        time.sleep(0.8)
+        ogs.say({"status": 200}, holding.waiting[0])        # for the first, far too late
+        time.sleep(0.2)
+        ogs.say({"status": 400, "error": "no"}, holding.waiting[1])
+
+    threading.Thread(target=then, daemon=True).start()
+    rig.companion._forward_shot(2, "gspro", swing(Speed=125.0))
+    assert wait_for(lambda: outcomes(rig)[1] in ("rejected", "unknown"), 3)
+    assert outcomes(rig)[0] == "unknown"
+    assert "accepted" not in outcomes(rig)
+
+
+def test_a_late_yes_before_the_next_swing_belongs_to_the_one_before(rig, ogs):
+    """It can only be about that one, so it is not thrown away."""
+
+    holding = ogs_holding(ogs)
+    rig.companion._forward_shot(1, "gspro", SHOT)
+    assert outcomes(rig) == ["unknown"]
+    ogs.say({"status": 200}, holding.waiting[0])
+    assert wait_for(lambda: outcomes(rig) == ["accepted"])
+    assert len(ogs.clients) == 1, "a simulator that was only slow was cut off"
+
+
+def test_a_reminder_is_not_mistaken_for_an_answer(rig, ogs, monkeypatch):
+    """Everything is answered in the same words, so nothing else may be said
+    while a shot is owed one."""
+
+    monkeypatch.setattr(opengolfsim, "OWED_SECONDS", 0.6)
+    ogs_holding(ogs)
+    rig.companion._forward_shot(1, "gspro", SHOT)
+    for ball in (True, False, True):
+        rig.companion._forward_shot(2, "gspro", heartbeat(ball))
+        time.sleep(0.15)
+    time.sleep(1.0)
+    rig.companion._forward_shot(2, "gspro", heartbeat(False))
+    time.sleep(0.5)
+    assert outcomes(rig) == ["unknown"]
+    assert len(ogs.clients) == 2, "it started again rather than staying silent for ever"
+
+
+def test_an_unanswered_greeting_is_not_the_answer_to_a_shot(ogs):
+    said = []
+    ogs.silent = True
+    session = opengolfsim.OpenGolfSimSession(port=ogs.port, on_late_answer=lambda *a: said.append(a))
+    try:
+        session.connect()
+        assert session.deliver(SHOT, "one").outcome == "unknown"
+        ogs.say({"status": 200})         # about the greeting, at last
+        time.sleep(0.3)
+        assert said == []
+        ogs.say({"status": 200})         # and this is about the shot
+        assert wait_for(lambda: [(i, d.outcome) for i, d in said] == [("one", "accepted")])
+    finally:
+        session.close()
+
+
+@pytest.fixture
+def gspro_rig(tmp_path):
+    server = FakeGSPro(False)
+    built = Rig(tmp_path)
+    built.companion.simulator_ports[Simulator.GSPRO] = server.port
+    built.companion.select_simulator("gspro")
+    built.server = server
+    yield built
+    built.close()
+    server.close()
+
+
+def test_gspros_late_yes_is_not_given_to_a_shot_it_refused(gspro_rig):
+    import threading
+
+    rig, server = gspro_rig, gspro_rig.server
+    first = []
+    real = server.heard
+
+    def heard(client, data):
+        real(client, data)
+        shots = [m for m in server.received if not m["ShotDataOptions"]["IsHeartBeat"]]
+        if len(shots) == 1:
+            first.append(client)
+        else:
+            threading.Thread(target=lambda: (
+                time.sleep(0.2), server.say({"Code": 200, "Message": "the first"}, first[0]),
+                time.sleep(0.2), server.say({"Code": 501, "Message": "the second"}, client),
+            ), daemon=True).start()
+
+    server.heard = heard
+    for speed in (120.0, 125.0):
+        rig.companion._forward_shot(1, "gspro", swing(Speed=speed))
+    assert outcomes(rig) == ["unknown", "rejected"]
+
+
+def test_gspros_late_yes_before_the_next_swing_is_kept(gspro_rig):
+    rig, server = gspro_rig, gspro_rig.server
+    rig.companion._forward_shot(1, "gspro", SHOT)
+    assert outcomes(rig) == ["unknown"]
+    server.say({"Code": 201, "Message": "player", "Player": {"Club": "I7"}})
+    time.sleep(0.2)
+    assert outcomes(rig) == ["unknown"], "that was not about the shot"
+    server.say({"Code": 200, "Message": "ok"})
+    assert wait_for(lambda: outcomes(rig) == ["accepted"])
+    rig.companion._forward_shot(2, "gspro", swing(Speed=99.0))
+    assert len(server.clients) == 1
+
+
+def test_gspros_late_no_is_kept_too(gspro_rig):
+    rig, server = gspro_rig, gspro_rig.server
+    rig.companion._forward_shot(1, "gspro", SHOT)
+    server.say({"Code": 501, "Message": "not ready"})
+    assert wait_for(lambda: outcomes(rig) == ["rejected"])
+    assert rig.companion.shots.recent()[0]["delivered"] is False
+    assert rig.companion.simulator_status()["ready"] is False
+
+
+# --- Proof belongs to the connection it was seen on ---------------------------------
+
+
+def test_being_ready_does_not_survive_a_reconnection(rig, pitrac, ogs):
+    pitrac.send(SHOT)
+    assert wait_for(lambda: rig.companion.simulator_status()["ready"])
+    ogs.on_a_hole = False
+    for client in list(ogs.clients):
+        client.shutdown(2)
+    assert wait_for(lambda: not rig.companion.simulator_status()["connected"])
+    assert rig.companion.simulator_status()["ready"] is False
+    rig.companion.connect_simulator()
+    assert rig.companion.simulator_status()["connected"] is True
+    assert rig.companion.simulator_status()["ready"] is False, "nothing has been played since"
+    ogs.on_a_hole = True
+    pitrac.send(swing(Speed=118.0))
+    assert wait_for(lambda: rig.companion.simulator_status()["ready"])
+
+
+def test_a_result_from_before_is_kept_but_proves_nothing_now(rig, pitrac, ogs):
+    ogs.on_a_hole = False
+    pitrac.send(SHOT)
+    assert wait_for(lambda: outcomes(rig) == ["accepted"])
+    rig.companion._session.reconnect()
+    ogs.finish(ogs.shots[0])
+    assert wait_for(lambda: outcomes(rig) == ["played"])
+    assert rig.companion.simulator_status()["ready"] is False
+
+
+def test_an_old_connection_closing_does_not_take_down_the_new_one(ogs):
+    session = opengolfsim.OpenGolfSimSession(port=ogs.port)
+    try:
+        session.connect()
+        old = session._sock
+        session.reconnect()
+        session._drop("the old one noticed", old)
+        assert session.connected is True
+    finally:
+        session.close()
+
+
+def test_every_connection_is_kept_alive_and_only_by_one(ogs, monkeypatch):
+    """A reconnection could find the old reminder still on its way out, and
+    start none."""
+
+    monkeypatch.setattr(opengolfsim, "KEEPALIVE_SECONDS", 0.2)
+    session = opengolfsim.OpenGolfSimSession(port=ogs.port)
+    try:
+        session.connect()
+        for _ in range(5):
+            session.reconnect()
+        before = len(ogs.received)
+        time.sleep(1.1)
+        assert 3 <= len(ogs.received) - before <= 7
+    finally:
+        session.close()

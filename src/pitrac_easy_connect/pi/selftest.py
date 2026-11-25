@@ -54,6 +54,28 @@ HOT_CELSIUS = 82.0
 REQUIRED_CAMERAS = 2
 
 
+#: What each check is called, for when it fails to say so itself, and whether
+#: play depends on knowing.
+WHAT_CHECKS_ARE = {
+    "_hardware": ("hardware", "Raspberry Pi model", True),
+    "_storage": ("storage", "Memory card space", True),
+    "_temperature": ("temperature", "Temperature", True),
+    "_power": ("power", "Power supply", True),
+    "_clock": ("clock", "Clock", False),
+    "_configuration": ("configuration", "Saved settings", False),
+    "_cameras": ("cameras", "Cameras", True),
+    "_pitrac_web": ("pitracWeb", "PiTrac dashboard", True),
+    "_calibration": ("calibration", "Camera calibration", True),
+    "_strobe": ("strobe", "Strobe", True),
+    "_pitrac_measurement": ("pitracMeasurement", "PiTrac measurement", True),
+    "_pitrac_models": ("pitracModels", "Ball detection models", True),
+    "_pitrac_target": ("pitracTarget", "Shot delivery", True),
+    "_network": ("network", "Network", True),
+    "_companion": ("companion", "Your computer", True),
+    "_simulator": ("simulator", "Golf simulator", True),
+}
+
+
 @dataclass(frozen=True)
 class CheckResult:
     key: str
@@ -175,13 +197,17 @@ class SelfTest:
                 report.checks.append(check())
             except Exception as exc:
                 # A check that throws is a check that did not run. It must not
-                # be recorded as a pass, and it must not stop the others.
+                # be recorded as a pass, and it must not stop the others. And if
+                # play depends on it, not knowing has to stop play: a camera
+                # check that crashed used to leave the enclosure ready.
+                key, title, critical = WHAT_CHECKS_ARE[check.__name__]
                 report.checks.append(
                     CheckResult(
-                        key=check.__name__.lstrip("_"),
-                        title=check.__name__.lstrip("_").replace("_", " ").title(),
+                        key=key,
+                        title=title,
                         status=UNAVAILABLE,
-                        detail="This check could not run: {}".format(exc),
+                        detail="{} could not be checked: {}".format(title, exc),
+                        critical=critical,
                     )
                 )
         return report
@@ -562,8 +588,8 @@ def state_for(report: SelfTestReport, network: Dict[str, Any], companion: bool) 
             return State.SETUP_REQUIRED
 
     if blocking & {
-        "hardware", "cameras", "pitracWeb", "calibration", "strobe",
-        "pitracMeasurement", "pitracTarget",
+        "hardware", "storage", "temperature", "power", "cameras", "pitracWeb", "calibration",
+        "strobe", "pitracMeasurement", "pitracModels", "pitracTarget",
     }:
         return State.RECOVERY_REQUIRED
     if blocking & {"companion"}:
