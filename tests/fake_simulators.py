@@ -9,6 +9,7 @@ import time
 class _Server:
     def __init__(self):
         self.received = []
+        self.read_delay = 0.0
         self.clients = []
         self._server = socket.socket()
         self._server.bind(("127.0.0.1", 0))
@@ -28,6 +29,9 @@ class _Server:
 
     def _serve(self, client):
         while True:
+            # A busy program gets round to reading when it can, and by then
+            # more may have arrived.
+            time.sleep(self.read_delay)
             try:
                 data = client.recv(65536)
             except OSError:

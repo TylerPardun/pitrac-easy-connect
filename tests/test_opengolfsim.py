@@ -160,6 +160,7 @@ def test_a_swing_is_played_and_its_result_comes_back(rig, pitrac, ogs):
 def test_every_message_arrives_alone(rig, pitrac, ogs):
     """Two in one read are both dropped, silently."""
 
+    ogs.read_delay = 0.09
     for ball in (True, False, True):
         pitrac.send(heartbeat(ball))
     for speed in (118.0, 121.0, 124.0):
