@@ -224,15 +224,12 @@ def test_the_renderer_maps_the_physics_axes_onto_the_scene():
 
     import pathlib
 
-    page = (
-        pathlib.Path(__file__).resolve().parent.parent
-        / "src" / "pitrac_easy_connect" / "companion" / "page.py"
-    ).read_text()
-    tracer = page.split("const traced = shots.filter")[1].split("function drawBall(")[0]
-    assert "pts[i-1][2],pts[i-1][1],pts[i-1][0]" in tracer, "downrange must map to scene z"
-    # The ball and its shadow have to agree with the tracer.
-    ball = page.split("function drawBall(")[1].split("\n  }")[0]
-    assert "const x = at[2], y = at[1], z = at[0];" in ball
+    from pitrac_easy_connect.companion.page import PAGE as page
+    assert "function place(point){ return [-point[2], point[1], point[0]]; }" in page
+    # The tracer, the ball, and its shadow have to agree, so all go through it.
+    tracer = page.split("function ribbon(")[1].split("\n  }")[0]
+    assert "place(pts[i])" in tracer
+    assert "animation.ballAt=place(" in page
 
 
 def test_the_opening_camera_is_one_a_button_can_reproduce():
@@ -241,10 +238,7 @@ def test_the_opening_camera_is_one_a_button_can_reproduce():
 
     import pathlib
 
-    page = (
-        pathlib.Path(__file__).resolve().parent.parent
-        / "src" / "pitrac_easy_connect" / "companion" / "page.py"
-    ).read_text()
+    from pitrac_easy_connect.companion.page import PAGE as page
     import re
 
     # Which view the range opens on is a product decision and moved once
@@ -317,11 +311,8 @@ def test_the_animation_lasts_as_long_as_the_shot_did():
 
     import pathlib
 
-    page = (
-        pathlib.Path(__file__).resolve().parent.parent
-        / "src" / "pitrac_easy_connect" / "companion" / "page.py"
-    ).read_text()
-    frame = page.split("function frame(now){")[1].split("function schedule(")[0]
+    from pitrac_easy_connect.companion.page import PAGE as page
+    frame = page.split("function step(dt){")[1].split("function schedule(")[0]
     assert "animation.progress += dt / animation.seconds" in frame
     assert "newest.flightSeconds" in page
 
@@ -336,10 +327,7 @@ def test_the_range_pane_hides_like_every_other_pane():
     import pathlib
     import re
 
-    page = (
-        pathlib.Path(__file__).resolve().parent.parent
-        / "src" / "pitrac_easy_connect" / "companion" / "page.py"
-    ).read_text()
+    from pitrac_easy_connect.companion.page import PAGE as page
     style = re.search(r"<style>(.*?)</style>", page, re.S).group(1)
     style = re.sub(r"/\*.*?\*/", "", style, flags=re.S)   # comments are not rules
 
@@ -353,11 +341,49 @@ def test_a_ball_hit_right_is_drawn_on_the_right():
     """Every view was mirrored: the numbers said 41 yards right and the ball
     flew left. The camera looks along +z with +y up, so its right is -x."""
 
-    import pathlib
+    from pitrac_easy_connect.companion.page import PAGE as page
 
-    page = (pathlib.Path(__file__).resolve().parent.parent
-            / "src" / "pitrac_easy_connect" / "companion" / "page.py").read_text()
     assert "function place(point){ return [-point[2], point[1], point[0]]; }" in page
-    scene = page.split("function place(point)")[1].split("function drawTranslatedScaled")[0]
-    for direct in ("pts[i][2]", "pts[i-1][2]", "end[2]", "at[2]"):
-        assert direct not in scene, "a point is drawn without being placed: " + direct
+    scene = page.split("function place(point)")[1].split("// --- running")[0]
+    for direct in ("pts[i][2]", "end[2]", "ballAt[2], "):
+        drawn = [line for line in scene.splitlines() if direct in line and "aim=" not in line]
+        assert drawn == [], "a point is drawn without being placed: {}".format(drawn)
+
+
+# --- The target, and how close each shot finished ---------------------------
+
+
+def test_a_shot_is_measured_against_the_flag_it_was_hit_at():
+    session = RangeSession()
+    session.set_target(150)
+    shot = session.record(SEVEN_IRON, "7 iron")
+    session.set_target(100)
+    assert session.status()["shots"][0]["target"] == 150, "moving the flag rewrote history"
+    away = ((shot["totalYards"] - 150) ** 2 + shot["offlineYards"] ** 2) ** 0.5
+    assert shot["toPinYards"] == pytest.approx(away)
+
+
+def test_on_the_green_means_within_the_ring_that_is_drawn():
+    session = RangeSession()
+    total = session.record(SEVEN_IRON, "")["totalYards"]
+    session.set_target(round(total))
+    assert session.record(SEVEN_IRON, "")["onGreen"] is True
+    session.set_target(round(total) + 40)
+    assert session.record(SEVEN_IRON, "")["onGreen"] is False
+
+
+@pytest.mark.parametrize("asked, got", [(5, 20), (999, 300), ("nonsense", 150), (152.6, 153)])
+def test_the_target_stays_on_the_range(asked, got):
+    assert RangeSession().set_target(asked) == got
+
+
+def test_no_shader_uses_a_backwards_smoothstep():
+    """Undefined in GLSL. It drew the hills here and may not elsewhere, and
+    Windows compiles these shaders differently from a Mac."""
+
+    import re
+
+    from pitrac_easy_connect.companion.range_view import SCRIPT
+
+    for low, high in re.findall(r"smoothstep\(\s*(-?[\d.]+)\s*,\s*(-?[\d.]+)\s*,", SCRIPT):
+        assert float(low) < float(high), "smoothstep({}, {})".format(low, high)

@@ -56,6 +56,7 @@ from ..common.updates import (
 )
 from ..common.versions import compare
 from ..models import TEST_SHOT, PlayMode, Simulator
+from . import clubs as caddie
 from . import self_update
 from .link_client import CompanionLinkClient
 from . import shotlog
@@ -158,6 +159,7 @@ class CompanionService:
         self._window_lifecycle = "starting"
         self._window_detail: Optional[str] = None
         self._window_activator: Optional[Callable[[], None]] = None
+        self._fullscreen_switch: Optional[Callable[[bool], None]] = None
         self._window_closer: Optional[Callable[[], None]] = None
         self._pending_window_activation = False
         self._window_activation_requests = 0
@@ -173,6 +175,9 @@ class CompanionService:
             config_path or default_config_path(),
             defaults={
                 "simulator": PlayMode.LOCAL.value,
+                # The caddie: which clubs there are, and whether it chooses.
+                "bag": list(caddie.DEFAULT_BAG),
+                "autoClub": True,
                 "enclosures": {},
                 "activeDeviceId": "",
                 # An update spans a desktop replacement and restart. Keeping
@@ -219,6 +224,9 @@ class CompanionService:
         self._pending_update_target = str(self.store.get("updateTarget", "") or "")
         #: The practice range. In memory only: a session is a bucket of balls.
         self.range = RangeSession()
+        self.range.set_target(self.store.get("rangeTarget", self.range.target))
+        #: Whether PiTrac can see a ball. None until it has said.
+        self._ball_detected: Optional[bool] = None
         self._raw_shots: List[Dict[str, Any]] = []
         #: E6 sends the measurements before the instruction to hit, so they
         #: wait here until the swing is taken. Abandoned measurements must
@@ -229,6 +237,7 @@ class CompanionService:
         self.shots = ShotLog(
             (config_path or default_config_path()).with_name("shots.json")
         )
+        self._follow_the_caddie()
         self.updates = Updater(version)
         # Determined once: whether this process is a git checkout does not
         # change while it runs, and re-deriving it on every status poll would
@@ -328,6 +337,7 @@ class CompanionService:
                 # The enclosure has gone. Anything half-sent belongs to a swing
                 # that will never be completed.
                 self._forget_pending_ball()
+                self._ball_detected = None
         if not arrived:
             return
         self._report_simulator_state()
@@ -355,6 +365,7 @@ class CompanionService:
             # does, PiTrac should not go on measuring putts.
             self._tell_pitrac_the_club("")
         if mode is PlayMode.LOCAL:
+            self._follow_the_caddie()
             self._tell_pitrac_the_club()
             self._report_simulator_state()
         else:
@@ -684,10 +695,86 @@ class CompanionService:
     # --- The practice range ------------------------------------------------
 
     def range_status(self) -> Dict[str, Any]:
-        return self.range.status()
+        known = caddie.known_carries(self.shots.everything())
+        distances = caddie.carries(known)
+        bag = self.bag
+        return dict(
+            self.range.status(),
+            club=self.shots.club,
+            autoClub=self.auto_club,
+            suggested=caddie.suggest(self.range.target, bag, distances),
+            # GSPro says which club is in hand while it is the one being played.
+            clubIsOurs=self.mode is PlayMode.LOCAL,
+            ballDetected=self._ball_detected,
+            clubs=[
+                {"club": club, "carry": round(distances[club]), "measured": club in known,
+                 "inBag": club in bag}
+                for club in caddie.CLUBS
+            ],
+        )
 
     def clear_range(self) -> Dict[str, Any]:
-        return self.range.clear()
+        self.range.clear()
+        return self.range_status()
+
+    def register_fullscreen(self, switch: Callable[[bool], None]) -> None:
+        self._fullscreen_switch = switch
+
+    def set_fullscreen(self, on: bool) -> Dict[str, Any]:
+        """Fill the screen with the app's own window, or give it back."""
+
+        switch = self._fullscreen_switch
+        if switch is None:
+            return {"fullscreen": False}
+        # Off the request thread: the window belongs to another one, and
+        # waiting on it from here is how the two end up waiting on each other.
+        threading.Thread(target=switch, args=(bool(on),), daemon=True).start()
+        return {"fullscreen": bool(on)}
+
+    @property
+    def bag(self) -> List[str]:
+        return caddie.clean_bag(self.store.get("bag"))
+
+    @property
+    def auto_club(self) -> bool:
+        return self.mode is PlayMode.LOCAL and bool(self.store.get("autoClub", True))
+
+    def set_range_target(self, yards: Any) -> Dict[str, Any]:
+        self.store.set("rangeTarget", self.range.set_target(yards))
+        self._follow_the_caddie()
+        return self.range_status()
+
+    def choose_range_club(self, club: str) -> Dict[str, Any]:
+        if club not in caddie.CLUBS:
+            raise ValueError("That is not a club")
+        self.set_club(club)
+        return self.range_status()
+
+    def set_auto_club(self, on: bool) -> Dict[str, Any]:
+        self.store.set("autoClub", bool(on))
+        self._follow_the_caddie()
+        return self.range_status()
+
+    def set_bag(self, names: Any) -> Dict[str, Any]:
+        self.store.set("bag", caddie.clean_bag(names if isinstance(names, list) else None))
+        self._follow_the_caddie()
+        return self.range_status()
+
+    def _follow_the_caddie(self) -> None:
+        """Change to the suggested club, when asked to choose automatically.
+
+        Only when something the player did calls for it. Re-deciding after
+        every shot would change the club in their hands because their average
+        moved by a yard.
+        """
+
+        if not self.auto_club:
+            return
+        distances = caddie.carries(caddie.known_carries(self.shots.everything()))
+        club = caddie.suggest(self.range.target, self.bag, distances)
+        if club and club != self.shots.club:
+            self.shots.set_club(club)
+            self._tell_pitrac_the_club()
 
     def set_range_conditions(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
         return {
@@ -944,10 +1031,11 @@ class CompanionService:
     def _forward_shot(self, sequence: int, simulator: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         """A shot arriving from the enclosure. Deliver it now or lose it honestly."""
 
+        counts = self._is_swing(simulator, payload)
+        self._note_the_ball(payload, counts)
         if self.mode is PlayMode.LOCAL:
             return self._capture_locally(simulator, payload)
 
-        counts = self._is_swing(simulator, payload)
         if simulator and simulator != self.simulator.value:
             # What travels over the link is one simulator's own protocol, and
             # nothing here translates it. Sending GSPro's messages to anything
@@ -1017,6 +1105,13 @@ class CompanionService:
             "message": "{} to {}".format(
                 "delivered" if acknowledged else "sent", self.simulator.label),
         }
+
+    def _note_the_ball(self, payload: Dict[str, Any], swing: bool) -> None:
+        options = payload.get("ShotDataOptions")
+        if swing:
+            self._ball_detected = False
+        elif isinstance(options, dict) and "LaunchMonitorBallDetected" in options:
+            self._ball_detected = bool(options["LaunchMonitorBallDetected"])
 
     def _capture_locally(self, simulator: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         """Keep a shot for the range here. Nothing else has to be running."""
@@ -1103,21 +1198,22 @@ class CompanionService:
         if ball is None:
             return False
 
+        flown = None
+        try:
+            flown = self.range.record(ball, self.shots.club)
+        except Exception:
+            pass
         saved = True
         try:
             self.shots.record(
                 payload,
                 PlayMode.LOCAL.value if delivered is None else simulator or self.mode.value,
-                delivered=delivered, ball=ball,
+                delivered=delivered, ball=ball, flight=flown,
             )
             self._capture_error = ""
         except Exception as exc:
             saved = False
             self._capture_error = str(exc) or exc.__class__.__name__
-        try:
-            self.range.record(ball, self.shots.club)
-        except Exception:
-            pass
         return saved
 
     def _ball_for_history(self, simulator: str, payload: Dict[str, Any]):
@@ -2148,6 +2244,8 @@ class CompanionService:
     def set_club(self, club: str) -> Dict[str, Any]:
         chosen = self.shots.set_club(club)
         if self.mode is PlayMode.LOCAL:
+            # Choosing one is also how to say "stop choosing for me".
+            self.store.set("autoClub", False)
             self._tell_pitrac_the_club()
         return {"club": chosen}
 

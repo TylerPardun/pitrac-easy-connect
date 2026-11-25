@@ -261,6 +261,7 @@ def _show_native(service: CompanionService, url: str, serve=None, on_ready=None)
             on_created=lambda: _on_window_created(service, on_ready=on_ready),
             on_activation_ready=service.register_window_activator,
             on_close_ready=service.register_window_closer,
+            on_fullscreen_ready=service.register_fullscreen,
             on_started=serve,
         )
     except NativeWindowError as exc:

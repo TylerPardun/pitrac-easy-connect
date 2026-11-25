@@ -6,13 +6,13 @@
 > hardware this software is for, nothing more. PiTrac itself can be found at
 > [PiTracLM/PiTrac](https://github.com/PiTracLM/PiTrac)
 
-**Connect your PiTrac enclosure to Wi-Fi and send shots to GSPro or E6 Connect from one desktop app.**
+**Connect your PiTrac enclosure to Wi-Fi and play on a built-in range or in GSPro, from one desktop app.**
 
 PiTrac Easy-Connect makes a PiTrac launch monitor easier to set up and use. It
 includes a small program that runs on the Raspberry Pi inside the enclosure and
 a native desktop app for macOS and Windows. The app always runs in its
 own application window. It connects the enclosure to your home Wi-Fi, finds it
-automatically, and sends each measured shot to GSPro or E6 Connect. It also
+automatically, and puts each measured shot on its own range or into GSPro. It also
 includes PiTrac's dashboard, shot history, and a practice range.
 
 A five-step guide walks you through the first setup. If you move the enclosure to another home, you only need to choose the new Wi-Fi network. You do not need to reconfigure PiTrac.
@@ -36,9 +36,10 @@ A five-step guide walks you through the first setup. If you move the enclosure t
 | **First-time connection** | Before the enclosure is connected to your home Wi-Fi, it creates a temporary network of its own. This lets you complete setup from a phone or laptop |
 | **Connection recovery** | If a new Wi-Fi connection fails, the enclosure returns to the previous network within two and a half minutes. It can also recover if power is lost during the change |
 | **Find and connect** | The app finds the enclosure automatically. One click links the app and enclosure, and other computers cannot connect unless the owner allows them |
-| **Simulator connection** | Sends each measured shot to GSPro or E6 Connect. PiTrac is pointed at Easy-Connect once, when the enclosure is set up, and never again — so a new router, a new address, or a move to another house does not break shot delivery. A **Simulator** page shows which one is selected, whether it is answering, and the steps to get it listening |
+| **Local Range** | A first-person range with nothing else to buy, open or sign in to. Set a target, and the club is chosen from its distance and how far you hit each one; change it with one key. Every shot shows carry, total, distance to the pin, speed, launch, direction and spin, and the session shows where they finished. Works on macOS and Windows |
+| **GSPro** | Sends each measured shot to GSPro, which runs on Windows. PiTrac is pointed at Easy-Connect once, when the enclosure is set up, and never again — so a new router, a new address, or a move to another house does not break shot delivery. A **Play mode** page shows which is selected, whether GSPro is answering, and the steps to get it listening |
 | **Setup and system checks** | A five-step guide handles the first setup. The app also checks that the cameras, calibration, software, storage, and other essentials are ready, then explains anything that needs attention |
-| **Shot history and practice range** | Every shot is saved with the club it was hit with, including shots played through GSPro or E6 Connect. The same shots build the practice range, which shows ball flight, distance, height, accuracy, and shot patterns without GSPro, E6 Connect, an account, or an internet connection. Recent shot images PiTrac has saved are shown separately |
+| **Shot history and practice range** | Every shot is saved with the club it was hit with, including shots played through GSPro. Averages build up with or without a simulator. Recent shot images PiTrac has saved are shown separately |
 | **Dashboard and settings** | Includes PiTrac's dashboard and tools to back up, restore, update, or reset the enclosure for a new owner |
 
 ### What it looks like
@@ -65,10 +66,10 @@ This prevents a failed network change from leaving you unable to reconnect.
 
 ## How It Works
 
-PiTrac sends each measured shot to Easy-Connect inside the enclosure. The desktop app receives it over your home Wi-Fi and passes it to the simulator running on the same computer.
+PiTrac sends each measured shot to Easy-Connect inside the enclosure. The desktop app receives it over your home Wi-Fi and draws it on the range, or passes it to GSPro on the same computer.
 
 ```
-PiTrac enclosure  →  Home Wi-Fi  →  Easy-Connect app  →  GSPro / E6 Connect
+PiTrac enclosure  →  Home Wi-Fi  →  Easy-Connect app  →  Local Range or GSPro
 ```
 
 The app finds the enclosure automatically, limits access to computers you have approved, and does not require a Windows firewall rule. Changing homes or Wi-Fi networks does not change PiTrac's setup.
@@ -211,8 +212,8 @@ success only after the enclosure reconnects and both sides report that version.
 The versioned `.pyz` attached to each release is this verified Pi-service
 payload for the enclosure; it is not a desktop application.
 
-Open the app and follow five steps: find the enclosure, choose your simulator,
-open it, send a test shot, and play. The guide does not appear again after
+Open the app, find the enclosure, choose Local Range or GSPro, and play. GSPro
+adds two steps: opening it, and one test shot. The guide does not appear again after
 the first-time setup, but you can reopen it with **Advanced → Run setup again**.
 
 ---

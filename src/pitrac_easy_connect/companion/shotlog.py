@@ -198,12 +198,14 @@ class ShotLog:
 
     def record(self, payload: Dict[str, Any], simulator: str,
                delivered: Optional[bool] = True,
-               ball: Optional[Dict[str, Any]] = None) -> Shot:
+               ball: Optional[Dict[str, Any]] = None,
+               flight: Optional[Dict[str, Any]] = None) -> Shot:
         """Keep one shot.
 
         ``ball`` lets the caller supply measurements gathered across several
         messages, which E6 needs: the numbers and the instruction to hit
-        arrive separately.
+        arrive separately. ``flight`` is where it is modelled to have gone,
+        which is what says how far somebody hits a club.
         """
 
         shot = Shot(
@@ -213,14 +215,28 @@ class ShotLog:
             delivered=delivered,
             ball=ball if ball is not None else ball_from_shot(payload),
         )
+        kept = shot.as_dict()
+        if flight:
+            kept.update({
+                name: round(float(flight[key]), 1)
+                for name, key in (("carry", "carryYards"), ("total", "totalYards"),
+                                  ("offline", "offlineYards"), ("apex", "apexFeet"))
+                if isinstance(flight.get(key), (int, float))
+            })
         with self._lock:
             shots = list(self._store.get("shots") or [])
-            shots.append(shot.as_dict())
+            shots.append(kept)
             del shots[: max(0, len(shots) - self._limit)]
             self._store.set("shots", shots)
         return shot
 
     # --- Reading ----------------------------------------------------------
+
+    def everything(self) -> List[Dict[str, Any]]:
+        """Every shot kept, oldest first."""
+
+        with self._lock:
+            return list(self._store.get("shots") or [])
 
     def recent(self, limit: int = 50) -> List[Dict[str, Any]]:
         with self._lock:

@@ -22,8 +22,12 @@ from . import flight
 #: bounded so a long session cannot grow without limit.
 MAX_SHOTS = 60
 
-#: Where the target greens sit, in yards.
-TARGETS = (100, 150, 200)
+#: Distances offered as one press, in yards. Any other can be dialled in.
+TARGETS = (50, 75, 100, 125, 150, 175, 200, 225)
+NEAREST_TARGET, FARTHEST_TARGET, DEFAULT_TARGET = 20, 300, 150
+
+#: How far from the flag still counts as on the green, in yards.
+GREEN_RADIUS = 11.0
 
 #: Distance markers, in yards.
 MARKERS = (50, 100, 150, 200, 250, 300)
@@ -54,6 +58,7 @@ class RangeSession:
         self._shots: List[Dict[str, Any]] = []
         self._next_id = 1
         self._unflown: Optional[Dict[str, Any]] = None
+        self._target = DEFAULT_TARGET
         self.conditions = {
             "pressurePa": flight.STANDARD_PRESSURE_PA,
             "temperatureC": flight.STANDARD_TEMPERATURE_C,
@@ -90,6 +95,21 @@ class RangeSession:
                 self.conditions["relativeHumidity"] = max(0.0, min(1.0, _finite(
                     relative_humidity, 0.0)))
             return dict(self.conditions, density=self.density)
+
+    # --- The target -------------------------------------------------------
+
+    @property
+    def target(self) -> int:
+        with self._lock:
+            return self._target
+
+    def set_target(self, yards: Any) -> int:
+        """Where the flag stands. Shots already hit keep the one they were for."""
+
+        wanted = int(round(_finite(yards, DEFAULT_TARGET)))
+        with self._lock:
+            self._target = max(NEAREST_TARGET, min(FARTHEST_TARGET, wanted))
+            return self._target
 
     # --- Recording --------------------------------------------------------
 
@@ -130,6 +150,7 @@ class RangeSession:
                 # claim zero was measured.
                 "ball": measured,
                 **{key: value for key, value in result.items() if key != "points"},
+                **self._against_target(result),
                 "points": result["points"],
             }
             self._next_id += 1
@@ -137,6 +158,12 @@ class RangeSession:
             self._shots.append(shot)
             del self._shots[: max(0, len(self._shots) - self._limit)]
             return shot
+
+    def _against_target(self, result: Dict[str, Any]) -> Dict[str, Any]:
+        """How close it finished, by the flight model's own estimate of the roll."""
+
+        away = math.hypot(result["totalYards"] - self._target, result["offlineYards"])
+        return {"target": self._target, "toPinYards": away, "onGreen": away <= GREEN_RADIUS}
 
     def clear(self) -> Dict[str, Any]:
         with self._lock:
@@ -194,7 +221,9 @@ class RangeSession:
                 for shot in shots
             ],
             "byClub": self.by_club(),
+            "target": self.target,
             "targets": list(TARGETS),
+            "greenRadius": GREEN_RADIUS,
             "markers": list(MARKERS),
             "conditions": dict(self.conditions, density=self.density),
             "count": len(shots),

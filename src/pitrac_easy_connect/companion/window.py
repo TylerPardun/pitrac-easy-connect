@@ -27,6 +27,7 @@ def run_native(
     on_activation_ready: Optional[Callable[[Callable[[], None]], None]] = None,
     on_close_ready: Optional[Callable[[Callable[[], None]], None]] = None,
     on_started: Optional[Callable[[], None]] = None,
+    on_fullscreen_ready: Optional[Callable[[Callable[[bool], None]], None]] = None,
 ) -> None:
     """Create the native window and block until the user closes it.
 
@@ -65,6 +66,8 @@ def run_native(
                 on_activation_ready(lambda: _bring_to_front(native_window))
             if on_close_ready is not None:
                 on_close_ready(lambda: _close_native(native_window))
+            if on_fullscreen_ready is not None:
+                on_fullscreen_ready(_fullscreen_switch(native_window))
             # On macOS, start the HTTP serving loop from pywebview's managed
             # worker after AppKit has initialized. Starting it before AppKit
             # enters its run loop leaves the listener bound but its Python
@@ -77,6 +80,25 @@ def run_native(
         raise NativeWindowError(
             "the native window could not be created ({})".format(_describe(exc))
         ) from exc
+
+
+def _fullscreen_switch(native_window) -> Callable[[bool], None]:
+    """pywebview only toggles, so remember which way round it is.
+
+    The player can also leave full screen with the window's own controls, which
+    nothing reports on every platform. Asking for what it already is then costs
+    one press that does nothing, rather than going the wrong way.
+    """
+
+    state = {"on": False}
+
+    def switch(on: bool) -> None:
+        if bool(on) == state["on"]:
+            return
+        native_window.toggle_fullscreen()
+        state["on"] = bool(on)
+
+    return switch
 
 
 def _close_native(native_window) -> None:

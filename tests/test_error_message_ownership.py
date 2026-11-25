@@ -21,8 +21,7 @@ from pathlib import Path
 
 import pytest
 
-PAGE = (Path(__file__).resolve().parent.parent / "src" / "pitrac_easy_connect"
-        / "companion" / "page.py").read_text()
+from pitrac_easy_connect.companion.page import PAGE
 
 
 def render_source():

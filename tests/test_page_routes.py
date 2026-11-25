@@ -22,7 +22,7 @@ def calls_in(page_source: str):
     """
 
     calls = set()
-    for match in re.finditer(r'api\(\s*"([^"]+)"\s*(,)?', page_source):
+    for match in re.finditer(r'(?:api|rangeAction)\(\s*"([^"]+)"\s*(,)?', page_source):
         path, has_body = match.group(1), bool(match.group(2))
         calls.add((path, "POST" if has_body else "GET"))
     return calls
@@ -40,6 +40,16 @@ def routes_in(server_source: str):
     )
 
 
+def page_text(page):
+    """The page as it is served: the desktop's is put together from pieces."""
+
+    if page == "companion/page.py":
+        from pitrac_easy_connect.companion.page import PAGE
+
+        return PAGE
+    return (SOURCE / page).read_text()
+
+
 CASES = [
     ("companion", "companion/page.py", "companion/web.py"),
     ("portal", "pi/portal_page.py", "pi/portal.py"),
@@ -48,7 +58,7 @@ CASES = [
 
 @pytest.mark.parametrize("name,page,server", CASES, ids=[case[0] for case in CASES])
 def test_every_route_the_page_calls_is_served(name, page, server):
-    called = calls_in((SOURCE / page).read_text())
+    called = calls_in(page_text(page))
     served = routes_in((SOURCE / server).read_text())
 
     missing = called - served
@@ -59,7 +69,7 @@ def test_every_route_the_page_calls_is_served(name, page, server):
 
 @pytest.mark.parametrize("name,page,server", CASES, ids=[case[0] for case in CASES])
 def test_no_route_is_called_with_the_wrong_method(name, page, server):
-    called = calls_in((SOURCE / page).read_text())
+    called = calls_in(page_text(page))
     served = routes_in((SOURCE / server).read_text())
     served_paths = {path for path, _method in served}
 

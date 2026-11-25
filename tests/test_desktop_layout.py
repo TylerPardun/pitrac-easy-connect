@@ -18,7 +18,7 @@ from pathlib import Path
 import pytest
 
 SOURCE = Path(__file__).resolve().parent.parent / "src" / "pitrac_easy_connect"
-PAGE = (SOURCE / "companion" / "page.py").read_text()
+from pitrac_easy_connect.companion.page import PAGE
 WINDOW = (SOURCE / "companion" / "window.py").read_text()
 
 #: Anything narrower than this is a phone column, not a desktop layout.

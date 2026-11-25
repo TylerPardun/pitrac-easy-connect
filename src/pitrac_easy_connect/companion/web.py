@@ -170,6 +170,11 @@ class CompanionHandler(BaseHTTPRequestHandler):
             "/api/pair": lambda body: service.pair(str(body.get("deviceId", ""))),
             "/api/range-clear": lambda body: service.clear_range(),
             "/api/range-conditions": lambda body: service.set_range_conditions(body),
+            "/api/range-target": lambda body: service.set_range_target(body.get("yards")),
+            "/api/range-club": lambda body: service.choose_range_club(str(body.get("club", ""))),
+            "/api/range-auto": lambda body: service.set_auto_club(bool(body.get("on"))),
+            "/api/range-bag": lambda body: service.set_bag(body.get("bag")),
+            "/api/fullscreen": lambda body: service.set_fullscreen(bool(body.get("on"))),
             "/api/range-demo": lambda body: service.range_demo_shot(),
             "/api/finish-setup": lambda body: service.finish_setup(
                 bool(body.get("done", True))

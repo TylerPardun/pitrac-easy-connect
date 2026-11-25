@@ -38,6 +38,11 @@ SAFE_WITHOUT_ESCAPING = re.compile(
 
 
 def source(name):
+    if name == "desktop":
+        # As served, which includes the range.
+        from pitrac_easy_connect.companion.page import PAGE
+
+        return PAGE
     return PAGES[name].read_text(encoding="utf-8")
 
 

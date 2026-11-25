@@ -18,7 +18,7 @@ from pathlib import Path
 import pytest
 
 SOURCE = Path(__file__).resolve().parent.parent / "src" / "pitrac_easy_connect"
-COMPANION = (SOURCE / "companion" / "page.py").read_text()
+from pitrac_easy_connect.companion.page import PAGE as COMPANION
 PORTAL = (SOURCE / "pi" / "portal_page.py").read_text()
 
 PAGES = [("companion", COMPANION), ("portal", PORTAL)]

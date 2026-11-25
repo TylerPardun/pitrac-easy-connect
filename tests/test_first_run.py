@@ -11,10 +11,7 @@ import pytest
 
 from test_companion import rig  # noqa: F401  (fixture)
 
-PAGE = (
-    Path(__file__).resolve().parent.parent
-    / "src" / "pitrac_easy_connect" / "companion" / "page.py"
-).read_text()
+from pitrac_easy_connect.companion.page import PAGE
 
 
 def wizard_source():

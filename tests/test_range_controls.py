@@ -2,10 +2,8 @@
 
 Three changes are pinned here:
 
-* the range opens down the line, because that is where the golfer stands.
-  It used to open from behind and off to one side, which reads as a
-  broadcast replay rather than the view you would have over the ball;
-* the three camera angles sit behind one "Change view" button instead of
+* the range opens in first person, because that is where the golfer stands;
+* the camera angles sit behind one "View" button instead of
   spending three slots in the bar on a setting most people set once;
 * the demo shot disappears once the enclosure reports it can measure. It
   exists so the range can be seen before there is a launch monitor to fill
@@ -18,7 +16,7 @@ from pathlib import Path
 import pytest
 
 SOURCE = Path(__file__).resolve().parent.parent / "src" / "pitrac_easy_connect"
-PAGE = (SOURCE / "companion" / "page.py").read_text()
+from pitrac_easy_connect.companion.page import PAGE
 
 
 def markup_default_view():
@@ -32,12 +30,12 @@ def script_default_view():
     return (found.group(1), found.group(2)) if found else (None, None)
 
 
-def test_the_range_opens_down_the_line():
+def test_the_range_opens_in_first_person():
     """A first-person simulator should open where the player stands."""
 
     view, orbit = script_default_view()
-    assert view == "down", "the range opens on {}, not down the line".format(view)
-    assert orbit == "down", "the starting camera does not match the starting view"
+    assert view == "first", "the range opens on {}, not in first person".format(view)
+    assert orbit == "first", "the starting camera does not match the starting view"
 
 
 def test_the_marked_button_matches_the_view_the_range_actually_opens_on():
@@ -53,19 +51,19 @@ def test_the_angles_are_behind_one_button():
     assert 'id="viewToggle"' in PAGE, "no Change view button"
     assert 'id="viewMenu"' in PAGE, "no menu for the angles"
     menu = PAGE.split('id="viewMenu"', 1)[1].split("</div>", 1)[0]
-    assert menu.count("data-view=") == 3, (
-        "expected all three angles inside the menu, found {}".format(menu.count("data-view="))
+    assert menu.count("data-view=") == 4, (
+        "expected all four angles inside the menu, found {}".format(menu.count("data-view="))
     )
     # And none left loose in the bar beside the toggle.
-    bar = PAGE.split('<div class="rangebar">', 1)[1].split('id="viewMenu"', 1)[0]
-    assert "data-view=" not in bar, "an angle is still sitting loose in the bar"
+    wrap = PAGE.split('id="rangeWrap"', 1)[1].split("</aside>", 1)[0]
+    assert wrap.count("data-view=") == 4, "an angle is sitting loose outside the menu"
 
 
 def test_choosing_an_angle_puts_the_menu_away():
     """A menu that stays open covers the thing it was opened to look at."""
 
     assert "function closeViewMenu(" in PAGE
-    chooser = PAGE.split('.viewbtn[data-view]").forEach', 1)[1].split("});", 1)[0]
+    chooser = PAGE.split("function chooseView(", 1)[1].split("\n}", 1)[0]
     assert "closeViewMenu()" in chooser, "the menu stays open after a choice"
 
 
@@ -93,7 +91,7 @@ def test_clearing_the_range_is_never_hidden():
     assert '$("rangeClear").classList.toggle("hidden"' not in render
 
 
-@pytest.mark.parametrize("angle", ["down", "behind", "top"])
+@pytest.mark.parametrize("angle", ["first", "chase", "behind", "top"])
 def test_every_offered_angle_is_one_the_camera_understands(angle):
     """A button for a camera that does not exist moves nothing when pressed."""
 
@@ -103,3 +101,20 @@ def test_every_offered_angle_is_one_the_camera_understands(angle):
     assert "{}:".format(angle) in views or handled_specially, (
         "{} is offered but the camera has no case for it".format(angle)
     )
+
+
+def test_every_shortcut_says_which_key_it_is():
+    """A key nobody is told about is not an interface."""
+
+    for key in ("(V)", "(S)", "(F)", "(C)", "(A)", "(left arrow)", "(right arrow)",
+                "(up arrow)", "(down arrow)"):
+        assert key in PAGE, "no control mentions " + key
+
+
+def test_the_range_has_nowhere_to_send_anybody():
+    """Everything is in the app's own window."""
+
+    from pitrac_easy_connect.companion import range_view
+
+    for piece in (range_view.CSS, range_view.MARKUP, range_view.SCRIPT):
+        assert "http" not in piece and "href" not in piece and "window.open" not in piece
