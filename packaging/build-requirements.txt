@@ -7,24 +7,24 @@
 
 pyinstaller==6.22.2
 pywebview==6.2.1
-pillow==12.3.0
+pillow==13.0.0
 psutil==7.2.2
 # The actions/setup-python OpenSSL default points into the runner tool cache,
 # which does not exist on an owner's machine. The packaged entry point selects
-# this bundled CA store for every HTTPS request instead.
-certifi==2026.7.22
+# this bundled CA store for every HTTPS request instead. 2026.10.18 is the first
+# without the emSign G3 root, beneath which keys were stolen (GHSA-6q48-6c7w-9gw2).
+certifi==2026.10.23
 
 # PyInstaller's own dependencies.
 altgraph==0.17.5
 pyinstaller-hooks-contrib==2026.6
 packaging==25.0
-# 83.0.0 is the first release fixing GHSA-h35f-9h28-mq5c, where a Unicode
-# normalisation collision on macOS filesystems let a file excluded by
-# MANIFEST.in into an sdist anyway. This project builds no sdist, so it was
-# never exposed, but setuptools is bundled into the Windows app and shipping a
+# 84.1.0 is the first release fixing GHSA-xmj3-9gf7-h52w, where installing an
+# old-style wheel on Windows could write outside its folder. Nothing here
+# installs one, but setuptools is bundled into the Windows app and shipping a
 # version with a known hole is not worth the argument. Only the build machines
-# install this file and both run Python 3.13, which is what 83 requires.
-setuptools==83.0.0
+# install this file and both run Python 3.13.
+setuptools==84.2.1
 macholib==1.16.4 ; sys_platform == "darwin"
 pefile==2024.8.26 ; sys_platform == "win32"
 pywin32-ctypes==0.2.3 ; sys_platform == "win32"

@@ -52,4 +52,4 @@ def test_certifi_is_an_exact_build_pin():
     requirements = (ROOT / "packaging" / "build-requirements.txt").read_text()
     lines = [line.strip() for line in requirements.splitlines()]
     matches = [line for line in lines if line.startswith("certifi==")]
-    assert matches == ["certifi==2026.7.22"]
+    assert matches == ["certifi==2026.10.23"]

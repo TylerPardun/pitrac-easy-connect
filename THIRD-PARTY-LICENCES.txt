@@ -7,7 +7,7 @@ and their licence texts follow in full.
 
 
 ------------------------------------------------------------------------
-certifi 2026.7.22
+certifi 2026.10.23
 ------------------------------------------------------------------------
 
 This package contains a modified version of ca-bundle.crt:
@@ -222,7 +222,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 
 ------------------------------------------------------------------------
-setuptools 83.0.0
+setuptools 84.2.1
 ------------------------------------------------------------------------
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
