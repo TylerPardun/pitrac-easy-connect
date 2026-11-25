@@ -211,6 +211,7 @@ PAGE = r"""<!doctype html>
   .viewbtn:focus-visible{outline:2px solid var(--green);outline-offset:2px}
   .rangecount{font-size:.72rem;color:var(--muted);font-variant-numeric:tabular-nums;
     text-align:right;line-height:1.25}
+  .rangecount{white-space:nowrap}
   .rangeclubpick{width:auto;max-width:150px;padding:6px 8px;font-size:.8rem}
   .rangeclubs{flex:none;max-height:34%;overflow-y:auto;padding:12px 16px 16px;
     border-top:1px solid var(--line)}
@@ -1912,6 +1913,12 @@ const RANGE = (function(){
   }
 
 
+  // Where a point of a flight is drawn. Flights are [downrange, up, right];
+  // the scene is [x, up, downrange], and with the camera looking downrange its
+  // +x is on the LEFT. Without this every slice was drawn as a hook, while the
+  // numbers beside it said the opposite.
+  function place(point){ return [-point[2], point[1], point[0]]; }
+
   function camera(aspect){
     let eye, focus, up=[0,1,0], fov=Math.PI/4;
     if(view==="top"){
@@ -2053,7 +2060,7 @@ const RANGE = (function(){
       const pos=[], col=[];
       const tint = fresh ? [0.855, 0.965, 0.396] : [0.451, 0.573, 0.435];
       for(let i=1;i<pts.length;i++){
-        pos.push(pts[i-1][2],pts[i-1][1],pts[i-1][0], pts[i][2],pts[i][1],pts[i][0]);
+        pos.push(...place(pts[i-1]), ...place(pts[i]));
         col.push(tint[0],tint[1],tint[2], tint[0],tint[1],tint[2]);
       }
       uploadDynamic(new Float32Array(pos), new Float32Array(col));
@@ -2071,8 +2078,7 @@ const RANGE = (function(){
         const end = shot.points && shot.points.length
           ? shot.points[shot.points.length-1]
           : [shot.carryYards*YARD, 0, shot.offlineYards*YARD];
-        const x = shot.points && shot.points.length ? end[2] : end[2];
-        const z = shot.points && shot.points.length ? end[0] : end[0];
+        const [x, , z] = place(end);
         const r = 0.55;
         for(let i=0;i<10;i++){
           const a0=2*Math.PI*i/10, a1=2*Math.PI*(i+1)/10;
@@ -2095,7 +2101,7 @@ const RANGE = (function(){
   }
 
   function drawBall(view, vp, at){
-    const x = at[2], y = at[1], z = at[0];
+    const [x, y, z] = place(at);
     const p = programs.solid;
     gl.useProgram(p.prog);
     gl.uniformMatrix4fv(p.uniform.uViewProj, false, vp);

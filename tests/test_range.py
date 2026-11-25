@@ -347,3 +347,17 @@ def test_the_range_pane_hides_like_every_other_pane():
         if "display:" in rule.replace(" ", ""):
             assert ".on" in rule.split("{")[0], \
                 "a pane rule that sets display must be scoped to .on: " + rule[:70]
+
+
+def test_a_ball_hit_right_is_drawn_on_the_right():
+    """Every view was mirrored: the numbers said 41 yards right and the ball
+    flew left. The camera looks along +z with +y up, so its right is -x."""
+
+    import pathlib
+
+    page = (pathlib.Path(__file__).resolve().parent.parent
+            / "src" / "pitrac_easy_connect" / "companion" / "page.py").read_text()
+    assert "function place(point){ return [-point[2], point[1], point[0]]; }" in page
+    scene = page.split("function place(point)")[1].split("function drawTranslatedScaled")[0]
+    for direct in ("pts[i][2]", "pts[i-1][2]", "end[2]", "at[2]"):
+        assert direct not in scene, "a point is drawn without being placed: " + direct
