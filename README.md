@@ -17,7 +17,7 @@ includes PiTrac's dashboard, shot history, and a practice range.
 
 A five-step guide walks you through the first setup. If you move the enclosure to another home, you only need to choose the new Wi-Fi network. You do not need to reconfigure PiTrac.
 
-- **Version:** 0.10.2
+- **Version:** 0.10.3
 - **License:** [MIT](LICENSE)
 
 ![The practice range](media/range.png)
