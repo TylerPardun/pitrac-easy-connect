@@ -169,12 +169,7 @@ PAGE = r"""<!doctype html>
 
 <script>
 "use strict";
-const COUNTRIES=[["US","United States"],["CA","Canada"],["GB","United Kingdom"],["IE","Ireland"],
- ["AU","Australia"],["NZ","New Zealand"],["DE","Germany"],["FR","France"],["ES","Spain"],
- ["IT","Italy"],["NL","Netherlands"],["BE","Belgium"],["SE","Sweden"],["NO","Norway"],
- ["DK","Denmark"],["FI","Finland"],["PL","Poland"],["PT","Portugal"],["AT","Austria"],
- ["CH","Switzerland"],["CZ","Czechia"],["JP","Japan"],["KR","South Korea"],["SG","Singapore"],
- ["ZA","South Africa"],["MX","Mexico"],["BR","Brazil"]];
+const COUNTRIES=__COUNTRIES_JSON__;
 
 const $=id=>document.getElementById(id);
 const LICENCE_PAGE="https://github.com/PiTracLM/PiTrac/blob/main/LICENSE.MODEL.md";
@@ -626,6 +621,17 @@ setInterval(()=>{ if(!busy && view!=="password") refresh(); }, 4000);
 </body>
 </html>
 """.replace("__STYLE__", STYLE)
+
+
+def _fill_countries(page: str) -> str:
+    import json
+
+    from ..common.countries import COUNTRIES
+
+    return page.replace("__COUNTRIES_JSON__", json.dumps(COUNTRIES))
+
+
+PAGE = _fill_countries(PAGE)
 
 
 def downloads_page(downloads, enclosure_name: str, version: str) -> str:

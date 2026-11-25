@@ -36,6 +36,10 @@ from .backend import (
 )
 
 PROFILE_PREFIX = "easyconnect-"
+#: On a profile that has not proved itself. See ``adopt``.
+PROVISIONAL_SUFFIX = "-new"
+#: On the second of two networks that share a name.
+OTHER_SUFFIX = "-other"
 HOTSPOT_PROFILE = PROFILE_PREFIX + "setup"
 WIFI_DEVICE = "wlan0"
 AVAHI_SERVICE_FILE = Path("/etc/avahi/services/pitrac-easy-connect.service")
@@ -106,6 +110,36 @@ def split_terse(line: str) -> List[str]:
             current.append(character)
     fields.append("".join(current))
     return fields
+
+
+def is_wpa3_only(nmcli_security: str) -> bool:
+    modes = set((nmcli_security or "").upper().split())
+    return "WPA3" in modes and not modes & {"WPA1", "WPA2", "WPA"}
+
+
+def keyfile_escape(value: str) -> str:
+    """Write a value the way a NetworkManager keyfile reads it back.
+
+    Keyfiles give a backslash a meaning and drop leading spaces, and both are
+    ordinary characters in a passphrase. Unescaped, such a password was saved
+    as a different one and refused by a router it was right for.
+    """
+
+    escaped = value.replace("\\", "\\\\")
+    spaces = len(escaped) - len(escaped.lstrip(" "))
+    return "\\s" * spaces + escaped[spaces:]
+
+
+def adopted_name(main: str, saved, replacing: str, keep: str) -> str:
+    """Which of a network name's two places a proved profile goes into."""
+
+    other = main + OTHER_SUFFIX
+    if replacing in (main, other):
+        return replacing
+    for name in (main, other):
+        if name not in saved:
+            return name
+    return other if keep == main else main
 
 
 class NmcliBackend(PiBackend):
@@ -182,6 +216,7 @@ class NmcliBackend(PiBackend):
                 security=classify_security(fields[2]),
                 in_use=fields[3].strip() == "*",
                 frequency_mhz=frequency,
+                wpa3_only=is_wpa3_only(fields[2]),
             )
             # A router broadcasting on both bands appears twice. Show the
             # strongest, and keep the in-use flag from whichever entry has it.
@@ -195,6 +230,7 @@ class NmcliBackend(PiBackend):
                     strongest[ssid].security,
                     True,
                     strongest[ssid].frequency_mhz,
+                    wpa3_only=strongest[ssid].wpa3_only,
                 )
         return sorted(strongest.values(), key=lambda item: item.signal, reverse=True)
 
@@ -312,11 +348,18 @@ class NmcliBackend(PiBackend):
         return "{}{}-{}".format(PROFILE_PREFIX, slug, digest)
 
     def connect(
-        self, ssid: str, password: Optional[str], hidden: bool = False, timeout: float = 45.0
+        self,
+        ssid: str,
+        password: Optional[str],
+        hidden: bool = False,
+        timeout: float = 45.0,
+        wpa3_only: bool = False,
     ) -> ActiveConnection:
         if not ssid:
             raise BackendError("A network name is required")
-        profile = self.profile_name_for(ssid)
+        # Beside whatever is saved, never over it. Deleting the old profile
+        # first meant one mistyped password threw away the one that worked.
+        profile = self.profile_name_for(ssid) + PROVISIONAL_SUFFIX
         self._nmcli("con", "delete", profile, timeout=15, check=False)
 
         add = [
@@ -325,7 +368,9 @@ class NmcliBackend(PiBackend):
             "con-name", profile,
             "ifname", self.device,
             "ssid", ssid,
-            "connection.autoconnect", "yes",
+            # Not yet. If the power goes now, the next boot must not come back
+            # on a network nobody has been able to reach it on.
+            "connection.autoconnect", "no",
             # A residence network should win over the setup hotspot, which is
             # only ever brought up deliberately.
             "connection.autoconnect-priority", "10",
@@ -338,12 +383,11 @@ class NmcliBackend(PiBackend):
             # /proc. The key management is declared now and the secret is put
             # straight into the profile's own file below, which NetworkManager
             # creates as root-only.
-            add += ["wifi-sec.key-mgmt", "wpa-psk"]
+            add += ["wifi-sec.key-mgmt", "sae" if wpa3_only else "wpa-psk"]
         self._nmcli(*add, timeout=20)
-        if password:
-            self._store_passphrase(profile, password)
-
         try:
+            if password:
+                self._store_passphrase(profile, password)
             self._nmcli("con", "up", profile, timeout=timeout)
         except BackendError:
             self._nmcli("con", "delete", profile, timeout=15, check=False)
@@ -352,8 +396,43 @@ class NmcliBackend(PiBackend):
         connection = self._wait_for_address(profile, timeout=timeout)
         if connection is None:
             self._nmcli("con", "down", profile, timeout=15, check=False)
+            self._nmcli("con", "delete", profile, timeout=15, check=False)
             raise BackendError("no address was assigned")
         return connection
+
+    def adopt(self, ssid: str, replacing: str = "", keep: str = "") -> str:
+        main = self.profile_name_for(ssid)
+        provisional = main + PROVISIONAL_SUFFIX
+        saved = set(self.saved_profiles())
+        if provisional not in saved:
+            # Already done, by an attempt that was interrupted afterwards.
+            return main if main in saved else replacing or main
+        target = adopted_name(main, saved, replacing, keep)
+        # Reconnecting by itself comes first: from here on, whatever happens,
+        # a network that has been proved is one the enclosure returns to.
+        self._nmcli("con", "modify", provisional, "connection.autoconnect", "yes", timeout=15)
+        if target in saved:
+            self._nmcli("con", "delete", target, timeout=15, check=False)
+        self._nmcli("con", "modify", provisional, "connection.id", target, timeout=15)
+        return target
+
+    def discard(self, ssid: str) -> None:
+        self._nmcli(
+            "con", "delete", self.profile_name_for(ssid) + PROVISIONAL_SUFFIX,
+            timeout=15, check=False,
+        )
+
+    def ssid_of(self, profile: str) -> str:
+        return self._profile_ssid(profile)
+
+    def hotspot_clients(self) -> Optional[int]:
+        iw = find_tool("iw")
+        if iw is None:
+            return None
+        result = _run([iw, "dev", self.device, "station", "dump"], timeout=5, check=False)
+        if result.returncode != 0:
+            return None
+        return len(re.findall(r"^Station ", result.stdout or "", re.M))
 
     def _store_passphrase(self, profile: str, password: str) -> None:
         """Put the passphrase in the profile rather than on a command line.
@@ -397,14 +476,14 @@ class NmcliBackend(PiBackend):
     def _write_passphrase(path: Path, password: str) -> None:
         """Set ``psk`` in a keyfile, replacing any that is already there."""
 
-        text = path.read_text()
+        text = path.read_text(encoding="utf-8")
         lines = [line for line in text.splitlines() if not line.startswith("psk=")]
         if "[wifi-security]" in lines:
             at = lines.index("[wifi-security]") + 1
         else:
             lines.append("[wifi-security]")
             at = len(lines)
-        lines.insert(at, "psk={}".format(password))
+        lines.insert(at, "psk={}".format(keyfile_escape(password)))
         payload = ("\n".join(lines) + "\n").encode("utf-8")
 
         # Written beside the original so the replace is atomic, and never

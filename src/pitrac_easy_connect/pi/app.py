@@ -174,7 +174,7 @@ def main(argv=None) -> int:
         # enclosures now always make the system hostname match their identity.
         manage_hostname=manages_hostname(args),
     )
-    service.start()
+    service.start(wait_for_network=False)
 
     try:
         portal = PortalServer(("0.0.0.0", args.portal_port), service)

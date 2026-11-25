@@ -20,6 +20,7 @@ under an attacker's control is made to resolve to the enclosure's address.
 """
 
 import hmac
+import ipaddress
 import json
 import re
 from http import HTTPStatus
@@ -128,6 +129,7 @@ class PortalHandler(BaseHTTPRequestHandler):
         if not self._host_allowed():
             return
         path = urlparse(self.path).path
+        self._service().note_setup_used()
         if path in ("/", "/index.html", "/setup"):
             self._send_html(PAGE)
             return
@@ -179,6 +181,7 @@ class PortalHandler(BaseHTTPRequestHandler):
         if not self._host_allowed() or not self._request_allowed():
             return
         path = urlparse(self.path).path
+        self._service().note_setup_used()
         routes: Dict[str, Callable[[Dict[str, Any]], Any]] = {
             "/api/country": lambda body: self._service().command(
                 "setCountry", {"country": body.get("country", "")}
@@ -267,6 +270,31 @@ class PortalHandler(BaseHTTPRequestHandler):
                 return False
         return True
 
+    def _on_setup_network(self) -> bool:
+        """Whether this request came over the enclosure's own Wi-Fi.
+
+        Not whether the hotspot is on. The page listens on every interface, so
+        with a network cable plugged in, anybody on the household's network was
+        treated as standing next to the enclosure for as long as its hotspot
+        happened to be up. Both ends are checked: an address can be reached
+        through the wrong interface, but a conversation cannot be held from one
+        that belongs to another network.
+        """
+
+        service = self._service()
+        connection = service.backend.active_connection()
+        if connection is None or not connection.is_hotspot:
+            return False
+        if service.backend.simulated:
+            return True
+        try:
+            network = ipaddress.ip_interface(connection.ipv4)
+            local = ipaddress.ip_address(self.connection.getsockname()[0])
+            caller = ipaddress.ip_address(self.client_address[0])
+        except (OSError, ValueError):
+            return False
+        return local == network.ip and caller in network.network and caller != local
+
     def _authorize_sensitive(self, path: str, body: Dict[str, Any]) -> None:
         """Require real proof of ownership for a trust/network/ownership change.
 
@@ -274,7 +302,8 @@ class PortalHandler(BaseHTTPRequestHandler):
         (``ROUTE_AUTHORIZATION``): nothing is trusted yet and this is one of
         the operations onboarding needs, so this is first setup; the request
         is arriving over the enclosure's own setup network, where being
-        connected already means being in the room; the caller carries a
+        connected already means being in the room (see
+        ``_on_setup_network``); the caller carries a
         short-lived token an already-authenticated computer obtained over
         its own link (see ``PairingManager.issue_owner_token``), which is
         how the enclosure's own setup page authorizes itself when the
@@ -288,7 +317,7 @@ class PortalHandler(BaseHTTPRequestHandler):
         tier = ROUTE_AUTHORIZATION.get(path)
         if tier == FIRST_SETUP_OR_OWNER and service.pairings.count == 0:
             return
-        if service.provisioner.on_setup_hotspot:
+        if self._on_setup_network():
             return
         if service.pairings.check_owner_token(str(body.get("ownerToken", ""))):
             return
@@ -374,7 +403,7 @@ class PortalHandler(BaseHTTPRequestHandler):
 
     def _owner_card(self) -> Dict[str, Any]:
         service = self._service()
-        if not service.provisioner.on_setup_hotspot:
+        if not self._on_setup_network():
             raise EasyConnectError(
                 OWNER_CARD_NEEDS_A_COMPUTER,
                 "the owner card is not shown over the residence network",

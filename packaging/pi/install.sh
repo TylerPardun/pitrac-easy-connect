@@ -257,33 +257,35 @@ systemctl restart "$SERVICE"
 say "Enabled and started $SERVICE"
 
 step "Waiting for it to come up"
-for _ in $(seq 1 30); do
-    if systemctl is-active --quiet "$SERVICE"; then break; fi
-    sleep 1
-done
-# Sustained health, not the first moment systemd says "active". A service that
-# starts and dies two seconds later used to pass this and take the only
-# working copy with it.
-HEALTHY=yes
-for _ in 1 2 3 4 5 6; do
-    sleep 1
-    systemctl is-active --quiet "$SERVICE" || { HEALTHY=no; break; }
-done
-
 # Running is not the same as working. Ask it what version it is, which proves
 # the service is answering and that the release that answered is this one.
-if [ "$HEALTHY" = yes ]; then
-    REPORTED="$(curl -s -m 5 -H 'X-PiTrac-Portal: 1' \
-        http://127.0.0.1/api/status 2>/dev/null \
-        | python3 -c 'import json,sys; print(json.load(sys.stdin).get("version",""))' 2>/dev/null || true)"
-    if [ -z "$REPORTED" ]; then
-        say "The service is running but did not answer on port 80"
-        HEALTHY=no
-    elif [ "$REPORTED" != "$VERSION" ] && [ "$VERSION" != unknown ]; then
-        say "The service answered as $REPORTED, expected $VERSION"
-        HEALTHY=no
-    else
+#
+# Given time, because a Pi that is busy or on a slow card takes a while to start
+# Python, and concluding too early puts a working release back.
+answer() {
+    curl -s -m 5 -H 'X-PiTrac-Portal: 1' http://127.0.0.1/api/status 2>/dev/null \
+        | python3 -c 'import json,sys; print(json.load(sys.stdin).get("version",""))' 2>/dev/null || true
+}
+HEALTHY=no
+REPORTED=""
+for _ in $(seq 1 45); do
+    REPORTED="$(answer)"
+    [ -n "$REPORTED" ] && break
+    sleep 2
+done
+if [ -z "$REPORTED" ]; then
+    say "The service did not answer within ninety seconds"
+elif [ "$REPORTED" != "$VERSION" ] && [ "$VERSION" != unknown ]; then
+    say "The service answered as $REPORTED, expected $VERSION"
+else
+    # Sustained health, not the first moment it spoke. A service that starts and
+    # dies seconds later used to pass this and take the only working copy with it.
+    sleep 6
+    if systemctl is-active --quiet "$SERVICE" && [ "$(answer)" = "$REPORTED" ]; then
+        HEALTHY=yes
         say "Answering as version $REPORTED"
+    else
+        say "The service answered once and then stopped"
     fi
 fi
 

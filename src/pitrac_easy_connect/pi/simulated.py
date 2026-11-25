@@ -13,7 +13,7 @@ development.
 
 import copy
 import threading
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Dict, List, Optional
 
 from .backend import (
@@ -28,7 +28,7 @@ from .backend import (
     SystemFacts,
     WifiNetwork,
 )
-from .nmcli_backend import HOTSPOT_PROFILE, PROFILE_PREFIX
+from .nmcli_backend import HOTSPOT_PROFILE, PROFILE_PREFIX, PROVISIONAL_SUFFIX, adopted_name
 from .pitrac_api import PitracRefused, PitracUnreachable
 
 
@@ -53,6 +53,8 @@ class FakeAccessPoint:
 
 @dataclass
 class SimulatedPi(PiBackend):
+    simulated = True
+
     access_points: List[FakeAccessPoint] = field(default_factory=list)
     country: str = ""
     model: str = "Raspberry Pi 5 Model B Rev 1.1"
@@ -68,6 +70,7 @@ class SimulatedPi(PiBackend):
     running_processes: List[str] = field(default_factory=lambda: ["pitrac_lm"])
     host_name: str = "pitrac"
     supports_checkpoints: bool = True
+    scans_while_hotspot: bool = False
     #: Set by a test to make the next network operation raise, standing in for
     #: the power being removed part way through.
     fail_next_operation: Optional[str] = None
@@ -75,6 +78,12 @@ class SimulatedPi(PiBackend):
     def __post_init__(self) -> None:
         self._lock = threading.RLock()
         self._profiles: Dict[str, FakeAccessPoint] = {}
+        #: The password each profile was saved with, which is not necessarily
+        #: the one the router in range wants today.
+        self._secrets: Dict[str, Optional[str]] = {}
+        #: Devices on the setup hotspot, for the code that avoids taking it
+        #: away from somebody.
+        self.stations: Optional[int] = 0
         #: Networks the Pi already knew before Easy Connect existed — what
         #: netplan set up on a real machine. Easy Connect must never change
         #: these, but it does list them.
@@ -120,6 +129,10 @@ class SimulatedPi(PiBackend):
     def scan(self, rescan: bool = True) -> List[WifiNetwork]:
         self._trip("scan")
         with self._lock:
+            if self._hotspot is not None and not self.scans_while_hotspot:
+                # The one radio is busy being an access point. This is what a
+                # real Pi answers, and it is when somebody most wants a list.
+                return []
             active_ssid = self._active.ssid if self._active else ""
             return sorted(
                 (
@@ -166,11 +179,12 @@ class SimulatedPi(PiBackend):
 
         return NmcliBackend.profile_name_for(self, ssid)
 
-    def connect(
-        self, ssid: str, password: Optional[str], hidden: bool = False, timeout: float = 45.0
-    ) -> ActiveConnection:
-        self._trip("connect")
+    def _associate(self, profile: str, ssid: str, password: Optional[str]) -> ActiveConnection:
         access_point = self._find(ssid)
+        # Trying at all takes the radio off whatever it was doing.
+        with self._lock:
+            self._hotspot = None
+            self._active = None
         if access_point is None:
             raise BackendError("network not found")
         if access_point.security == SECURITY_ENTERPRISE:
@@ -179,11 +193,7 @@ class SimulatedPi(PiBackend):
             raise BackendError("Secrets were required, but not provided")
         if access_point.withhold_address:
             raise BackendError("no address was assigned")
-
         with self._lock:
-            self._hotspot = None
-            profile = self.profile_name_for(ssid)
-            self._profiles[profile] = access_point
             self._active = ActiveConnection(
                 profile=profile,
                 ssid=ssid,
@@ -193,10 +203,82 @@ class SimulatedPi(PiBackend):
             )
             return self._active
 
+    def connect(
+        self,
+        ssid: str,
+        password: Optional[str],
+        hidden: bool = False,
+        timeout: float = 45.0,
+        wpa3_only: bool = False,
+    ) -> ActiveConnection:
+        self._trip("connect")
+        profile = self.profile_name_for(ssid) + PROVISIONAL_SUFFIX
+        connection = self._associate(profile, ssid, password)
+        with self._lock:
+            self._profiles[profile] = self._find(ssid)
+            self._secrets[profile] = password
+        return connection
+
+    def adopt(self, ssid: str, replacing: str = "", keep: str = "") -> str:
+        self._trip("adopt")
+        with self._lock:
+            main = self.profile_name_for(ssid)
+            provisional = main + PROVISIONAL_SUFFIX
+            if provisional not in self._profiles:
+                return main if main in self._profiles else replacing or main
+            target = adopted_name(main, set(self._profiles), replacing, keep)
+            self._profiles[target] = self._profiles.pop(provisional)
+            self._secrets[target] = self._secrets.pop(provisional)
+            if self._active and self._active.profile == provisional:
+                self._active = replace(self._active, profile=target)
+            return target
+
+    def discard(self, ssid: str) -> None:
+        with self._lock:
+            profile = self.profile_name_for(ssid) + PROVISIONAL_SUFFIX
+            self._profiles.pop(profile, None)
+            self._secrets.pop(profile, None)
+            if self._active and self._active.profile == profile:
+                self._active = None
+
+    def ssid_of(self, profile: str) -> str:
+        with self._lock:
+            found = self._profiles.get(profile)
+        if found is not None:
+            return found.ssid
+        prefix = "netplan-wlan0-"
+        return profile[len(prefix):] if profile.startswith(prefix) else ""
+
+    def hotspot_clients(self) -> Optional[int]:
+        return self.stations
+
+    def save_network(self, ssid: str, password: str) -> str:
+        """Join a network and settle on it, for tests that begin there."""
+
+        self.connect(ssid, password)
+        return self.adopt(ssid)
+
+    def power_cycle(self, rejoins: bool = True) -> None:
+        """Lose power and come back, with or without the radio associating."""
+
+        with self._lock:
+            self._hotspot = None
+            self._active = None
+            self._checkpoints.clear()
+            profiles = [p for p in self._profiles if not p.endswith(PROVISIONAL_SUFFIX)]
+        if rejoins:
+            for profile in profiles:
+                try:
+                    self.activate_profile(profile)
+                    return
+                except BackendError:
+                    continue
+
     def activate_profile(self, profile: str, timeout: float = 45.0) -> ActiveConnection:
         self._trip("activate")
         with self._lock:
             access_point = self._profiles.get(profile)
+            secret = self._secrets.get(profile)
         if access_point is None and profile.startswith("netplan-wlan0-"):
             # A profile the Pi came with. Easy-Connect may join it but never
             # change it, which is the whole point of keeping the two lists apart.
@@ -204,16 +286,17 @@ class SimulatedPi(PiBackend):
             if ssid in self._preexisting_ssids:
                 found = self._find(ssid)
                 if found is not None:
-                    return self.connect(ssid, found.password)
+                    return self._associate(profile, ssid, found.password)
         if access_point is None:
             raise BackendError("no such profile")
-        return self.connect(access_point.ssid, access_point.password)
+        return self._associate(profile, access_point.ssid, secret)
 
     def forget_profile(self, profile: str) -> None:
         if not profile.startswith(PROFILE_PREFIX):
             raise BackendError("Easy-Connect only removes profiles it created")
         with self._lock:
             self._profiles.pop(profile, None)
+            self._secrets.pop(profile, None)
             if self._active and self._active.profile == profile:
                 self._active = None
 
@@ -337,8 +420,8 @@ def home_network_pi(**kwargs) -> SimulatedPi:
 
     backend = SimulatedPi(**kwargs)
     backend.add_network("Ferndale", password="GoodPassword1", signal=82, frequency_mhz=5180)
-    backend.add_network("Ferndale-Guest", password="guest", signal=74, isolates_clients=True)
-    backend.add_network("Neighbour-2G", password="unknown", signal=41)
+    backend.add_network("Ferndale-Guest", password="guest-password", signal=74, isolates_clients=True)
+    backend.add_network("Neighbour-2G", password="unknown-password", signal=41)
     backend.add_network("CoffeeShop", security=SECURITY_OPEN, signal=30, captive_portal=True)
     backend.add_network("Campus", security=SECURITY_ENTERPRISE, signal=55)
     backend.add_network("HiddenLab", password="secretlab", signal=60, hidden=True)

@@ -31,6 +31,8 @@ class WifiNetwork:
     #: The enclosure already has this network's password saved, so joining it
     #: asks for nothing. Filled in by the provisioner, which is what knows.
     known: bool = False
+    #: The router refuses anything older than WPA3, which is joined differently.
+    wpa3_only: bool = False
 
     @property
     def band(self) -> str:
@@ -145,6 +147,11 @@ class BackendError(RuntimeError):
 class PiBackend:
     """What the Wi-Fi state machine and the self-test are allowed to ask for."""
 
+    #: True only for a stand-in with no radio. There, "is this request arriving
+    #: over the enclosure's own Wi-Fi" has no answer, and loopback is taken to
+    #: mean yes. On a real enclosure it never is.
+    simulated = False
+
     # --- Wireless ---------------------------------------------------------
 
     def wifi_country(self) -> str:
@@ -190,9 +197,47 @@ class PiBackend:
         raise NotImplementedError
 
     def connect(
-        self, ssid: str, password: Optional[str], hidden: bool = False, timeout: float = 45.0
+        self,
+        ssid: str,
+        password: Optional[str],
+        hidden: bool = False,
+        timeout: float = 45.0,
+        wpa3_only: bool = False,
     ) -> ActiveConnection:
+        """Join a network provisionally, beside anything already saved for it.
+
+        Nothing that was saved before is touched: not its password, and not if
+        this fails. The new profile does not reconnect by itself until
+        ``adopt`` says it has earned that.
+        """
+
         raise NotImplementedError
+
+    def adopt(self, ssid: str, replacing: str = "", keep: str = "") -> str:
+        """Make the provisional profile for ``ssid`` permanent. Returns its name.
+
+        ``replacing`` names a profile this one supersedes. Otherwise a profile
+        already saved under the same network name is kept as well: two houses
+        can have routers with the same name and different passwords. ``keep``
+        is never removed to make room.
+        """
+
+        raise NotImplementedError
+
+    def discard(self, ssid: str) -> None:
+        """Remove the provisional profile for ``ssid``, if there is one."""
+
+        raise NotImplementedError
+
+    def ssid_of(self, profile: str) -> str:
+        """The network name a profile joins, or an empty string."""
+
+        raise NotImplementedError
+
+    def hotspot_clients(self) -> Optional[int]:
+        """How many devices are on the setup hotspot, or ``None`` if unknown."""
+
+        return None
 
     def activate_profile(self, profile: str, timeout: float = 45.0) -> ActiveConnection:
         raise NotImplementedError

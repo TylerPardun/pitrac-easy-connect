@@ -209,7 +209,7 @@ def test_connecting_creates_a_profile_brings_it_up_and_waits_for_an_address(back
     """The whole sequence, including the wait: a profile that comes up without
     an address is a network that has not actually worked."""
 
-    profile = backend.profile_name_for("Ferndale")
+    profile = backend.profile_name_for("Ferndale") + "-new"
     nmcli.reply("NAME,TYPE,DEVICE con show --active",
                 "{}:802-11-wireless:wlan0".format(profile))
     nmcli.reply("dev show wlan0", "\n".join([
@@ -300,3 +300,113 @@ def test_an_unset_country_reads_as_empty(backend, nmcli, monkeypatch):
 def test_no_iw_on_the_machine_reads_as_empty_rather_than_raising(backend, monkeypatch):
     monkeypatch.setattr(nmcli_backend, "find_tool", lambda name: None)
     assert backend.wifi_country() == ""
+
+
+# --- A network that has not proved itself ------------------------------------
+
+
+def test_joining_never_touches_what_was_already_saved(backend, nmcli):
+    """Deleting the old profile first meant one mistyped password threw away
+    the password that worked."""
+
+    saved = backend.profile_name_for("Ferndale")
+    nmcli.fail("con up", "Secrets were required, but not provided")
+    with pytest.raises(BackendError):
+        backend.connect("Ferndale", "wrong-password")
+    for call in nmcli.calls:
+        if "con delete" in call or "con modify" in call:
+            assert call.split()[3] == saved + "-new", "touched something else: " + call
+
+
+def test_an_unproved_profile_does_not_reconnect_by_itself(backend, nmcli):
+    nmcli.reply("NAME,TYPE,DEVICE con show --active", "")
+    with pytest.raises(BackendError):
+        backend.connect("Ferndale", "GoodPassword1", timeout=1)
+    added = next(call for call in nmcli.calls if "con add" in call)
+    assert "connection.autoconnect no" in added
+
+
+def test_proving_it_reconnects_first_and_renames_last(backend, nmcli):
+    """In that order, so a power cut part way through loses nothing."""
+
+    name = backend.profile_name_for("Ferndale")
+    nmcli.reply("-f NAME con show", name + "\n" + name + "-new")
+    assert backend.adopt("Ferndale", replacing=name) == name
+    steps = [c for c in nmcli.calls if "con modify" in c or "con delete" in c]
+    assert [" ".join(step.split()[1:5]) for step in steps] == [
+        "con modify {}-new connection.autoconnect".format(name),
+        "con delete " + name,
+        "con modify {}-new connection.id".format(name),
+    ]
+
+
+def test_proving_it_twice_is_harmless(backend, nmcli):
+    name = backend.profile_name_for("Ferndale")
+    nmcli.reply("-f NAME con show", name)
+    assert backend.adopt("Ferndale") == name
+    assert not nmcli.asked("con modify") and not nmcli.asked("con delete")
+
+
+@pytest.mark.parametrize("saved, replacing, keep, expected", [
+    ([], "", "", "n"),                       # the first time
+    (["n"], "n", "n", "n"),                  # a new password at the same house
+    (["n"], "", "n", "n-other"),             # the same name at another house
+    (["n", "n-other"], "n-other", "n-other", "n-other"),
+    (["n", "n-other"], "", "n", "n-other"),  # a third: the one in use is kept
+    (["n", "n-other"], "", "n-other", "n"),
+    ([], "netplan-wlan0-x", "", "n"),        # never take over a profile not ours
+])
+def test_which_place_a_proved_network_takes(saved, replacing, keep, expected):
+    from pitrac_easy_connect.pi.nmcli_backend import adopted_name
+
+    assert adopted_name("n", set(saved), replacing, keep) == expected
+
+
+# --- What routers and people actually use --------------------------------------
+
+
+@pytest.mark.parametrize("reported, only", [
+    ("WPA3", True), ("WPA2 WPA3", False), ("WPA2", False), ("WPA1 WPA2", False), ("", False),
+])
+def test_a_wpa3_router_is_joined_the_way_it_requires(backend, nmcli, reported, only):
+    nmcli.reply("dev wifi list", "Ferndale:80:{}: :5180".format(reported))
+    assert backend.scan()[0].wpa3_only is only
+    nmcli.fail("con up", "stop here")
+    with pytest.raises(BackendError):
+        backend.connect("Ferndale", "GoodPassword1", wpa3_only=only)
+    added = next(call for call in nmcli.calls if "con add" in call)
+    assert ("key-mgmt sae" if only else "key-mgmt wpa-psk") in added
+
+
+@pytest.mark.parametrize("password", [
+    r"back\slash1", r"ends in \\", "  leading spaces", r"looks like \s a space", "caf\u00e9-caf\u00e9",
+    'quotes"and;semi#colons',
+])
+def test_a_password_survives_being_written_down(tmp_path, password):
+    """Read back the way NetworkManager does, which gives backslashes a meaning."""
+
+    path = tmp_path / "p.nmconnection"
+    path.write_text("[wifi-security]\nkey-mgmt=wpa-psk\n")
+    NmcliBackend._write_passphrase(path, password)
+    stored = next(line for line in path.read_text(encoding="utf-8").splitlines()
+                  if line.startswith("psk="))[4:]
+    assert not stored.startswith(" "), "a keyfile drops leading spaces"
+    out, escaped = [], False
+    for character in stored:
+        if escaped:
+            out.append({"s": " ", "n": "\n", "t": "\t", "r": "\r", "\\": "\\"}[character])
+            escaped = False
+        elif character == "\\":
+            escaped = True
+        else:
+            out.append(character)
+    assert "".join(out) == password
+
+
+def test_the_hotspot_knows_whether_anybody_is_on_it(backend, nmcli, monkeypatch):
+    monkeypatch.setattr(nmcli_backend, "find_tool", lambda name: "/usr/sbin/iw")
+    nmcli.reply("station dump", "Station aa:bb:cc:dd:ee:ff (on wlan0)\n\tinactive time: 4 ms\n"
+                                "Station 11:22:33:44:55:66 (on wlan0)\n")
+    assert backend.hotspot_clients() == 2
+    monkeypatch.setattr(nmcli_backend, "find_tool", lambda name: None)
+    assert backend.hotspot_clients() is None

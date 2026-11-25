@@ -174,10 +174,10 @@ folder is not a disposable application installation.
 If macOS cannot find PiTrac, open **System Settings → Privacy & Security →
 Local Network** and allow PiTrac Easy-Connect, then search again.
 
-The Raspberry Pi's temporary setup page is intentionally browser-based. A new
-enclosure has not joined your network yet, so a phone or computer connects to
-its temporary Wi-Fi and opens `http://10.42.0.1`. This does not apply to the
-installed desktop app, which stays in its own window.
+Wi-Fi is set up in the app too. A new enclosure, or one somewhere new, makes a
+Wi-Fi network of its own. Join it from your computer's Wi-Fi menu with the
+password on the owner card, and the app asks which network to use. A phone can do
+the same at `http://10.42.0.1` if there is no computer to hand.
 
 ### Checking a download
 

@@ -2,12 +2,14 @@
 Description=PiTrac Easy Connect
 Documentation=https://github.com/PiTracLM/PiTrac
 # NetworkManager is what this service drives, so it must be up first.
-# network.target only means the stack is up, not that a radio has associated.
-# network-online.target is the one that waits, which matters because deciding
-# too early that the saved network is gone is how an enclosure ends up on its
-# own hotspot after a power cut, unreachable on the house network.
-After=network.target network-online.target NetworkManager.service avahi-daemon.service
-Wants=NetworkManager.service network-online.target
+#
+# Not network-online.target. That waits up to a minute for a network, and in a
+# house this enclosure has never been in there is not going to be one until this
+# service puts up the hotspot to ask for it. The service waits for the radio
+# itself, long enough not to give up on a saved network too early, and it goes
+# on answering while it does.
+After=network.target NetworkManager.service avahi-daemon.service
+Wants=NetworkManager.service
 
 # The backoff the [Service] section refers to. These are only honoured here.
 StartLimitIntervalSec=300

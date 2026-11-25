@@ -385,7 +385,7 @@ def test_the_network_list_hides_technical_detail(portal):
 
 def test_joining_through_the_page_reports_a_wrong_password_specifically(portal):
     _server, base = portal
-    _status, data = request(base + "/api/join", {"ssid": "Ferndale", "password": "wrong"})
+    _status, data = request(base + "/api/join", {"ssid": "Ferndale", "password": "wrong-password"})
     assert data["ok"] is False
     assert data["error"]["code"] == "PT-NET-001"
     assert data["error"]["stillSafe"]
@@ -773,7 +773,7 @@ def test_recent_shot_images_are_listed_for_the_app(tmp_path):
 
 
 def test_a_missing_images_directory_is_not_an_error(tmp_path):
-    pitrac = make_pitrac(tmp_path, images_dir=tmp_path / "nope")
+    pitrac = make_pitrac(tmp_path, images_dir=tmp_path / "nope-nope")
     assert pitrac.recent_images() == []
 
 

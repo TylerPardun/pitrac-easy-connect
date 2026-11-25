@@ -146,7 +146,7 @@ def test_a_wrong_password_during_first_setup_restores_the_hotspot(tmp_path):
     backend, provisioner, _ = build(tmp_path=tmp_path)
     provisioner.start_setup_hotspot()
 
-    result = provisioner.join("Ferndale", "wrong")
+    result = provisioner.join("Ferndale", "wrong-password")
     assert result.ok is False
     assert result.error["code"] == "PT-NET-001"
     current = backend.active_connection()
@@ -195,7 +195,7 @@ def test_an_isolated_guest_network_rolls_back_when_nothing_can_reach_the_pi(tmp_
     provisioner.join("Ferndale", "GoodPassword1")
     provisioner.confirm()
 
-    joined = provisioner.join("Ferndale-Guest", "guest")
+    joined = provisioner.join("Ferndale-Guest", "guest-password")
     assert joined.ok is True and joined.awaiting_confirmation is True
 
     # The PC can never reach the enclosure, so confirmation never arrives. The
@@ -212,7 +212,7 @@ def test_an_isolated_guest_network_rolls_back_when_nothing_can_reach_the_pi(tmp_
 def test_a_failed_confirmation_with_no_previous_network_restores_the_hotspot(tmp_path):
     backend, provisioner, clock = build(tmp_path=tmp_path)
     provisioner.start_setup_hotspot()
-    provisioner.join("Ferndale-Guest", "guest")
+    provisioner.join("Ferndale-Guest", "guest-password")
 
     clock.advance(151)
     result = provisioner.poll()
@@ -267,7 +267,7 @@ def test_power_lost_mid_change_is_undone_on_the_next_boot(tmp_path):
 
     # A change to the guest network begins, then the power is cut before
     # anything confirms it. The journal entry is all that survives.
-    provisioner.join("Ferndale-Guest", "guest")
+    provisioner.join("Ferndale-Guest", "guest-password")
     assert backend.active_connection().ssid == "Ferndale-Guest"
 
     clock = FakeClock()
@@ -376,7 +376,7 @@ def test_a_network_that_failed_confirmation_is_not_left_saved(tmp_path):
     provisioner.join("Ferndale", "GoodPassword1")
     provisioner.confirm()
 
-    provisioner.join("Ferndale-Guest", "guest")
+    provisioner.join("Ferndale-Guest", "guest-password")
     clock.advance(151)
     provisioner.poll()
 
@@ -596,7 +596,7 @@ def test_a_power_cut_during_the_rollback_is_still_recoverable(tmp_path):
     backend, provisioner, _clock = build(tmp_path=tmp_path)
     provisioner.join("Ferndale", "GoodPassword1")
     provisioner.confirm()
-    provisioner.join("Neighbour-2G", "unknown")     # unconfirmed
+    provisioner.join("Neighbour-2G", "unknown-password")     # unconfirmed
 
     # Fail partway through the undo, as a power cut would.
     original = backend.rollback_checkpoint
@@ -606,7 +606,7 @@ def test_a_power_cut_during_the_rollback_is_still_recoverable(tmp_path):
 
     backend.rollback_checkpoint = die
     try:
-        provisioner._undo_pending("Neighbour-2G", keep=None)
+        provisioner._undo_pending("Neighbour-2G")
     except BackendError:
         pass
     backend.rollback_checkpoint = original
@@ -625,7 +625,7 @@ def test_confirmation_is_refused_from_the_wrong_network(tmp_path):
     provisioner.join("Ferndale", "GoodPassword1")
     provisioner.confirm()
 
-    provisioner.join("Neighbour-2G", "unknown")
+    provisioner.join("Neighbour-2G", "unknown-password")
     # Something put it back on the old network before the confirmation arrived.
     backend.connect("Ferndale", "GoodPassword1")
 
@@ -652,7 +652,7 @@ def test_direct_mode_is_not_undone_by_an_older_pending_change(tmp_path):
     provisioner.join("Ferndale", "GoodPassword1")
     provisioner.confirm()
 
-    provisioner.join("Neighbour-2G", "unknown")     # left unconfirmed
+    provisioner.join("Neighbour-2G", "unknown-password")     # left unconfirmed
     assert provisioner.awaiting_confirmation is True
 
     provisioner.set_direct_mode(True)
@@ -670,7 +670,7 @@ def test_a_network_reset_cancels_a_pending_change(tmp_path):
     backend, provisioner, clock = build(tmp_path=tmp_path)
     provisioner.join("Ferndale", "GoodPassword1")
     provisioner.confirm()
-    provisioner.join("Neighbour-2G", "unknown")
+    provisioner.join("Neighbour-2G", "unknown-password")
 
     provisioner.forget_all_networks()
     assert provisioner.awaiting_confirmation is False
@@ -682,7 +682,7 @@ def test_a_second_join_replaces_the_first_pending_change(tmp_path):
     provisioner.join("Ferndale", "GoodPassword1")
     provisioner.confirm()
 
-    provisioner.join("Neighbour-2G", "unknown")
+    provisioner.join("Neighbour-2G", "unknown-password")
     provisioner.join("Ferndale", "GoodPassword1")
 
     pending = provisioner._journal.get("pending")
@@ -698,7 +698,7 @@ def test_a_refused_request_does_not_strand_the_previous_attempt(tmp_path):
     provisioner.join("Ferndale", "GoodPassword1")
     provisioner.confirm()
 
-    provisioner.join("Neighbour-2G", "unknown")      # provisional, unconfirmed
+    provisioner.join("Neighbour-2G", "unknown-password")      # provisional, unconfirmed
     assert provisioner.awaiting_confirmation is True
 
     with pytest.raises(EasyConnectError):

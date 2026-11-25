@@ -199,6 +199,18 @@ PAGE = r"""<!doctype html>
   .device small{display:block;color:var(--faint);margin-top:3px;font-size:.8rem}
   .tag{font-size:.68rem;font-weight:800;letter-spacing:.06em;color:var(--faint)}
   .tag.on{color:var(--green)}
+  .wifibox{margin-top:20px;display:flex;flex-direction:column;gap:8px}
+  .wifibox.hidden{display:none}
+  .wifilist{display:flex;flex-direction:column;gap:8px;max-height:300px;overflow:auto}
+  .wifibox label{font-size:.8rem;font-weight:650;color:var(--muted);margin-top:6px}
+  .wifibox .wififield{width:100%;padding:13px 15px;border-radius:11px;border:1px solid var(--line);
+    background:var(--panel);color:var(--text);font:inherit;font-size:1rem;font-weight:500;
+    letter-spacing:0;text-align:left;text-transform:none}
+  .wifibox .wifishow{display:flex;align-items:center;gap:8px;font-weight:500}
+  .device .bars{display:flex;align-items:flex-end;gap:2px;height:14px}
+  .device .bars i{width:4px;background:var(--line);border-radius:1px}
+  .device .bars i.on{background:var(--green)}
+  .wificount{font-size:2rem;font-weight:800;font-variant-numeric:tabular-nums;color:var(--text)}
   input[type=text]{width:100%;padding:16px;border-radius:11px;border:1px solid var(--line);
     background:var(--panel);color:var(--text);font:inherit;font-size:1.7rem;font-weight:700;
     letter-spacing:.34em;text-align:center;font-variant-numeric:tabular-nums}
@@ -265,6 +277,8 @@ PAGE = r"""<!doctype html>
     <div class="helpbody" id="helpBody"></div>
   </details>
 
+  <div class="wifibox hidden" id="wifiBox"></div>
+
   <div class="do" id="do"></div>
 
   <!-- Where to go next, shown once setup is done. The tab bar says the
@@ -301,6 +315,7 @@ PAGE = r"""<!doctype html>
       </div>
 
       <h3>PiTrac</h3>
+      <button class="quiet" id="changeWifi">Change PiTrac's Wi-Fi</button>
       <button class="quiet" id="setupLink">Open the PiTrac setup page</button>
       <button class="quiet" id="testShot">Send a test shot</button>
       <button class="quiet" id="pairAnotherComputer">Add another computer</button>
@@ -510,6 +525,7 @@ async function run(button, work){
 // of the way and the whole app is theirs.
 const WIZARD=[
   {key:"find",  label:"Connect"},
+  {key:"wifi",  label:"Wi-Fi", wifi:true},
   {key:"sim",   label:"Play mode"},
   {key:"open",  label:"Open it",   gspro:true},
   {key:"test",  label:"Test shot", gspro:true},
@@ -517,7 +533,7 @@ const WIZARD=[
 ];
 //: The Local Range has nothing to open and nothing to prove.
 function wizardSteps(data){
-  return WIZARD.filter(step=>!step.gspro || data.simulator==="gspro");
+  return WIZARD.filter(step=>(!step.gspro || data.simulator==="gspro") && (!step.wifi || WIFI.seen));
 }
 function isLocal(data){ return data.simulator==="local"; }
 
@@ -531,12 +547,10 @@ let wizard={started:false, simPicked:false, reachedEnclosure:false};
 const CANNOT_FIND=`<ol>
   <li>Check the Raspberry Pi has power and its light is on.</li>
   <li>Give it two minutes after switching on. It is slower than a phone.</li>
-  <li>If it has never been on your Wi-Fi, it makes its own network to be set up
-      through. On a phone or laptop, join the Wi-Fi network called
-      <code>PiTrac-</code> followed by eight characters, using the password on
-      the card that came with it, then open <code>http://10.42.0.1</code> and
-      follow the three steps there.</li>
-  <li>Come back here and press Search again.</li>
+  <li>If this is its first time, or it is somewhere new, it makes a Wi-Fi network
+      of its own. Open the Wi-Fi menu on this computer and join the one called
+      <strong id="setupName">PiTrac-</strong>, using the password on the owner card.</li>
+  <li>Come back here. It connects by itself, and asks which Wi-Fi to use.</li>
 </ol>`;
 
 function wizardView(data){
@@ -548,6 +562,9 @@ function wizardView(data){
     dot:"", head:"Let's get you playing", sub:"",
     why:"Connect to your PiTrac, choose how you want to play, and you're there.",
     actions:[{label:"Get started", id:"wizStart", primary:true}]};
+
+  const network=wifiView(data);
+  if(network) return network;
 
   if(!linked) return {step:"find",
     dot:"busy", head:"Find your PiTrac", sub:"",
@@ -603,6 +620,171 @@ function wizardView(data){
     why:"That's setup done. You will not see these steps again — next time you "+
         "open this it goes straight to playing.",
     actions:[{label:"Finish", id:"wizFinish", primary:true}]};
+}
+
+// --- PiTrac's Wi-Fi --------------------------------------------------------
+//
+// Asked here rather than on a page the enclosure serves. The only thing this
+// app cannot do is put the computer itself on another network, so that is the
+// only thing it ever asks somebody to go and do.
+
+const WIFI={stage:null, networks:null, scanning:false, chosen:null, ssid:"", until:0,
+            error:null, open:false, seen:false, dropped:false, dismissed:""};
+const COUNTRIES=__COUNTRIES_JSON__;
+
+function networkOf(data){ return (data.enclosure && data.enclosure.network) || {}; }
+function onSetupSignal(data){
+  const net=networkOf(data);
+  return !!(net.connection && net.connection.isHotspot);
+}
+function closeWifi(){
+  Object.assign(WIFI,{stage:null, networks:null, chosen:null, error:null, open:false});
+}
+
+function wifiView(data){
+  const linked=!!(data.link && data.link.connected);
+  const net=networkOf(data), setup=onSetupSignal(data);
+  const name=(data.link && data.link.device && data.link.device.displayName)||"PiTrac";
+
+  if(WIFI.stage==="joining") return {step:"wifi", wifi:"joining", dot:"busy",
+    head:"Joining "+WIFI.ssid, sub:name, why:"This can take a minute.", actions:[]};
+
+  if(WIFI.stage==="wait"){
+    const left=Math.max(0, Math.round((WIFI.until-Date.now())/1000));
+    if(!linked) WIFI.dropped=true;
+    // Until the connection has gone and come back, what is known about where
+    // PiTrac is was true before it moved.
+    const since=WIFI.dropped || left<110;
+    if(linked && !setup && net.connection && !net.awaitingConfirmation){ closeWifi(); }
+    else if(linked && setup && since){
+      // It is back on its own signal, which only happens when it did not work.
+      WIFI.error=net.lastError||{failed:name+" could not be reached on "+WIFI.ssid+"."};
+      WIFI.stage=null; WIFI.networks=null; WIFI.chosen=null;
+    }else if(left===0 && !linked && WIFI.until && Date.now()-WIFI.until>45000){
+      WIFI.error={failed:name+" was not reached on "+WIFI.ssid+".",
+        nextStep:"Join "+(net.setupSsid||"its own Wi-Fi")+" from this computer's Wi-Fi menu and try again."};
+      closeWifiKeeping();
+    }else return {step:"wifi", wifi:"wait", left:left, dot:"busy", find:!linked,
+      head:"Put this computer on "+WIFI.ssid, sub:name,
+      why:"PiTrac's own Wi-Fi has gone away, which is meant to happen. In this computer's "+
+          "Wi-Fi menu, choose "+WIFI.ssid+". If "+(net.setupSsid||"PiTrac's own Wi-Fi")+
+          " shows up there again instead, join that: PiTrac could not get on, and will say why.",
+      actions:[{label:"Search again", id:"find", primary:true}]};
+  }
+
+  if(!linked || !(WIFI.open || (setup && !net.directMode))) return null;
+  if(setup) WIFI.seen=true;
+  // Whatever went wrong may have taken the connection with it, so this is the
+  // first chance to say what it was.
+  if(setup && net.lastError && !WIFI.error && !WIFI.stage && WIFI.dismissed!==JSON.stringify(net.lastError))
+    WIFI.error=net.lastError;
+  const back=WIFI.open && !setup;
+
+  if(!net.country) return {step:"wifi", wifi:"country", dot:"", head:"Which country are you in?",
+    sub:name, why:"Wi-Fi radios follow different rules in different countries.",
+    actions:[{label:"Continue", id:"wifiCountry", primary:true}]};
+
+  if(WIFI.stage==="password"){
+    const c=WIFI.chosen;
+    return {step:"wifi", wifi:"password", dot:"",
+      head:c.hidden ? "Type your network" : "Password for "+c.ssid, sub:name, why:"",
+      actions:[{label:"Connect", id:"wifiJoin", primary:true}, {label:"Back", id:"wifiBack"}]};
+  }
+  if(WIFI.networks===null && !WIFI.scanning) scanWifi();
+  return {step:"wifi", wifi:"list", dot:WIFI.error?"bad":"", head:"Choose PiTrac's Wi-Fi", sub:name,
+    why:"Pick the network this computer uses at home.",
+    actions:[{label:"Search again", id:"wifiScan"}, {label:"Type a network name", id:"wifiHidden"},
+      back ? {label:"Cancel", id:"wifiClose"} : {label:"Play without a router", id:"wifiDirect"}]};
+}
+function closeWifiKeeping(){ WIFI.stage=null; WIFI.networks=null; WIFI.chosen=null; WIFI.until=0; }
+
+async function scanWifi(){
+  WIFI.scanning=true;
+  try{
+    const data=await api("/api/enclosure",{command:"scanNetworks"});
+    WIFI.networks=data.networks||[];
+  }catch(error){
+    WIFI.networks=[]; WIFI.error=error.info||{failed:error.message};
+  }finally{ WIFI.scanning=false; }
+  if(status) render(status);
+}
+
+function wifiRow(n){
+  return `<button class="device" data-ssid="${esc(n.ssid)}" ${n.supported?"":"disabled"}>
+    <span><strong>${esc(n.ssid)}</strong><small>${esc(n.inUse?"Connected now":
+      !n.supported?"Not supported":n.known?"Saved":n.needsPassword?"Password needed":"Open")}</small></span>
+    <span class="bars" aria-label="${esc(n.bars+" of 4")}">${[1,2,3,4].map(b=>
+      `<i class="${b<=n.bars?"on":""}" style="height:${b*3.5}px"></i>`).join("")}</span></button>`;
+}
+
+function renderWifi(view){
+  const host=$("wifiBox"), kind=view && view.wifi;
+  host.classList.toggle("hidden", !kind);
+  if(!kind){ host.dataset.sig=""; host.innerHTML=""; return; }
+  let html="";
+  if(WIFI.error && kind==="list") html+=`<div class="err"><h2>${esc(WIFI.error.failed||"That did not work")}</h2>
+    <p>${esc(WIFI.error.nextStep||"")}</p></div>`;
+  if(kind==="country"){
+    const mine=((navigator.language||"").split("-")[1]||"US").toUpperCase();
+    html+='<select class="wififield" id="wifiCountryPick" aria-label="Country">'+COUNTRIES.map(c=>
+      `<option value="${esc(c[0])}"${c[0]===mine?" selected":""}>${esc(c[1])}</option>`).join("")+"</select>";
+  }else if(kind==="password"){
+    const c=WIFI.chosen;
+    html+=(c.hidden?'<label for="wifiName">Network name</label><input class="wififield" type="text" id="wifiName" autocapitalize="none" autocorrect="off" spellcheck="false">':"")+
+      '<label for="wifiPassword">Password</label><input class="wififield" type="password" id="wifiPassword" autocapitalize="none" autocorrect="off" spellcheck="false">'+
+      '<label class="wifishow"><input type="checkbox" id="wifiShow"> Show password</label>'+
+      '<div class="clubnote">It goes to PiTrac over the encrypted link and is kept only there.</div>';
+  }else if(kind==="list"){
+    const list=WIFI.networks;
+    html+=list===null ? '<div class="empty">Looking for networks…</div>'
+      : !list.length ? '<div class="empty">No networks were found. Move PiTrac closer to your router, or type the name.</div>'
+      : '<div class="wifilist">'+list.slice().sort((a,b)=>(b.inUse-a.inUse)||(b.known-a.known)).map(wifiRow).join("")+"</div>";
+  }else if(kind==="wait"){
+    html+=`<div class="wificount">${esc(Math.floor(view.left/60)+":"+String(view.left%60).padStart(2,"0"))}</div>`;
+  }
+  if(!changed(host, html)) return;
+  host.innerHTML=html;
+  const first=$("wifiName")||$("wifiPassword");
+  if(first) first.focus();
+  const show=$("wifiShow");
+  if(show) show.addEventListener("change",()=>{ $("wifiPassword").type=show.checked?"text":"password"; });
+  if($("wifiPassword")) $("wifiPassword").addEventListener("keydown",e=>{ if(e.key==="Enter") doAction("wifiJoin"); });
+  host.querySelectorAll("[data-ssid]").forEach(button=>button.addEventListener("click",()=>{
+    const picked=WIFI.networks.find(n=>n.ssid===button.dataset.ssid);
+    WIFI.error=null;
+    WIFI.dismissed=JSON.stringify(networkOf(status).lastError||null);
+    // Saved, so it needs nothing typed. Open, so there is nothing to type.
+    if(picked.known || !picked.needsPassword) return joinWifi(picked.ssid, "", false);
+    WIFI.chosen={ssid:picked.ssid, hidden:false}; WIFI.stage="password"; render(status);
+  }));
+}
+
+async function joinWifi(ssid, password, hidden){
+  const before=onSetupSignal(status);
+  Object.assign(WIFI,{stage:"joining", ssid:ssid, error:null});
+  render(status);
+  const waiting=()=>Object.assign(WIFI,{stage:"wait", dropped:false, until:Date.now()+150000});
+  try{
+    const result=await api("/api/enclosure",{command:"joinNetwork",
+      arguments:{ssid:ssid, password:password, hidden:hidden}});
+    if(result.ok) waiting();
+    else{
+      WIFI.error=Object.assign({failed:result.message}, result.error||{});
+      const retype=!hidden && (result.error||{}).code===__WRONG_PASSWORD_CODE_JSON__;
+      WIFI.stage=retype ? "password" : null;
+      WIFI.chosen=retype ? {ssid:ssid, hidden:false} : null;
+      WIFI.networks=null;
+      if(retype) showError({message:WIFI.error.failed,
+        info:{failed:WIFI.error.failed, nextStep:"Check it and try again. Watch for capital letters."}});
+    }
+  }catch(error){
+    // Moving takes PiTrac off the Wi-Fi this answer would have come over, so
+    // silence here is what success looks like. Being told no is not.
+    const said=error.info && error.info.code && !/^PT-LINK/.test(error.info.code);
+    if(before && !said) waiting();
+    else Object.assign(WIFI,{stage:null, networks:null, error:error.info||{failed:error.message}});
+  }
+  render(status);
 }
 
 //: The places the app can take you, and what each is doing right now. The
@@ -726,10 +908,14 @@ function present(data){
     why:"PiTrac needs to be powered on and on this network.",
     actions:[{label:"Find my PiTrac", id:"find", primary:true}], find:true};
 
+  const network=wifiView(data);
+  if(network) return network;
+
   if(!linked) return {
     dot:"busy", head:"Looking for PiTrac", sub:"",
     why:"Check PiTrac has power and is on this network.",
-    actions:[{label:"Search again", id:"find", primary:false}], find:true};
+    actions:[{label:"Search again", id:"find", primary:false}], find:true,
+    help:{title:"It is somewhere new", body:CANNOT_FIND}};
 
   const name=(data.link.device&&data.link.device.displayName)||"PiTrac";
 
@@ -772,8 +958,11 @@ function render(data){
   // synchronous API call failed, so nothing else would have shown this.
   // Surface it here, from status, rather than only from a caught exception.
   const linkError=data.link&&data.link.lastError;
-  if(linkError&&!busy&&!asking()){
+  if(linkError&&!busy&&!asking()&&!WIFI.stage){
     showError({info:linkError}, data.link.lastErrorDeviceId||data.activeDeviceId, "link");
+  }else if(WIFI.stage&&$("err").dataset.from==="link"){
+    // Losing the link is what changing networks looks like from here.
+    showError(null);
   }else if(!linkError&&!busy&&!asking()&&$("err").dataset.from==="link"){
     // The connection this message described has since succeeded, or the
     // attempt that failed is no longer the last word. Taking it down here is
@@ -792,6 +981,9 @@ function render(data){
   $("sub").innerHTML=view.sub||"";
   $("why").textContent=view.why||"";
 
+  renderWifi(view);
+  const setupName=$("setupName");
+  if(setupName && data.activeDeviceId) setupName.textContent="PiTrac-"+data.activeDeviceId;
   if(!busy){
     $("do").innerHTML="";
     view.actions.forEach(action=>{
@@ -869,6 +1061,27 @@ function render(data){
 }
 
 function doAction(id, button){
+  if(id==="wifiScan"){
+    WIFI.networks=null; WIFI.error=null;
+    WIFI.dismissed=JSON.stringify(networkOf(status).lastError||null);
+    return render(status);
+  }
+  if(id==="wifiHidden"){ WIFI.chosen={ssid:"", hidden:true}; WIFI.stage="password"; return render(status); }
+  if(id==="wifiBack"){ WIFI.stage=null; WIFI.chosen=null; showError(null); return render(status); }
+  if(id==="wifiClose"){ closeWifi(); return render(status); }
+  if(id==="wifiCountry") return run(button, ()=>api("/api/enclosure",
+    {command:"setCountry", arguments:{country:$("wifiCountryPick").value}}));
+  if(id==="wifiDirect") return run(button, async()=>{
+    if(!confirm("Play without a router?\n\nThis computer stays on PiTrac's own Wi-Fi, which has no internet. You can change this later.")) return;
+    await api("/api/enclosure",{command:"setDirectMode", arguments:{enabled:true}});
+    closeWifi();
+  });
+  if(id==="wifiJoin"){
+    const c=WIFI.chosen, ssid=c.hidden ? $("wifiName").value.trim() : c.ssid, password=$("wifiPassword").value;
+    if(!ssid) return showError(new Error("Type the name of your network"));
+    showError(null);
+    return joinWifi(ssid, password, c.hidden);
+  }
   if(id==="wizStart"){ wizard.started=true; return refresh(); }
   if(id==="wizBackSim"){ wizard.simPicked=false; return refresh(); }
   if(id==="wizLocal"||id==="wizGspro") return run(button, async()=>{
@@ -1172,7 +1385,7 @@ async function findDevices(){
     }
     if(!data.enclosures.length){
       host.classList.add("hidden");
-      if(!data.problem){
+      if(!data.problem && !WIFI.stage){
         const missing=new Error("No PiTrac was found.");
         missing.info={failed:"No PiTrac was found.",
           nextStep:"Check that PiTrac has power and is on this same network, then search again."};
@@ -1317,6 +1530,9 @@ document.querySelectorAll("[data-sim]").forEach(button=>button.addEventListener(
   e=>run(e.currentTarget, ()=>api("/api/simulator",{simulator:e.currentTarget.dataset.sim}))));
 $("testShot").addEventListener("click",e=>doAction("test",e.target));
 $("setupLink").addEventListener("click",()=>showPane("setup"));
+$("changeWifi").addEventListener("click",()=>{
+  closeWifi(); WIFI.open=true; showPane("play"); render(status);
+});
 $("restart").addEventListener("click",e=>run(e.target, async()=>{
   await api("/api/enclosure",{command:"restartPitrac"});
   $("note").innerHTML='<div class="note good">PiTrac was restarted.</div>';
@@ -1657,11 +1873,21 @@ setInterval(()=>{ if(!busy && pane==="range" && !document.hidden) refreshRange()
 def _fill_error_codes(page: str) -> str:
     import json
 
-    from ..common.errors import LINK_DEVICE_MISMATCH, LINK_DEVICE_REPLACED, PAIR_NOT_ACCEPTING
+    from ..common.countries import COUNTRIES
+    from ..common.errors import (
+        LINK_DEVICE_MISMATCH,
+        LINK_DEVICE_REPLACED,
+        NET_WRONG_PASSWORD,
+        PAIR_NOT_ACCEPTING,
+    )
 
     return page.replace(
         "__STALE_PI_CODES_JSON__",
         json.dumps([LINK_DEVICE_MISMATCH.code, LINK_DEVICE_REPLACED.code]),
+    ).replace(
+        "__WRONG_PASSWORD_CODE_JSON__", json.dumps(NET_WRONG_PASSWORD.code)
+    ).replace(
+        "__COUNTRIES_JSON__", json.dumps(COUNTRIES)
     ).replace(
         "__PAIR_NOT_ACCEPTING_CODE_JSON__", json.dumps(PAIR_NOT_ACCEPTING.code)
     )

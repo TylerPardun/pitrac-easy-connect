@@ -71,7 +71,9 @@ def test_every_step_offers_a_way_forward():
     assert len(returns) >= 6, "expected a view for each step"
     for block in returns:
         assert "actions:[" in block
-        assert "actions:[]" not in block
+        # Nothing can be done while the radio is joining. It ends by itself.
+        if 'wifi:"joining"' not in block:
+            assert "actions:[]" not in block
 
 
 def test_the_steps_are_in_order_and_counted():
@@ -114,7 +116,7 @@ def test_a_pi_that_was_never_on_wifi_is_explained():
 
     assert "CANNOT_FIND" in PAGE
     help_text = PAGE.split("const CANNOT_FIND=`")[1].split("`;")[0]
-    assert "10.42.0.1" in help_text
+    assert "owner card" in help_text
     assert "PiTrac-" in help_text
 
 

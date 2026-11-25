@@ -122,6 +122,16 @@ def default_computer_name() -> str:
         return "This computer"
 
 
+#: Where an enclosure answers on its own setup hotspot.
+SETUP_ADDRESS = "10.42.0.1"
+
+#: How long to wait for an enclosure to do something. A radio needs longer.
+COMMAND_TIMEOUT = 20.0
+COMMAND_TIMEOUTS = {
+    "scanNetworks": 60.0, "joinNetwork": 150.0, "setDirectMode": 90.0, "resetNetwork": 90.0,
+}
+
+
 class CompanionService:
     def __init__(
         self,
@@ -948,6 +958,9 @@ class CompanionService:
             # Records written before hostname persistence still have a stable
             # device id from which every enclosure hostname is derived.
             candidates.append("pitrac-{}.local".format(device_id.lower()))
+        # Where every enclosure is while it is being its own Wi-Fi. Which
+        # enclosure answers there is checked like any other address.
+        candidates.append(SETUP_ADDRESS)
         candidates = list(dict.fromkeys(candidate for candidate in candidates if candidate))
 
         self.disconnect()
@@ -1496,7 +1509,9 @@ class CompanionService:
         client = self._link
         if client is None or not client.connected:
             raise EasyConnectError(LINK_NOT_FOUND, "not connected to PiTrac")
-        reply = client.call(name, arguments or {})
+        reply = client.call(
+            name, arguments or {}, timeout=COMMAND_TIMEOUTS.get(name, COMMAND_TIMEOUT)
+        )
         if reply is None:
             raise EasyConnectError(LINK_NOT_FOUND, "PiTrac did not answer")
         if not reply.get("ok"):

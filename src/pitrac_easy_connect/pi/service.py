@@ -43,6 +43,8 @@ DEFAULT_STATE_DIR = Path("/var/lib/pitrac-easy-connect")
 ENCLOSURE_LINK_PATH = Path("/usr/lib/pitrac-easy-connect")
 ENCLOSURE_RELEASES_DIR = Path("/usr/lib/pitrac-easy-connect-releases/releases")
 POLL_SECONDS = 2.0
+#: Requests that wait on a radio.
+SLOW_COMMANDS = {"scanNetworks", "joinNetwork", "setDirectMode", "resetNetwork", "restartPitrac"}
 
 
 @dataclass
@@ -114,6 +116,9 @@ class PiService:
             backend, self.paths.network, self.identity.setup_ssid,
             self.identity.setup_password, boot_grace=boot_grace,
         )
+        self.provisioner.hotspot_in_use = self._hotspot_in_use
+        self._setup_used_at: Optional[float] = None
+        self._network_thread: Optional[threading.Thread] = None
         self.link_server = CompanionLinkServer(
             self.pairings,
             device_info=self.device_info,
@@ -158,6 +163,7 @@ class PiService:
         self._last_report = None
         self._stop = threading.Event()
         self._poller: Optional[threading.Thread] = None
+        self._network_watcher: Optional[threading.Thread] = None
         self._boot_messages: List[str] = []
         self._relay_target_checked = False
         self._hostname_error = ""
@@ -180,16 +186,25 @@ class PiService:
 
     # --- Boot -------------------------------------------------------------
 
-    def start(self) -> None:
+    def start(self, wait_for_network: bool = True) -> None:
+        """Bring everything up.
+
+        ``wait_for_network`` is for callers that want to look at the outcome.
+        The real service does not wait: associating with a router can take most
+        of a minute, and until this returned there was no setup page to open,
+        nothing answering on an Ethernet cable, and an installer that concluded
+        the whole thing had failed.
+        """
+
         self._note("Easy-Connect {} starting".format(self.version))
 
         # 1. Networking first. Everything else can be reported once the
         #    enclosure is reachable; none of it can be reported if it is not.
-        try:
-            result = self.provisioner.recover_after_boot()
-            self._note(result.message)
-        except Exception as exc:
-            self._note("Network recovery failed: {}".format(exc))
+        if wait_for_network:
+            self._recover_network()
+        else:
+            self._network_thread = threading.Thread(target=self._recover_network, daemon=True)
+            self._network_thread.start()
 
         # 2. The relay, before PiTrac is pointed at it, so nothing PiTrac sends
         #    arrives at a closed port.
@@ -233,11 +248,40 @@ class PiService:
         self._stop.clear()
         self._poller = threading.Thread(target=self._poll_loop, daemon=True)
         self._poller.start()
+        self._network_watcher = threading.Thread(target=self._network_loop, daemon=True)
+        self._network_watcher.start()
+
+    def _recover_network(self) -> None:
+        try:
+            result = self.provisioner.recover_after_boot()
+            self._note(result.message)
+        except Exception as exc:
+            self._note("Network recovery failed: {}".format(exc))
+
+    @property
+    def _finding_a_network(self) -> bool:
+        thread = self._network_thread
+        return thread is not None and thread.is_alive()
+
+    #: How long after the setup page was last used somebody may still be at it.
+    SETUP_IN_USE_SECONDS = 300.0
+
+    def note_setup_used(self) -> None:
+        """The setup page was used, or the app asked for something on it."""
+
+        self._setup_used_at = time.monotonic()
+
+    def _hotspot_in_use(self) -> bool:
+        if self.link_server.connected:
+            return True
+        used = self._setup_used_at
+        return used is not None and time.monotonic() - used < self.SETUP_IN_USE_SECONDS
 
     def stop(self) -> None:
         self._stop.set()
-        if self._poller is not None:
-            self._poller.join(timeout=3)
+        for thread in (self._poller, self._network_watcher):
+            if thread is not None:
+                thread.join(timeout=3)
         for closer in (self.discovery.stop, self.link_server.stop, self.relay.stop):
             try:
                 closer()
@@ -328,15 +372,23 @@ class PiService:
 
     # --- The running loop -------------------------------------------------
 
+    def _network_loop(self) -> None:
+        """Apart from the other loop, because moving between networks takes a
+        radio as long as it takes, and shots are not going to wait for it."""
+
+        while not self._stop.is_set():
+            try:
+                moved = self.provisioner.poll()
+                if moved is not None:
+                    self._note(moved.message)
+                    self.refresh()
+            except Exception as exc:
+                self._note("Looking after the network failed: {}".format(exc))
+            self._stop.wait(POLL_SECONDS)
+
     def _poll_loop(self) -> None:
         last_refresh = 0.0
         while not self._stop.is_set():
-            try:
-                rolled_back = self.provisioner.poll()
-                if rolled_back is not None:
-                    self._note(rolled_back.message)
-            except Exception:
-                pass
             try:
                 # A Companion that is connected but wedged would otherwise leave
                 # PiTrac waiting on a reply that never comes.
@@ -382,6 +434,9 @@ class PiService:
         report = self.selftest.run()
         network = self.provisioner.status()
         state = state_for(report, network, self.link_server.connected)
+        if state is State.SETUP_REQUIRED and self._finding_a_network:
+            # Not "could not join" yet. Still trying.
+            state = State.STARTING
         with self._lock:
             if self.shutting_down:
                 state = State.SHUTTING_DOWN
@@ -466,8 +521,12 @@ class PiService:
         # A Companion arriving on a network the enclosure just moved to is
         # proof the move worked. This is what closes the confirmation window.
         if self.provisioner.awaiting_confirmation:
-            self.provisioner.confirm()
-            self._note("The new network was confirmed by {}".format(session.computer_name))
+            try:
+                self.provisioner.confirm(via=session.local_address)
+                self._note("The new network was confirmed by {}".format(session.computer_name))
+            except EasyConnectError as exc:
+                # It got here some other way. The window stays open.
+                self._note("Not confirmed yet: {}".format(exc.detail))
         self.refresh()
 
     def _on_companion_detach(self, session: CompanionSession) -> None:
@@ -493,30 +552,43 @@ class PiService:
             if news:
                 self.refresh()
         elif kind == "command":
-            self._run_command(session, frame)
+            if str(frame.get("command", "")) in SLOW_COMMANDS:
+                # Away from the thread that reads this session. Joining a
+                # network can take a minute, and a session that answers nothing
+                # for that long is taken to be gone.
+                threading.Thread(
+                    target=self._run_command, args=(session, frame), daemon=True
+                ).start()
+            else:
+                self._run_command(session, frame)
 
     def _run_command(self, session: CompanionSession, frame: Dict[str, Any]) -> None:
         request_id = frame.get("id")
         name = str(frame.get("command", ""))
         arguments = frame.get("arguments") or {}
         try:
-            data = self.command(name, arguments)
-            session.send(link.command_result(request_id, True, data))
+            if name == "confirmNetwork":
+                arguments = dict(arguments, via=session.local_address)
+            answer = link.command_result(request_id, True, self.command(name, arguments))
         except EasyConnectError as exc:
-            session.send(link.command_result(request_id, False, error_info=exc.as_dict()))
+            answer = link.command_result(request_id, False, error_info=exc.as_dict())
         except Exception as exc:
-            session.send(
-                link.command_result(
-                    request_id,
-                    False,
-                    error_info={
-                        "code": LINK_LOST.code,
-                        "failed": str(exc),
-                        "nextStep": "Try again. If it repeats, restart PiTrac.",
-                        "stillSafe": "Nothing on the enclosure was changed.",
-                    },
-                )
+            answer = link.command_result(
+                request_id,
+                False,
+                error_info={
+                    "code": LINK_LOST.code,
+                    "failed": str(exc),
+                    "nextStep": "Try again. If it repeats, restart PiTrac.",
+                    "stillSafe": "Nothing on the enclosure was changed.",
+                },
             )
+        try:
+            session.send(answer)
+        except Exception:
+            # Changing network takes away the connection the answer would have
+            # gone over. The computer finds out by reconnecting.
+            pass
 
     # --- Commands ---------------------------------------------------------
 
@@ -536,10 +608,8 @@ class PiService:
             },
             "setCountry": lambda a: self._set_country(a),
             "joinNetwork": lambda a: self._join(a),
-            "confirmNetwork": lambda a: self.provisioner.confirm().as_dict(),
-            "setDirectMode": lambda a: self.provisioner.set_direct_mode(
-                bool(a.get("enabled"))
-            ).as_dict(),
+            "confirmNetwork": lambda a: self.provisioner.confirm(str(a.get("via", ""))).as_dict(),
+            "setDirectMode": lambda a: self._set_direct_mode(a),
             "selectSimulator": lambda a: self._select_simulator(a),
             "rename": lambda a: self._rename(a),
             "trustedComputers": lambda a: {"computers": self.pairings.trusted_computers()},
@@ -576,7 +646,13 @@ class PiService:
 
     def _set_country(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
         self.provisioner.set_country(str(arguments.get("country", "")))
+        self.refresh()
         return {"country": self.provisioner.country()}
+
+    def _set_direct_mode(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
+        result = self.provisioner.set_direct_mode(bool(arguments.get("enabled")))
+        self.refresh()
+        return result.as_dict()
 
     def _join(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
         result = self.provisioner.join(

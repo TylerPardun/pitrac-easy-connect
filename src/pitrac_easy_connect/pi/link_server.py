@@ -121,6 +121,10 @@ class CompanionLinkServer:
         stream = link.FrameStream(sock)
         session = CompanionSession(stream, address[0])
         try:
+            session.local_address = sock.getsockname()[0]
+        except OSError:
+            pass
+        try:
             challenge = self._authenticate(session)
         except EasyConnectError as exc:
             _try_send(stream, link.error(exc.info.code, exc.info.failed, exc.info.next_step,
@@ -244,6 +248,9 @@ class CompanionSession:
     def __init__(self, stream: link.FrameStream, peer_address: str):
         self.stream = stream
         self.peer_address = peer_address
+        #: The enclosure's own address this computer reached it at, which says
+        #: which of its networks the computer came over.
+        self.local_address = ""
         self.pairing_id = ""
         self.computer_name = ""
         self.companion_version = ""
