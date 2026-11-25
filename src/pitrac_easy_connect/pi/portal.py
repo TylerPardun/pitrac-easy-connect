@@ -95,6 +95,9 @@ _ALLOWED_HOST = re.compile(
 
 class PortalServer(ThreadingHTTPServer):
     daemon_threads = True
+    # The default is five, and the page asks for more than that at once. macOS
+    # resets what does not fit, which reaches the page as a failed request.
+    request_queue_size = 64
     # Not allow_reuse_address: on Windows that lets a second copy take the port
     # from the one already serving. See common.link.claim_port.
     allow_reuse_address = False

@@ -65,6 +65,9 @@ MAX_RESTORE_BYTES = 9 * 1024 * 1024
 
 class CompanionHTTPServer(ThreadingHTTPServer):
     daemon_threads = True
+    # The default is five, and the page asks for more than that at once. macOS
+    # resets what does not fit, which reaches the page as a failed request.
+    request_queue_size = 64
     # Not allow_reuse_address: on Windows that lets a second copy of the app
     # take the port from the copy already running, so opening it twice would
     # break the first one silently. See common.link.claim_port.
