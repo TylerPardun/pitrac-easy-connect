@@ -314,7 +314,7 @@ def test_a_checksum_mismatch_fails_verification_not_installation(tmp_path, upstr
 
         service.download_desktop_update()
         _wait_for(
-            lambda: service.status()["update"]["desktop"]["state"] != "downloading",
+            lambda: service.status()["update"]["desktop"]["state"] not in ("downloading", "verifying"),
             "verification never completed",
         )
         desktop = service.status()["update"]["desktop"]

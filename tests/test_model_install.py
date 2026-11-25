@@ -127,18 +127,19 @@ def test_a_truncated_file_is_refused(tmp_path, upstream):
     assert not (tmp_path / "models" / "spin-predictor").exists()
 
 
-def test_nothing_is_left_behind_when_it_fails(tmp_path, upstream):
-    import pathlib
+def test_nothing_is_left_behind_when_it_fails(tmp_path, upstream, monkeypatch):
     import tempfile
 
+    # Its own, because other tests stage models of their own meanwhile.
+    staging = tmp_path / "staging"
+    staging.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(staging))
     FakeUpstream.behaviour = "missing"
-    before = set(pathlib.Path(tempfile.gettempdir()).glob("pitrac-models-*"))
     with pytest.raises(Exception):
         ml_models.install_from_source(
             installed_dir=tmp_path / "models", source_base=upstream
         )
-    after = set(pathlib.Path(tempfile.gettempdir()).glob("pitrac-models-*"))
-    assert after == before, "the staging directory should be cleaned up"
+    assert list(staging.iterdir()) == [], "the staging directory should be cleaned up"
 
 
 # --- Consent ---------------------------------------------------------------

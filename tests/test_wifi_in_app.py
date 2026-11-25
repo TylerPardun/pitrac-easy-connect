@@ -116,8 +116,10 @@ def test_losing_the_link_in_the_middle_of_joining_is_not_a_crash(rig, monkeypatc
         rig.companion.command("joinNetwork", {"ssid": "Ferndale", "password": "GoodPassword1"})
     assert caught.value.info.code.startswith("PT-LINK"), "the page reads this as having worked"
     assert wait_for(lambda: rig.companion.status()["link"]["connected"], 12)
+    # What was last heard is still shown until something newer arrives, and the
+    # network it was on before was not awaiting anything either.
+    assert wait_for(lambda: network(rig)["connection"]["ssid"] == "Ferndale")
     assert wait_for(lambda: network(rig)["awaitingConfirmation"] is False)
-    assert network(rig)["connection"]["ssid"] == "Ferndale"
 
 
 def test_everything_slow_is_given_long_enough_and_its_own_thread():

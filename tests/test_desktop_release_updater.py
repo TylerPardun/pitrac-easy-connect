@@ -191,8 +191,10 @@ def test_two_concurrent_checks_make_exactly_one_network_call():
     updater = DesktopReleaseUpdater("0.4.4", system="Windows", machine="x86_64", fetch_json=slow)
 
     results = []
+    arrived = threading.Semaphore(0)
 
     def call_check():
+        arrived.release()
         results.append(updater.check(force=True))
 
     first = threading.Thread(target=call_check)
@@ -200,7 +202,8 @@ def test_two_concurrent_checks_make_exactly_one_network_call():
     started.wait(timeout=5)
     second = threading.Thread(target=call_check)
     second.start()
-    time.sleep(0.1)  # give the second thread a chance to arrive and block
+    assert arrived.acquire(timeout=5) and arrived.acquire(timeout=5)
+    time.sleep(0.1)  # it has started; this lets it get as far as waiting
     release_call.set()
     first.join(timeout=5)
     second.join(timeout=5)

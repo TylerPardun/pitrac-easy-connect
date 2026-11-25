@@ -2,9 +2,14 @@
 
 import os
 import pathlib
+import sys
 import threading
 
 import pytest
+
+# Some tests start a script, which finds Python on the path. It has to be this
+# one, the one with the project installed, however the tests were started.
+os.environ["PATH"] = os.pathsep.join([str(pathlib.Path(sys.executable).parent), os.environ.get("PATH", "")])
 
 #: Parts of this project only ever run on the enclosure, which is Linux. File
 #: ownership, the accounts a privilege drop needs, permission bits and the
