@@ -208,7 +208,7 @@ def main(argv=None) -> int:
     )
     parser.add_argument("--host", default="127.0.0.1",
                         help="where Easy-Connect is running (default: this machine)")
-    parser.add_argument("--simulator", choices=[s.value for s in Simulator],
+    parser.add_argument("--simulator", choices=["gspro", "e6"],
                         default=Simulator.GSPRO.value)
     parser.add_argument("--port", type=int, help="override the relay port")
     parser.add_argument("--shots", type=int, default=1)

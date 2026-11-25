@@ -471,7 +471,7 @@ def test_switching_simulators_clears_the_accepted_test_shot(rig):
 
 def test_an_unsupported_simulator_is_refused(rig):
     for name in ("trackman", "e6", ""):
-        with pytest.raises(ValueError, match="Choose Local Range or GSPro"):
+        with pytest.raises(ValueError, match="Choose Local Range, OpenGolfSim or GSPro"):
             rig.companion.select_simulator(name)
 
 

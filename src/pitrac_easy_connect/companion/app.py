@@ -22,6 +22,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--gspro-port", type=int, default=Simulator.GSPRO.default_port, help="GSPro port"
     )
+    parser.add_argument(
+        "--ogs-port", type=int, default=Simulator.OGS.default_port, help="OpenGolfSim port"
+    )
     parser.add_argument("--e6-port", type=int, default=Simulator.E6.default_port, help="E6 port")
     parser.add_argument("--simulator-host", default="127.0.0.1", help="where the simulator runs")
     parser.add_argument("--discovery-port", type=int, default=discovery.DISCOVERY_PORT)
@@ -108,6 +111,7 @@ def main(argv=None) -> int:
     relaunch_arguments = [
         "--port", str(args.port),
         "--gspro-port", str(args.gspro_port),
+        "--ogs-port", str(args.ogs_port),
         "--e6-port", str(args.e6_port),
         "--simulator-host", str(args.simulator_host),
         "--discovery-port", str(args.discovery_port),
@@ -125,7 +129,11 @@ def main(argv=None) -> int:
         relaunch_arguments.append("--smoke-test")
     service = CompanionService(
         config_path=args.config,
-        simulator_ports={Simulator.GSPRO: args.gspro_port, Simulator.E6: args.e6_port},
+        simulator_ports={
+            Simulator.GSPRO: args.gspro_port,
+            Simulator.OGS: args.ogs_port,
+            Simulator.E6: args.e6_port,
+        },
         simulator_host=args.simulator_host,
         discovery_port=args.discovery_port,
         computer_name=args.computer_name,

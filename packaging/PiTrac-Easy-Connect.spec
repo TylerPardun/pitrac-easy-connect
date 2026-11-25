@@ -81,6 +81,7 @@ analysis = Analysis(
         "pitrac_easy_connect.companion.simulator_session",
         "pitrac_easy_connect.companion.shotlog",
         "pitrac_easy_connect.companion.flight",
+        "pitrac_easy_connect.companion.opengolfsim",
         "pitrac_easy_connect.companion.clubs",
         "pitrac_easy_connect.companion.rangeplay",
         "pitrac_easy_connect.companion.range_view",

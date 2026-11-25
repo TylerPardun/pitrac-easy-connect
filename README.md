@@ -6,7 +6,7 @@
 > hardware this software is for, nothing more. PiTrac itself can be found at
 > [PiTracLM/PiTrac](https://github.com/PiTracLM/PiTrac)
 
-**Connect your PiTrac enclosure to Wi-Fi and play on a built-in range or in GSPro, from one desktop app.**
+**Connect your PiTrac enclosure to Wi-Fi and play on a built-in range, in OpenGolfSim, or in GSPro, from one desktop app.**
 
 PiTrac Easy-Connect makes a PiTrac launch monitor easier to set up and use. It
 includes a small program that runs on the Raspberry Pi inside the enclosure and
@@ -36,6 +36,7 @@ A five-step guide walks you through the first setup. If you move the enclosure t
 | **Connection recovery** | If a new Wi-Fi connection fails, the enclosure returns to the previous network within two and a half minutes. It can also recover if power is lost during the change |
 | **Find and connect** | The app finds the enclosure automatically. One click links the app and enclosure, and other computers cannot connect unless the owner allows them |
 | **Local Range** | A first-person range with nothing else to buy, open or sign in to. Set a target, and the club is chosen from its distance and how far you hit each one; change it with one key. Every shot shows carry, total, distance to the pin, speed, launch, direction and spin, and the session shows where they finished. Works on macOS and Windows |
+| **OpenGolfSim** | Plays its range and courses on macOS and Windows. It is free and separate: choose **Developer API** as its launch monitor. Each shot shows whether it was played, and where the simulator says it went |
 | **GSPro** | Sends each measured shot to GSPro, which runs on Windows. PiTrac is pointed at Easy-Connect once, when the enclosure is set up, and never again — so a new router, a new address, or a move to another house does not break shot delivery. A **Play mode** page shows which is selected, whether GSPro is answering, and the steps to get it listening |
 | **Setup and system checks** | A five-step guide handles the first setup. The app also checks that the cameras, calibration, software, storage, and other essentials are ready, then explains anything that needs attention |
 | **Shot history and practice range** | Every shot is saved with the club it was hit with, including shots played through GSPro. Averages build up with or without a simulator. Recent shot images PiTrac has saved are shown separately |
@@ -65,10 +66,10 @@ This prevents a failed network change from leaving you unable to reconnect.
 
 ## How It Works
 
-PiTrac sends each measured shot to Easy-Connect inside the enclosure. The desktop app receives it over your home Wi-Fi and draws it on the range, or passes it to GSPro on the same computer.
+PiTrac sends each measured shot to Easy-Connect inside the enclosure. The desktop app receives it over your home Wi-Fi and draws it on the range, or passes it to a simulator on the same computer.
 
 ```
-PiTrac enclosure  →  Home Wi-Fi  →  Easy-Connect app  →  Local Range or GSPro
+PiTrac enclosure  →  Home Wi-Fi  →  Easy-Connect app  →  Local Range, OpenGolfSim or GSPro
 ```
 
 The app finds the enclosure automatically, limits access to computers you have approved, and does not require a Windows firewall rule. Changing homes or Wi-Fi networks does not change PiTrac's setup.
@@ -153,8 +154,8 @@ Wi-Fi network of its own. Join it from your computer's Wi-Fi menu with the
 password on the owner card, and the app asks which network to use. A phone can do
 the same at `http://10.42.0.1` if there is no computer to hand.
 
-Open the app, find the enclosure, choose Local Range or GSPro, and play. GSPro
-adds two steps: opening it, and one test shot. The guide does not appear again after
+Open the app, find the enclosure, choose how to play, and play. A simulator adds
+two steps: opening it, and one shot to make sure. The guide does not appear again after
 the first-time setup, but you can reopen it with **Advanced → Run setup again**.
 
 ---

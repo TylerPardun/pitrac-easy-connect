@@ -102,7 +102,7 @@ def test_a_new_installation_starts_on_the_local_range(tmp_path):
     service = CompanionService(tmp_path / "c.json", discovery_port=0, startup_update_check=False)
     try:
         assert service.mode is PlayMode.LOCAL
-        assert [mode["value"] for mode in service.status()["playModes"]] == ["local", "gspro"]
+        assert [mode["value"] for mode in service.status()["playModes"]] == ["local", "ogs", "gspro"]
     finally:
         service.close()
 
@@ -119,7 +119,7 @@ def test_a_choice_that_is_no_longer_offered_becomes_the_local_range(tmp_path):
 @pytest.mark.parametrize("platform, said", [("darwin", "only on Windows"), ("win32", "")])
 def test_a_mac_is_told_gspro_will_not_run_there(rig, monkeypatch, platform, said):
     monkeypatch.setattr(sys, "platform", platform)
-    note = rig.companion.play_modes()[1]["note"]
+    note = rig.companion.play_modes()[-1]["note"]
     assert (said in note) if said else note == ""
 
 

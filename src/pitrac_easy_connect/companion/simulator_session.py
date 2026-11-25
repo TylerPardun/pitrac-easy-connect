@@ -1,4 +1,4 @@
-"""One long-lived connection to GSPro or E6 on this computer.
+"""One long-lived connection to a golf simulator on this computer.
 
 The connection is held open rather than dialled per shot. E6 in particular is
 stateful — it expects a handshake and then a shot sequence on the same socket —
@@ -15,11 +15,36 @@ import json
 import socket
 import threading
 import time
-from typing import Any, Callable, Dict, Optional
+from dataclasses import dataclass
+from typing import Any, Callable, Dict, List, Optional
 
 from ..common.errors import SIM_BAD_RESPONSE, SIM_NOT_ARMED, SIM_NO_RESPONSE, SIM_REJECTED_SHOT
 from ..models import ShotData, Simulator
 from ..protocols import e6_ball_message, e6_club_message, gspro_message
+
+#: What became of a shot, from best to worst. Kept apart because they are
+#: different things to somebody wondering whether a stroke counted.
+PLAYED = "played"          # the simulator said where it went
+ACCEPTED = "accepted"      # the simulator said it took it
+UNKNOWN = "unknown"        # it was sent, and nothing was said
+REJECTED = "rejected"      # the simulator said no
+UNDELIVERED = "undelivered"  # there was nothing to send it to
+LOCAL = "local"            # there was never meant to be
+
+
+@dataclass(frozen=True)
+class Delivery:
+    outcome: str
+    message: str = ""
+
+    @property
+    def sent(self) -> bool:
+        return self.outcome in (PLAYED, ACCEPTED, UNKNOWN)
+
+
+#: How long to wait for a simulator to say something about a shot. A shot is in
+#: the air for seconds, so this is invisible; being told a lie about it is not.
+ANSWER_SECONDS = 1.0
 
 CONNECT_TIMEOUT = 3.0
 RESPONSE_TIMEOUT = 5.0
@@ -46,6 +71,7 @@ class SimulatorSession:
         self._reader: Optional[threading.Thread] = None
         self._stop = threading.Event()
         self._waiters: list = []
+        self._listeners: List[Callable[[Dict[str, Any]], None]] = []
         self.last_error = ""
         self.messages_sent = 0
         self.messages_received = 0
@@ -68,6 +94,7 @@ class SimulatorSession:
                 self.last_error = _friendly(self.simulator, exc)
                 raise
             sock.settimeout(0.5)
+            self._prepare(sock)
             self._sock = sock
             self.last_error = ""
             self._stop.clear()
@@ -151,9 +178,12 @@ class SimulatorSession:
             self.last_message_at = time.time()
             waiters = list(self._waiters)
             self._waiters.clear()
+            listeners = list(self._listeners)
         for event, slot in waiters:
             slot.append(message)
             event.set()
+        for listen in listeners:
+            listen(message)
         self.messages_seen += 1
         if self.on_message is not None:
             try:
@@ -163,12 +193,68 @@ class SimulatorSession:
 
     # --- Writing ----------------------------------------------------------
 
+    def _prepare(self, sock: socket.socket) -> None:
+        """Anything this simulator needs of the connection itself."""
+
+    def _encode(self, message: Dict[str, Any]) -> bytes:
+        return json.dumps(message, separators=(",", ":")).encode("utf-8")
+
+    def set_ready(self, ready: bool) -> None:
+        """Whether there is a ball to hit, for a simulator that asks separately."""
+
+    def deliver(self, payload: Dict[str, Any], shot_id: str = "") -> Delivery:
+        """Hand over one swing, and report what was actually said about it.
+
+        GSPro answers a shot with 200 or a 5xx. It also speaks up unasked, with
+        2xx codes about the player, and those are not answers to anything.
+        """
+
+        reply = self._answer_to(payload, _answers_a_shot)
+        if reply is None:
+            return Delivery(UNKNOWN, "sent to {}, which has not answered".format(self.simulator.label))
+        if reply.get("Code") == 200:
+            return Delivery(ACCEPTED, "{} took it".format(self.simulator.label))
+        return Delivery(REJECTED, str(reply.get("Message") or "{} refused it".format(
+            self.simulator.label)))
+
+    def _answer_to(
+        self, message: Dict[str, Any], answers: Callable[[Dict[str, Any]], bool]
+    ) -> Optional[Dict[str, Any]]:
+        """Send, and wait briefly for something that answers it.
+
+        Raises ``OSError`` if the connection goes while waiting: a write to a
+        program that has died succeeds, and its silence is not "no answer".
+        """
+
+        answered = threading.Event()
+        found: List[Dict[str, Any]] = []
+
+        def listen(reply: Dict[str, Any]) -> None:
+            if not found and answers(reply):
+                found.append(reply)
+                answered.set()
+
+        with self._lock:
+            self._listeners.append(listen)
+        try:
+            self.send(message)
+            deadline = time.monotonic() + ANSWER_SECONDS
+            while not answered.wait(0.05):
+                if not self.connected:
+                    raise OSError("the simulator closed the connection")
+                if time.monotonic() >= deadline:
+                    return None
+            return found[0]
+        finally:
+            with self._lock:
+                self._listeners.remove(listen)
+
     def send(self, message: Dict[str, Any]) -> None:
         with self._lock:
             sock = self._sock
         if sock is None:
             raise OSError("not connected to the simulator")
-        payload = json.dumps(message, separators=(",", ":")).encode("utf-8")
+        payload = self._encode(message)
         try:
             sock.sendall(payload)
         except OSError:
@@ -208,16 +294,11 @@ class SimulatorSession:
         """
 
         if self.simulator is Simulator.GSPRO:
-            response = self.send_and_wait(gspro_message(shot))
-            if response is None:
-                return {"accepted": False, "code": SIM_NO_RESPONSE.code, "response": None}
-            if response.get("Code") == 200:
-                return {"accepted": True, "code": "", "response": response}
-            if response.get("Code") in (201, 202):
-                # GSPro answers player-change and similar notices with 2xx codes
-                # that are not shot acknowledgements.
-                return {"accepted": False, "code": SIM_NOT_ARMED.code, "response": response}
-            return {"accepted": False, "code": SIM_REJECTED_SHOT.code, "response": response}
+            delivery = self.deliver(gspro_message(shot))
+            if delivery.outcome == ACCEPTED:
+                return {"accepted": True, "code": "", "response": {"Code": 200}}
+            code = SIM_REJECTED_SHOT if delivery.outcome == REJECTED else SIM_NO_RESPONSE
+            return {"accepted": False, "code": code.code, "response": None}
 
         handshake = self.send_and_wait({"Type": "Handshake"})
         if handshake is None:
@@ -251,6 +332,11 @@ class SimulatorSession:
                 "messagesReceived": self.messages_received,
                 "lastError": self.last_error,
             }
+
+
+def _answers_a_shot(reply: Dict[str, Any]) -> bool:
+    code = reply.get("Code")
+    return code == 200 or (isinstance(code, int) and code >= 500)
 
 
 def _friendly(simulator: Simulator, error: BaseException) -> str:

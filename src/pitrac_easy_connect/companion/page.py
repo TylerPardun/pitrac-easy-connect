@@ -230,6 +230,7 @@ PAGE = r"""<!doctype html>
     text-transform:uppercase;color:var(--faint)}
   .advbody button,.advbody .linkbtn{padding:11px 14px;font-size:.9rem;font-weight:600}
   .row2{display:grid;grid-template-columns:1fr 1fr;gap:9px}
+  .row2.three{grid-template-columns:repeat(3,1fr)}
   .danger{border-color:rgba(255,125,115,.3);color:var(--red)}
   .danger:hover{border-color:rgba(255,125,115,.55)}
   .kv{display:grid;grid-template-columns:auto 1fr;gap:3px 14px;font-size:.8rem;color:var(--faint);
@@ -309,8 +310,9 @@ PAGE = r"""<!doctype html>
     <summary>Advanced</summary>
     <div class="advbody">
       <h3>Play mode</h3>
-      <div class="row2">
+      <div class="row2 three">
         <button class="quiet" data-sim="local">Local Range</button>
+        <button class="quiet" data-sim="ogs">OpenGolfSim</button>
         <button class="quiet" data-sim="gspro">GSPro</button>
       </div>
 
@@ -354,8 +356,9 @@ PAGE = r"""<!doctype html>
 
 <div class="pane" id="pane-simulator"><div class="shots">
   <h3 class="sech">How do you want to play?</h3>
-  <div class="row2">
+  <div class="row2 three">
     <button class="quiet" data-sim="local">Local Range</button>
+    <button class="quiet" data-sim="ogs">OpenGolfSim</button>
     <button class="quiet" data-sim="gspro">GSPro</button>
   </div>
   <div class="why" id="simNote"></div>
@@ -527,15 +530,22 @@ const WIZARD=[
   {key:"find",  label:"Connect"},
   {key:"wifi",  label:"Wi-Fi", wifi:true},
   {key:"sim",   label:"Play mode"},
-  {key:"open",  label:"Open it",   gspro:true},
-  {key:"test",  label:"Test shot", gspro:true},
+  {key:"open",  label:"Open it",   outside:true},
+  {key:"test",  label:"Test shot", outside:true},
   {key:"done",  label:"Ready"},
 ];
 //: The Local Range has nothing to open and nothing to prove.
 function wizardSteps(data){
-  return WIZARD.filter(step=>(!step.gspro || data.simulator==="gspro") && (!step.wifi || WIFI.seen));
+  return WIZARD.filter(step=>(!step.outside || !isLocal(data)) && (!step.wifi || WIFI.seen));
 }
 function isLocal(data){ return data.simulator==="local"; }
+
+//: The same thing in a sentence, for where there is only room for one.
+function howToOpen(data){
+  return data.simulator==="ogs"
+    ? "In OpenGolfSim, choose Developer API as the launch monitor, then go to its range or start a round."
+    : "In GSPro, open the Open Connect screen so it is waiting for a device. "+modeNote(data,"gspro");
+}
 
 //: Why a play mode cannot be used on this computer, if it cannot.
 function modeNote(data, value){
@@ -583,9 +593,11 @@ function wizardView(data){
   if(!wizard.simPicked) return {step:"sim",
     dot:"", head:"How do you want to play?", sub:name,
     why:"Local Range works on its own, with nothing else to buy or open. "+
-        (modeNote(data,"gspro") || "GSPro needs its own license. ")+
+        "OpenGolfSim is a free simulator with courses, installed separately. "+
+        (modeNote(data,"gspro") || "GSPro needs its own license.")+
         " You can change this later.",
     actions:[{label:"Local Range", id:"wizLocal", primary:true},
+             {label:"OpenGolfSim", id:"wizOgs", primary:false},
              {label:"GSPro", id:"wizGspro", primary:false}]};
 
   if(isLocal(data)) return sim.ready ? {step:"done",
@@ -599,8 +611,7 @@ function wizardView(data){
 
   if(!sim.connected) return {step:"open",
     dot:"bad", head:"Open "+esc(data.simulatorLabel), sub:name,
-    why:"In GSPro, open the Open Connect screen so it is waiting for a device. "+
-        modeNote(data,"gspro"),
+    why:howToOpen(data),
     // Finish later, because these last steps need a simulator running and
     // the rest of the app does not. Without it, anyone who opened this
     // before starting GSPro was held here.
@@ -609,9 +620,9 @@ function wizardView(data){
              {label:"Finish later", id:"wizFinish", primary:false}]};
 
   if(!sim.ready) return {step:"test",
-    dot:"busy", head:"One test shot", sub:esc(data.simulatorLabel)+" · "+name,
-    why:"This proves the whole path from the launch monitor to your simulator. "+
-        "It is a real shot, so close any open round first.",
+    dot:"busy", head:"One shot to make sure", sub:esc(data.simulatorLabel)+" · "+name,
+    why:"Hit a ball, or send a test shot from here. Either is a real shot to "+
+        data.simulatorLabel+", so close any open round first.",
     actions:[{label:"Send a test shot", id:"test", primary:true},
              {label:"Finish later", id:"wizFinish", primary:false}]};
 
@@ -797,9 +808,9 @@ function boardCards(data){
   const sim=data.simulatorStatus||{};
   return [
     {pane:"simulator", title:"Play mode",
-     detail:isLocal(data) ? "Local Range. GSPro can be used instead."
+     detail:isLocal(data) ? "Local Range. A simulator can be used instead."
             : sim.ready ? "Ready to play through " + esc(data.simulatorLabel || "your simulator")
-            : sim.connected ? "Connected. One test shot proves the rest."
+            : sim.connected ? "Connected. One shot makes sure."
             : "Connect " + esc(data.simulatorLabel || "your simulator") + " on this computer."},
     {pane:"range", title:"Practice range",
      detail:"Ball flight, distances and shot patterns. No simulator needed."},
@@ -821,6 +832,8 @@ function boardCards(data){
 const SIM_WHERE = {
   gspro: {port: 921, screen: "Open Connect",
           how: "In GSPro, open the <strong>Open Connect</strong> screen so it is waiting for a device."},
+  ogs:   {port: 3111, screen: "Developer API",
+          how: "In OpenGolfSim, choose <strong>Developer API</strong> as the launch monitor, then go to its range or start a round."},
 };
 
 //: Deliberately not a wizard. Nothing here is ordered or gated: the steps are
@@ -847,21 +860,22 @@ function renderSimulator(data){
       : "PiTrac is not connected, so there are no shots to record yet.";
     return;
   }
-  const where = SIM_WHERE.gspro;
+  const where = SIM_WHERE[data.simulator];
 
   $("simDot").className = "dot " + (sim.ready ? "good" : sim.connected ? "busy" : "bad");
   $("simHead").textContent = sim.ready ? "Ready to play"
     : sim.connected ? "Connected, not proved yet" : "Not connected";
   $("simWhy").textContent = sim.message
     || (sim.ready ? label + " has accepted a shot from PiTrac."
-        : sim.connected ? "Connected to " + label + ". A test shot proves the rest of the path."
+        : sim.connected ? "Connected to " + label + ". Hit a ball, or send a test shot, to make sure."
         : label + " is not answering on this computer yet.");
 
   const steps = [
     {done: true, text: "Choose " + esc(label) + " above."},
     {done: !!sim.connected, text: "Open " + esc(label) + " on this computer. " + where.how},
-    {done: !!sim.ready, text: "Send a test shot. This proves the whole path, "
-                             + "from the launch monitor to " + esc(label) + "."},
+    {done: !!sim.ready, text: "Hit a ball. When " + esc(label) + " plays it, everything from the "
+                             + "cameras on is working. A test shot checks only this computer and "
+                             + esc(label) + "."},
   ];
   $("simSteps").innerHTML = "<ol class='simsteps'>" + steps.map(s=>
     `<li class="${s.done?"done":""}">${s.text}</li>`).join("") + "</ol>";
@@ -933,13 +947,12 @@ function present(data){
 
   if(!sim.connected) return {
     dot:"bad", head:"Open "+esc(data.simulatorLabel), sub:name,
-    why:"In GSPro, open the Open Connect screen so it is waiting for a device. "+
-        modeNote(data,"gspro"),
+    why:howToOpen(data),
     actions:[{label:"Check again", id:"check", primary:true}]};
 
   if(!sim.ready) return {
     dot:"busy", head:"Almost ready", sub:esc(data.simulatorLabel)+" · "+name,
-    why:"One test shot proves the whole path. It is a real shot, so close any open round first.",
+    why:"Hit a ball, or send a test shot from here. Either is a real shot, so close any open round first.",
     actions:[{label:"Send a test shot", id:"test", primary:true}]};
 
   return {
@@ -1084,8 +1097,9 @@ function doAction(id, button){
   }
   if(id==="wizStart"){ wizard.started=true; return refresh(); }
   if(id==="wizBackSim"){ wizard.simPicked=false; return refresh(); }
-  if(id==="wizLocal"||id==="wizGspro") return run(button, async()=>{
-    await api("/api/simulator",{simulator:id==="wizLocal"?"local":"gspro"});
+  const modes={wizLocal:"local", wizOgs:"ogs", wizGspro:"gspro"};
+  if(modes[id]) return run(button, async()=>{
+    await api("/api/simulator",{simulator:modes[id]});
     wizard.simPicked=true;
   });
   if(id==="wizRange") return run(button, async()=>{
@@ -1702,19 +1716,37 @@ function renderShots(log){
   renderRecent(log);
 }
 
+// What became of a shot, in the simulator's own terms. "Sent" is what is known
+// when nothing was said back, and no more than that.
+function outcomeText(s){
+  switch(s.outcome){
+    case "played": return s.simCarry==null ? "Played" : "Played, "+Math.round(s.simCarry)+" yd";
+    case "accepted": return "Taken";
+    case "unknown": return "Sent, no answer";
+    case "rejected": return "Refused";
+    case "undelivered": return "Not sent";
+    case "local": return "";
+  }
+  return s.delivered===false ? "Not sent" : s.delivered ? "Sent" : "";
+}
+
 function renderRecent(log){
   const recent=log.recent||[];
+  const played=recent.some(s=>outcomeText(s));
   if(!changed($("recent"), JSON.stringify(recent))) return;
   $("recent").className = recent.length ? "scroller" : "empty";
   $("recent").innerHTML = recent.length ? `<table class="shot">
     <thead><tr><th>Time</th><th>Club</th><th class="num">Speed</th><th class="num">Launch</th>
-      <th class="num">Direction</th><th class="num">Spin</th></tr></thead>
+      <th class="num">Direction</th><th class="num">Spin</th><th class="num">Carry</th>${
+      played?"<th>Simulator</th>":""}</tr></thead>
     <tbody>${recent.map(s=>`<tr class="${esc(s.delivered===false?"lost":"")}">
       <td>${esc(s.timeText)}</td><td>${esc(s.club||"-")}</td>
       <td class="num">${s.speed==null?"-":s.speed}</td>
       <td class="num">${s.launch==null?"-":s.launch}</td>
       <td class="num">${s.direction==null?"-":s.direction===0?"0":Math.abs(s.direction)+(s.direction>0?" R":" L")}</td>
-      <td class="num">${s.backSpin==null?"-":s.backSpin}</td></tr>`).join("")}
+      <td class="num">${s.backSpin==null?"-":s.backSpin}</td>
+      <td class="num">${s.carry==null?"-":Math.round(s.carry)+" yd"}</td>${
+      played?"<td>"+esc(outcomeText(s))+"</td>":""}</tr>`).join("")}
     </tbody></table>` : "Shots appear here as you hit them.";
 }
 

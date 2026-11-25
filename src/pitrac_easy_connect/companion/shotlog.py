@@ -16,6 +16,7 @@ so it cannot grow without bound on someone's PC.
 
 import threading
 import time
+import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -146,15 +147,20 @@ class Shot:
     #: Whether a simulator was given it. None when there was nobody to give it
     #: to, which is every shot on the Local Range.
     delivered: Optional[bool] = True
+    #: What became of it; see ``simulator_session``.
+    outcome: str = ""
+    id: str = field(default_factory=lambda: uuid.uuid4().hex)
     ball: Dict[str, Any] = field(default_factory=dict)
 
     def as_dict(self) -> Dict[str, Any]:
         return {
+            "id": self.id,
             "at": self.at,
             "timeText": time.strftime("%H:%M:%S", time.localtime(self.at)),
             "club": self.club,
             "simulator": self.simulator,
             "delivered": self.delivered,
+            "outcome": self.outcome,
             **self.ball,
         }
 
@@ -199,7 +205,8 @@ class ShotLog:
     def record(self, payload: Dict[str, Any], simulator: str,
                delivered: Optional[bool] = True,
                ball: Optional[Dict[str, Any]] = None,
-               flight: Optional[Dict[str, Any]] = None) -> Shot:
+               flight: Optional[Dict[str, Any]] = None,
+               outcome: str = "", shot_id: str = "") -> Shot:
         """Keep one shot.
 
         ``ball`` lets the caller supply measurements gathered across several
@@ -214,7 +221,10 @@ class ShotLog:
             simulator=simulator,
             delivered=delivered,
             ball=ball if ball is not None else ball_from_shot(payload),
+            outcome=outcome,
         )
+        if shot_id:
+            shot.id = shot_id
         kept = shot.as_dict()
         if flight:
             kept.update({
@@ -231,6 +241,20 @@ class ShotLog:
         return shot
 
     # --- Reading ----------------------------------------------------------
+
+    def amend(self, shot_id: str, **found: Any) -> bool:
+        """Add what was learned about a shot after it was kept."""
+
+        if not shot_id:
+            return False
+        with self._lock:
+            shots = list(self._store.get("shots") or [])
+            for index in range(len(shots) - 1, -1, -1):
+                if shots[index].get("id") == shot_id:
+                    shots[index] = dict(shots[index], **found)
+                    self._store.set("shots", shots)
+                    return True
+        return False
 
     def everything(self) -> List[Dict[str, Any]]:
         """Every shot kept, oldest first."""

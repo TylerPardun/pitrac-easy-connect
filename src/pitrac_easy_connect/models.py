@@ -9,14 +9,17 @@ class Simulator(str, Enum):
 
     GSPRO = "gspro"
     E6 = "e6"
+    #: Not something PiTrac sends here. Shots are translated to it on this
+    #: computer; see ``companion.opengolfsim``.
+    OGS = "ogs"
 
     @property
     def label(self) -> str:
-        return "GSPro" if self is Simulator.GSPRO else "E6 Connect"
+        return {"gspro": "GSPro", "e6": "E6 Connect", "ogs": "OpenGolfSim"}[self.value]
 
     @property
     def default_port(self) -> int:
-        return 921 if self is Simulator.GSPRO else 2483
+        return {"gspro": 921, "e6": 2483, "ogs": 3111}[self.value]
 
 
 class PlayMode(str, Enum):
@@ -29,17 +32,18 @@ class PlayMode(str, Enum):
     """
 
     LOCAL = "local"
+    OGS = "ogs"
     GSPRO = "gspro"
 
     @property
     def label(self) -> str:
-        return "Local Range" if self is PlayMode.LOCAL else "GSPro"
+        return {"local": "Local Range", "ogs": "OpenGolfSim", "gspro": "GSPro"}[self.value]
 
     @property
     def simulator(self) -> Optional[Simulator]:
         """The program on this computer that has to be running, if any."""
 
-        return None if self is PlayMode.LOCAL else Simulator.GSPRO
+        return {"local": None, "ogs": Simulator.OGS, "gspro": Simulator.GSPRO}[self.value]
 
 
 @dataclass(frozen=True)

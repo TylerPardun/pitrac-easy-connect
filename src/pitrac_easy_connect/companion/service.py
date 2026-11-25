@@ -20,6 +20,7 @@ import subprocess
 import sys
 import threading
 import time
+import uuid
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
@@ -40,6 +41,7 @@ from ..common.errors import (
     CFG_WRITE_FAILED,
     SIM_FORMAT_MISMATCH,
     SIM_NOT_RUNNING,
+    SIM_REJECTED_SHOT,
     EasyConnectError,
     lookup,
 )
@@ -58,12 +60,22 @@ from ..common.updates import (
 from ..common.versions import compare
 from ..models import TEST_SHOT, PlayMode, Simulator
 from . import clubs as caddie
+from . import opengolfsim
 from . import self_update
 from .link_client import CompanionLinkClient
 from . import shotlog
 from .rangeplay import RangeSession
 from .shotlog import ShotLog
-from .simulator_session import SimulatorSession
+from .simulator_session import (
+    ACCEPTED,
+    LOCAL,
+    PLAYED,
+    REJECTED,
+    UNDELIVERED,
+    UNKNOWN,
+    Delivery,
+    SimulatorSession,
+)
 
 #: Desktop update states a passive background/status check may move between.
 #: Once a real download/install is under way (or has finished, successfully
@@ -249,6 +261,7 @@ class CompanionService:
         #: the link or the simulator changes, and expire on their own.
         self._pending_ball: Dict[str, Any] = {}
         self._pending_ball_at: float = 0.0
+        self._landed_early: Dict[str, Dict[str, Any]] = {}
         self.shots = ShotLog(
             (config_path or default_config_path()).with_name("shots.json")
         )
@@ -356,15 +369,16 @@ class CompanionService:
         if not arrived:
             return
         self._report_simulator_state()
-        if self.mode is PlayMode.LOCAL:
+        if self.tells_pitrac_the_club:
             self._tell_pitrac_the_club()
 
     def select_simulator(self, name: str) -> Dict[str, Any]:
         try:
             mode = PlayMode(str(name))
         except ValueError as exc:
-            raise ValueError("Choose Local Range or GSPro") from exc
-        leaving_local = self.mode is PlayMode.LOCAL and mode is not PlayMode.LOCAL
+            raise ValueError("Choose Local Range, OpenGolfSim or GSPro") from exc
+        # GSPro tells PiTrac the club itself. Otherwise this does.
+        leaving_ours = self.tells_pitrac_the_club and mode is PlayMode.GSPRO
         with self._lock:
             self.store.set("simulator", mode.value)
             self._test_shot_accepted = False
@@ -375,7 +389,7 @@ class CompanionService:
             if self._session is not None:
                 self._session.close()
                 self._session = None
-        if leaving_local:
+        if leaving_ours:
             # GSPro will say which club is in hand when it connects. Until it
             # does, PiTrac should not go on measuring putts.
             self._tell_pitrac_the_club("")
@@ -387,12 +401,19 @@ class CompanionService:
             self.connect_simulator()
         return self.status()
 
+    @property
+    def tells_pitrac_the_club(self) -> bool:
+        """Whether PiTrac learns the club from here rather than from GSPro."""
+
+        return self.mode is not PlayMode.GSPRO
+
     def play_modes(self) -> List[Dict[str, Any]]:
         """What can be chosen, and why one cannot be used on this computer."""
 
         on_windows_only = "" if sys.platform == "win32" else "GSPro runs only on Windows."
         return [
             {"value": PlayMode.LOCAL.value, "label": PlayMode.LOCAL.label, "note": ""},
+            {"value": PlayMode.OGS.value, "label": PlayMode.OGS.label, "note": ""},
             {"value": PlayMode.GSPRO.value, "label": PlayMode.GSPRO.label,
              "note": on_windows_only},
         ]
@@ -718,7 +739,7 @@ class CompanionService:
             club=self.shots.club,
             autoClub=self.auto_club,
             suggested=caddie.suggest(self.range.target, bag, distances),
-            # GSPro says which club is in hand while it is the one being played.
+            # A simulator says which club is in hand while it is being played.
             clubIsOurs=self.mode is PlayMode.LOCAL,
             ballDetected=self._ball_detected,
             clubs=[
@@ -1019,12 +1040,7 @@ class CompanionService:
                 session.close()
                 session = None
             if session is None:
-                session = SimulatorSession(
-                    simulator,
-                    self.simulator_host,
-                    self.simulator_ports[simulator],
-                    on_message=self._on_simulator_message,
-                )
+                session = self._new_session(simulator)
                 self._session = session
 
         connected = session.ensure_connected()
@@ -1034,6 +1050,48 @@ class CompanionService:
             self._last_simulator_error = None
         self._report_simulator_state()
         return connected
+
+    def _new_session(self, simulator: Simulator) -> SimulatorSession:
+        port = self.simulator_ports[simulator]
+        if simulator is Simulator.OGS:
+            return opengolfsim.OpenGolfSimSession(
+                self.simulator_host, port,
+                on_message=self._on_opengolfsim_message, on_result=self._on_shot_played,
+            )
+        return SimulatorSession(
+            simulator, self.simulator_host, port, on_message=self._on_simulator_message,
+        )
+
+    def _on_opengolfsim_message(self, message: Dict[str, Any]) -> None:
+        """It speaks its own language, so nothing of it is passed to PiTrac as
+        it stands. The club in hand is, in the words PiTrac knows."""
+
+        if message.get("type") != "player":
+            return
+        club = opengolfsim.club_of(message)
+        if club:
+            self.shots.set_club(club)
+            self._tell_pitrac_the_club()
+
+    def _on_shot_played(self, shot_id: str, result: Dict[str, float]) -> None:
+        """The simulator finished with a shot, and said where it went."""
+
+        found = dict(result, outcome=PLAYED, delivered=True)
+        if not self.shots.amend(shot_id, **found):
+            # It landed before it was even written down.
+            with self._lock:
+                self._landed_early[shot_id] = found
+        self._prove_the_simulator()
+
+    def _prove_the_simulator(self) -> None:
+        """A real swing that counted proves more than any test shot could."""
+
+        with self._lock:
+            news = not self._test_shot_accepted
+            self._test_shot_accepted = True
+            self._last_simulator_error = None
+        if news:
+            self._report_simulator_state()
 
     def _on_simulator_message(self, payload: Dict[str, Any]) -> None:
         # The simulator tells the launch monitor when the player changes club.
@@ -1054,75 +1112,96 @@ class CompanionService:
         if self.mode is PlayMode.LOCAL:
             return self._capture_locally(simulator, payload)
 
-        if simulator and simulator != self.simulator.value:
+        if simulator and simulator != Simulator.GSPRO.value:
             # What travels over the link is one simulator's own protocol, and
-            # nothing here translates it. Sending GSPro's messages to anything
-            # else would be noise at best.
-            with self._lock:
-                self._shots_lost += counts
-                self._last_simulator_error = SIM_FORMAT_MISMATCH.as_dict()
-            self._record_shot(payload, simulator, delivered=False)
-            self._report_simulator_state()
-            return {
-                "accepted": False,
-                "code": SIM_FORMAT_MISMATCH.code,
-                "message": SIM_FORMAT_MISMATCH.failed,
-            }
+            # GSPro's is the only one anything here understands. Sending
+            # another on would be noise at best.
+            delivery = Delivery(UNDELIVERED, SIM_FORMAT_MISMATCH.failed)
+            return self._account_for(payload, simulator, counts, delivery, SIM_FORMAT_MISMATCH)
 
         session = self._session
         if session is None or not session.connected:
             if not self.connect_simulator():
-                with self._lock:
-                    self._shots_lost += counts
                 # The golfer hit a ball and PiTrac measured it. That the
                 # simulator is not running is a fact about the simulator, not
-                # about the shot, so it is kept and drawn like any other. The
-                # other failure path already did this; this one did not, and a
-                # shot hit while GSPro was closed disappeared entirely.
-                self._record_shot(payload, simulator, delivered=False)
-                self._report_simulator_state()
-                return {
-                    "accepted": False,
-                    "code": SIM_NOT_RUNNING.code,
-                    "message": SIM_NOT_RUNNING.failed,
-                }
+                # about the shot, so it is kept and drawn like any other.
+                return self._account_for(
+                    payload, simulator, counts,
+                    Delivery(UNDELIVERED, SIM_NOT_RUNNING.failed), SIM_NOT_RUNNING)
             session = self._session
 
-        seen_before = getattr(session, "messages_seen", 0)
+        if not counts:
+            return self._pass_on(session, payload)
+
+        shot_id = uuid.uuid4().hex
+        try:
+            # What the simulator says, not whether the write succeeded. A write
+            # to a program that has gone succeeds, and one that is refused is
+            # answered just as promptly as one that is taken.
+            delivery = session.deliver(payload, shot_id)
+        except OSError as exc:
+            return self._account_for(
+                payload, simulator, counts, Delivery(UNDELIVERED, str(exc)), SIM_NOT_RUNNING)
+        return self._account_for(
+            payload, simulator, counts, delivery,
+            SIM_REJECTED_SHOT if delivery.outcome == REJECTED else None, shot_id)
+
+    def _pass_on(self, session: SimulatorSession, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Something from PiTrac that is not a swing: mostly, whether there is a ball."""
+
+        if self.mode is PlayMode.OGS:
+            session.set_ready(bool(self._ball_detected))
+            # PiTrac forgets the club whenever its connection drops, and says
+            # hello again with one of these.
+            self._tell_pitrac_the_club()
+            return {"accepted": True, "message": ""}
         try:
             session.send(payload)
-            # A write to a socket whose peer has gone away succeeds: it lands
-            # in the kernel buffer and the reset arrives afterwards. Reporting
-            # on the write alone means the first shot after a simulator crash
-            # is announced as delivered when nobody received it, and the
-            # golfer is told their shot counted when it did not. Give the
-            # reader a moment to notice, and believe it if it does.
-            acknowledged = self._settle_delivery(session, seen_before)
-            if not session.connected:
-                raise OSError("the simulator closed the connection")
         except OSError as exc:
-            with self._lock:
-                self._shots_lost += counts
-                self._last_simulator_error = SIM_NOT_RUNNING.as_dict(str(exc))
-            self._record_shot(payload, simulator, delivered=False)
-            self._report_simulator_state()
             return {"accepted": False, "code": SIM_NOT_RUNNING.code, "message": str(exc)}
+        return {"accepted": True, "message": ""}
+
+    def _account_for(
+        self,
+        payload: Dict[str, Any],
+        simulator: str,
+        counts: bool,
+        delivery: Delivery,
+        problem=None,
+        shot_id: str = "",
+    ) -> Dict[str, Any]:
+        """Keep a swing, with what became of it, and say so to everyone who asks."""
 
         with self._lock:
-            self._shots_delivered += counts
-            if counts:
+            if problem is not None:
+                self._shots_lost += counts
+                self._last_simulator_error = problem.as_dict(delivery.message)
+            elif counts:
+                self._shots_delivered += 1
                 self._last_shot_at = time.time()
-        self._record_shot(payload, simulator, delivered=True)
-        # "Acknowledged" means the simulator answered after this shot was sent.
-        # It is not correlated to *this* shot -- neither protocol carries an id
-        # to match on -- so it is reported as what it is rather than dressed up
-        # as proof the shot was scored.
-        return {
-            "accepted": True,
-            "acknowledged": acknowledged,
-            "message": "{} to {}".format(
-                "delivered" if acknowledged else "sent", self.simulator.label),
+        self._record_shot(payload, simulator, _as_delivered(delivery), delivery.outcome, shot_id)
+        with self._lock:
+            early = self._landed_early.pop(shot_id, None)
+        if early:
+            self.shots.amend(shot_id, **early)
+        if delivery.outcome == ACCEPTED and self.mode is PlayMode.GSPRO:
+            # GSPro's yes is the yes. OpenGolfSim says yes to everything, and
+            # what counts there is being told where the ball went.
+            self._prove_the_simulator()
+        elif problem is not None:
+            if delivery.outcome == REJECTED:
+                with self._lock:
+                    self._test_shot_accepted = False
+            self._report_simulator_state()
+        answer = {
+            "accepted": problem is None,
+            "acknowledged": delivery.outcome in (PLAYED, ACCEPTED),
+            "outcome": delivery.outcome,
+            "message": delivery.message,
         }
+        if problem is not None:
+            answer["code"] = problem.code
+        return answer
 
     def _note_the_ball(self, payload: Dict[str, Any], swing: bool) -> None:
         options = payload.get("ShotDataOptions")
@@ -1140,7 +1219,7 @@ class CompanionService:
             self._tell_pitrac_the_club()
             return {"accepted": True, "message": ""}
 
-        captured = self._record_shot(payload, simulator, delivered=None)
+        captured = self._record_shot(payload, simulator, delivered=None, outcome=LOCAL)
         with self._lock:
             if captured:
                 self._shots_delivered += 1
@@ -1185,7 +1264,8 @@ class CompanionService:
         })
 
     def _record_shot(
-        self, payload: Dict[str, Any], simulator: str, delivered: Optional[bool]
+        self, payload: Dict[str, Any], simulator: str, delivered: Optional[bool],
+        outcome: str = "", shot_id: str = "",
     ) -> bool:
         """Keep the shot, with the club. Never let logging break shot delivery.
 
@@ -1225,8 +1305,8 @@ class CompanionService:
         try:
             self.shots.record(
                 payload,
-                PlayMode.LOCAL.value if delivered is None else simulator or self.mode.value,
-                delivered=delivered, ball=ball, flight=flown,
+                self.mode.value,
+                delivered=delivered, ball=ball, flight=flown, outcome=outcome, shot_id=shot_id,
             )
             self._capture_error = ""
         except Exception as exc:
@@ -1269,31 +1349,6 @@ class CompanionService:
     def _forget_pending_ball(self) -> None:
         self._pending_ball = {}
         self._pending_ball_at = 0.0
-
-    #: How long to wait after writing a shot for the connection to prove it is
-    #: still there. Short: a golf shot is in the air for seconds, and half of
-    #: one is invisible next to being told a lie about it.
-    DELIVERY_CONFIRM_SECONDS = 0.5
-    DELIVERY_POLL_SECONDS = 0.05
-
-    def _settle_delivery(self, session, seen_before: int) -> bool:
-        """Wait just long enough to know whether the shot really landed.
-
-        Exits the moment the simulator says anything back, which is the normal
-        case and takes milliseconds. Only a simulator that acknowledges nothing
-        costs the full wait, and only a dead one reaches the end of it.
-        """
-
-        deadline = time.monotonic() + self.DELIVERY_CONFIRM_SECONDS
-        while time.monotonic() < deadline:
-            if not session.connected:
-                return False
-            if session.messages_seen != seen_before:
-                return True
-            time.sleep(self.DELIVERY_POLL_SECONDS)
-        # Still connected, but it said nothing. The shot went out; whether it
-        # was taken is not something this can honestly claim.
-        return False
 
     def check_simulator(self) -> Dict[str, Any]:
         if self.mode is PlayMode.LOCAL:
@@ -2287,6 +2342,7 @@ class CompanionService:
         if self.mode is PlayMode.LOCAL:
             # Choosing one is also how to say "stop choosing for me".
             self.store.set("autoClub", False)
+        if self.tells_pitrac_the_club:
             self._tell_pitrac_the_club()
         return {"club": chosen}
 
@@ -2320,6 +2376,14 @@ class CompanionService:
             session, self._session = self._session, None
         if session is not None:
             session.close()
+
+
+def _as_delivered(delivery: Delivery) -> Optional[bool]:
+    """Yes, no, or nobody said."""
+
+    if delivery.outcome in (PLAYED, ACCEPTED):
+        return True
+    return None if delivery.outcome == UNKNOWN else False
 
 
 def _post(url: str, body: Optional[Dict[str, Any]], timeout: float = 10.0) -> Dict[str, Any]:

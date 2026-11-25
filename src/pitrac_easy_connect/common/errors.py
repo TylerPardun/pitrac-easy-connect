@@ -396,11 +396,18 @@ SIM_BAD_RESPONSE = _define(
     "No shot was scored and nothing was changed.",
     "Check that the simulator version is one this release supports. The versions are in the guide.",
 )
+SIM_NOT_PLAYED = _define(
+    "PT-SIM-007",
+    "The simulator took the shot but did not play it.",
+    "PiTrac is healthy. The shot was not scored.",
+    "In the simulator, go to its range or step onto a tee so there is somewhere to hit from, "
+    "then send another test shot.",
+)
 SIM_FORMAT_MISMATCH = _define(
     "PT-SIM-006",
-    "PiTrac's shots are in GSPro's format, which the selected simulator cannot use.",
+    "That shot came in a form this release does not send on.",
     "The shot was still recorded, and appears in your history and on the range.",
-    "Choose GSPro on the Simulator page.",
+    "In PiTrac's dashboard, use only the simulator named Easy-Connect.",
 )
 
 # Configuration and storage -------------------------------------------------

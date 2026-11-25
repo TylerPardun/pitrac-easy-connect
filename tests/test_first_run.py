@@ -88,9 +88,9 @@ def test_the_local_range_is_not_walked_through_gspros_steps():
     """There is nothing to open and nothing to prove."""
 
     rows = PAGE.split("const WIZARD=[")[1].split("];")[0].splitlines()
-    gspro_only = [row for row in rows if "gspro:true" in row]
-    assert len(gspro_only) == 2
-    assert all('"open"' in row or '"test"' in row for row in gspro_only)
+    outside = [row for row in rows if "outside:true" in row]
+    assert len(outside) == 2
+    assert all('"open"' in row or '"test"' in row for row in outside)
 
     source = wizard_source()
     local = source.index("if(isLocal(data))")

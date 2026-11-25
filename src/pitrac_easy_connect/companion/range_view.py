@@ -1208,7 +1208,7 @@ function renderSheet(data){
     ? "Press the clubs you carry. Auto only ever picks from these."
     : data.clubIsOurs
       ? "Auto picks from the target distance and how far you hit each club. Choosing one here turns Auto off."
-      : "GSPro sets this when you change club there.";
+      : "Your simulator sets this when you change club there.";
   $("bagEdit").textContent=SHEET.bag ? "Back to clubs" : "Edit my bag";
   const shown=SHEET.bag ? data.clubs : data.clubs.filter(c=>c.inBag || c.club===data.club);
   const html=shown.map(c=>`<button data-club="${esc(c.club)}" class="${
