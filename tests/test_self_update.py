@@ -493,100 +493,18 @@ def _crash_after(journal_path, phase):
         su._replace_transaction_path(previous, install)
 
 
-#: Two distinct, precisely diagnosed, unresolved Windows-only failures.
-#: Confirmed on real GitHub Actions Windows CI (not reproduced locally --
-#: this project has no Windows development machine) across two separate
-#: fix attempts (a longer retry window, excluding pytest's temp directory
-#: from Windows Defender); neither changed the outcome, which rules out
-#: ordinary transient antivirus scanning as the cause. xfail rather than
-#: skip or deletion: these describe real product requirements that must
-#: still hold on Windows, and strict=True means an unexpected pass is
-#: itself reported as a failure, so nobody can quietly stop tracking this
-#: by fixing it and forgetting to remove the marker.
-_WINDOWS_RENAME_RACE = pytest.mark.xfail(
-    sys.platform == "win32", strict=True, raises=PermissionError,
-    reason=(
-        "WinError 5 Access is denied, deterministically, on every GitHub "
-        "Actions windows-latest run: renaming a directory into a name a "
-        "sibling rename vacated moments earlier, in the same parent, with "
-        "nothing in between. It persists the full CI retry window (raised "
-        "from 10s to 30s with no change) and is unaffected by excluding "
-        "pytest's temp directory from Windows Defender. Direct testing on "
-        "real Windows-on-ARM hardware (not a CI runner) does NOT reproduce "
-        "this as a deterministic failure: a single-process repro of the "
-        "exact rename pair succeeded 40/40, and a multi-process repro "
-        "reusing the exact same names under 8-way concurrent load (matching "
-        "this pattern, worse than CI's own worker count) succeeded 4000/4000. "
-        "A generic version of the race (fresh unique paths per attempt, "
-        "8-way concurrent load) did reproduce a genuine transient "
-        "PermissionError, but only about 2 times in 12000 attempts, with no "
-        "crash and no sustained lock -- nothing like CI's 100% rate for "
-        "these 19 specific tests. This gap points at something specific to "
-        "the GitHub Actions windows-latest runner image itself (a different "
-        "AV/EDR agent, or virtualized/network-backed storage) rather than a "
-        "defect in this code or a general Windows OS behavior; that suspicion "
-        "is unconfirmed. The real self_update.run_helper sequence has a "
-        "journal write between its two renames and rarely surfaces this in "
-        "the field, but "
-        "test_an_unterminable_candidate_is_unresolved_and_keeps_its_helper "
-        "goes through that exact real path and still hits it in CI, so the "
-        "intervening write is not a reliable fix either. Needs a real "
-        "GitHub Actions windows-latest runner with Process Monitor attached "
-        "(not just a local Windows VM) to find the actual cause; CI-only "
-        "guesses have been tried twice and both failed, and faithful direct "
-        "hardware reproduction attempts have not reproduced CI's failure "
-        "rate."
-    ),
-)
-_WINDOWS_RENAME_RACE_WRONG_PHASE = pytest.mark.xfail(
-    sys.platform == "win32", strict=True, raises=AssertionError,
-    reason=(
-        "Same root cause as _WINDOWS_RENAME_RACE (see that marker), reached "
-        "through the real run_helper rather than a raw _replace_transaction_"
-        "path call: the promotion rename raises PermissionError before "
-        "launchedPid is ever set, so run_helper's own except-block falls "
-        "through to actually spawning this fixture's POSIX-only fake "
-        "executable for a rollback attempt, which cannot run on Windows at "
-        "all, landing in run_helper's outermost handler with the phase "
-        "stuck at its last successful write ('rolling-back') instead of "
-        "the 'unresolved' this test expects. The observable failure here "
-        "is therefore an AssertionError on the journal phase, not a raw "
-        "PermissionError."
-    ),
-)
-_WINDOWS_ACK_COMPARISON = pytest.mark.xfail(
-    sys.platform == "win32", strict=True,
-    reason=(
-        "run_recovery's post-launch acknowledgement match times out on "
-        "Windows for a transaction that never actually promoted anything "
-        "(phase was prepared/waiting-for-old-app/after-first-rename/"
-        "previous-moved, so the install root already held the correct, "
-        "untouched previous version) -- run_recovery returns 2 (unresolved) "
-        "instead of 1 (rolled back). The acknowledging_launcher test double "
-        "writes what looks like a matching acknowledgement; _ack_matches "
-        "never accepts it on this platform. Suspected Windows path-"
-        "normalization difference between the executable path recorded at "
-        "launch and the one compared against, unconfirmed. Needs a real "
-        "Windows machine to inspect what _resolved() actually produces for "
-        "both sides."
-    ),
-)
-
-
 @pytest.mark.parametrize(
     "phase,expected,code",
     [
-        pytest.param("prepared", "0.4.5", 1, marks=_WINDOWS_ACK_COMPARISON),
-        pytest.param("waiting-for-old-app", "0.4.5", 1, marks=_WINDOWS_ACK_COMPARISON),
-        pytest.param("after-first-rename", "0.4.5", 1, marks=_WINDOWS_ACK_COMPARISON),
-        pytest.param("previous-moved", "0.4.5", 1, marks=_WINDOWS_ACK_COMPARISON),
-        pytest.param("after-second-rename", "0.4.6", 0, marks=_WINDOWS_RENAME_RACE),
-        pytest.param("current-promoted", "0.4.6", 0, marks=_WINDOWS_RENAME_RACE),
-        pytest.param(
-            "awaiting-restart-verification", "0.4.6", 0, marks=_WINDOWS_RENAME_RACE
-        ),
-        pytest.param("rolling-back-no-install", "0.4.5", 1, marks=_WINDOWS_RENAME_RACE),
-        pytest.param("rolling-back-restored", "0.4.5", 1, marks=_WINDOWS_RENAME_RACE),
+        ("prepared", "0.4.5", 1),
+        ("waiting-for-old-app", "0.4.5", 1),
+        ("after-first-rename", "0.4.5", 1),
+        ("previous-moved", "0.4.5", 1),
+        ("after-second-rename", "0.4.6", 0),
+        ("current-promoted", "0.4.6", 0),
+        ("awaiting-restart-verification", "0.4.6", 0),
+        ("rolling-back-no-install", "0.4.5", 1),
+        ("rolling-back-restored", "0.4.5", 1),
     ],
 )
 def test_stable_recovery_reconciles_every_mutation_gap_idempotently(
@@ -632,7 +550,6 @@ def test_corrupt_journal_recovery_fails_closed_without_touching_install(
     assert su.executable_path(install, system="Linux").read_bytes() == before
 
 
-@_WINDOWS_RENAME_RACE
 def test_recovery_discovery_does_not_ack_before_native_window_is_shown(
     tmp_path, monkeypatch
 ):
@@ -686,7 +603,6 @@ def _awaiting_restart(tmp_path, monkeypatch):
     return state, install, journal_path, su.executable_path(install, system="Linux")
 
 
-@_WINDOWS_RENAME_RACE
 @pytest.mark.parametrize("wrong,detail", [
     ("version", "wrong version"),
     ("token", "token is invalid"),
@@ -713,7 +629,6 @@ def test_only_the_exact_path_version_and_token_may_acknowledge(
     assert not ack.exists(), "a rejected proof still wrote an acknowledgement"
 
 
-@_WINDOWS_RENAME_RACE
 @pytest.mark.parametrize("payload", [
     b"{ not json at all",
     b"[]",
@@ -727,7 +642,6 @@ def test_a_malformed_acknowledgement_never_counts_as_one(tmp_path, monkeypatch, 
     assert not su._ack_matches(journal, "0.4.6", executable)
 
 
-@_WINDOWS_RENAME_RACE
 def test_an_acknowledgement_from_another_transaction_is_not_accepted(
     tmp_path, monkeypatch
 ):
@@ -742,7 +656,6 @@ def test_an_acknowledgement_from_another_transaction_is_not_accepted(
     assert not su._ack_matches(journal, "0.4.6", executable)
 
 
-@_WINDOWS_RENAME_RACE_WRONG_PHASE
 def test_an_unterminable_candidate_is_unresolved_and_keeps_its_helper(
     tmp_path, monkeypatch
 ):
@@ -822,3 +735,79 @@ def test_debris_removal_leaves_a_corrupt_journal_exactly_as_found(tmp_path, monk
     (transaction / "journal.json").write_text('{"phase": "complete"')
     su.prune_transactions(keep=0, max_bytes=0, remove_debris=True)
     assert (transaction / "journal.json").read_text() == '{"phase": "complete"'
+
+
+# --- Windows will not move or delete what is still open ------------------------
+
+
+def _open_descriptors_under(root):
+    """Which files in there this process has open. Neither psutil's answer nor
+    /dev/fd is the same everywhere, so ask about each descriptor instead."""
+
+    inodes = {}
+    for parent, _dirs, files in os.walk(root):
+        for name in files:
+            found = os.stat(os.path.join(parent, name))
+            inodes[(found.st_dev, found.st_ino)] = name
+    held = []
+    for descriptor in range(3, 512):
+        try:
+            found = os.fstat(descriptor)
+        except OSError:
+            continue
+        if (found.st_dev, found.st_ino) in inodes:
+            held.append(inodes[(found.st_dev, found.st_ino)])
+    return held
+
+
+def test_flushing_an_update_to_disk_leaves_none_of_it_open(tmp_path, monkeypatch):
+    """Windows refuses to flush a file opened for reading. That refusal was
+    swallowed along with the close that should have followed it, so every file
+    in the new version stayed open and the new version could not be moved."""
+
+    root = tmp_path / "prepared"
+    (root / "inside").mkdir(parents=True)
+    for name in ("one", "two"):
+        (root / "inside" / name).write_text(name)
+
+    def refuse(_descriptor):
+        raise OSError(9, "Bad file descriptor")
+
+    monkeypatch.setattr(su.os, "fsync", refuse)
+    su._fsync_tree(root)
+    assert _open_descriptors_under(root) == []
+
+
+def test_preparing_an_update_leaves_none_of_it_open(tmp_path, monkeypatch):
+    def refuse(_descriptor):
+        raise OSError(9, "Bad file descriptor")
+
+    real, refused = su._fsync_tree, []
+
+    def flush(root):
+        with monkeypatch.context() as patch:
+            patch.setattr(su.os, "fsync", refuse)
+            refused.append(real(root))
+
+    monkeypatch.setattr(su, "_fsync_tree", flush)
+    _state, install, _journal = stage_fixture(tmp_path, monkeypatch)
+    assert refused and _open_descriptors_under(install.parent) == []
+
+
+def test_every_file_of_an_update_really_is_flushed(tmp_path, monkeypatch):
+    """On Windows none ever was. This runs there for real."""
+
+    root = tmp_path / "prepared"
+    root.mkdir()
+    for name in ("one", "two"):
+        (root / name).write_text(name)
+    flushed, real = [], os.fsync
+
+    def note(descriptor):
+        real(descriptor)
+        flushed.append(descriptor)
+
+    monkeypatch.setattr(su, "_fsync_dir", lambda _path: None)
+    monkeypatch.setattr(su.os, "fsync", note)
+    su._fsync_tree(root)
+    assert len(flushed) == 2

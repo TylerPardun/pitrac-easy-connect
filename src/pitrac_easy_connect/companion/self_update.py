@@ -596,18 +596,37 @@ def _preflight_parent(parent: Path, transaction_id: str) -> None:
         raise SelfUpdateError("the application folder is not safely writable: {}".format(exc))
 
 
+#: Windows will only flush a file opened for writing. Elsewhere reading is
+#: enough, and asks for less.
+_FLUSHABLE = os.O_RDWR if os.name == "nt" else os.O_RDONLY
+
+
+def _fsync_file(path: Path) -> None:
+    """Put a file's contents on the disk, if that can be done.
+
+    It is closed whatever happens. Windows will not rename or delete a folder
+    while anything in it is open, so one left behind here stops the update.
+    """
+
+    try:
+        descriptor = os.open(str(path), _FLUSHABLE)
+    except OSError:
+        return
+    try:
+        os.fsync(descriptor)
+    except OSError:
+        pass
+    finally:
+        os.close(descriptor)
+
+
 def _fsync_tree(root: Path) -> None:
     for parent, _dirs, files in os.walk(root, followlinks=False):
         for name in files:
             path = Path(parent) / name
             if path.is_symlink():
                 continue
-            try:
-                descriptor = os.open(str(path), os.O_RDONLY)
-                os.fsync(descriptor)
-                os.close(descriptor)
-            except OSError:
-                pass
+            _fsync_file(path)
         _fsync_dir(Path(parent))
 
 
@@ -961,16 +980,9 @@ def _replace_transaction_path(source: Path, destination: Path, *, timeout: float
     being occupied is already treated as a hard error above rather than
     something a replace-existing rename should paper over.
 
-    The retry window exists for a real but rare Windows failure mode:
-    direct testing on real Windows hardware (not just CI) confirms that a
-    directory rename can occasionally raise ``PermissionError: [WinError 5]
-    Access is denied`` under heavy concurrent filesystem load, at roughly
-    1-in-several-thousand attempts, with no indication of a sustained lock
-    -- a retry shortly after is expected to succeed. Windows Defender's
-    real-time scan was one suspect and was ruled out: excluding pytest's
-    temp directory from it in CI changed nothing. This retry loop is
-    defensive for that rare, genuine, transient condition; it is not a
-    workaround for a specific known cause, which remains unidentified.
+    The retry is for something else having a file open for a moment, such as a
+    virus scanner, or an application that has not quite finished closing.
+    Anything that stays open for the whole of it is a fault, and is reported.
     """
 
     deadline = time.monotonic() + timeout
