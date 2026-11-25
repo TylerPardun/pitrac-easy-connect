@@ -81,16 +81,34 @@ def test_the_steps_are_in_order_and_counted():
     assert '{key:"find"' in PAGE and '{key:"sim"' in PAGE
     assert '{key:"open"' in PAGE and '{key:"test"' in PAGE and '{key:"done"' in PAGE
     rail = PAGE.split("function renderWizard(")[1].split("\n}")[0]
-    assert '"Step "+(at+1)+" of "+WIZARD.length' in rail
+    assert '"Step "+(at+1)+" of "+steps.length' in rail
+    assert "wizardSteps(status)" in rail
+
+
+def test_the_local_range_is_not_walked_through_gspros_steps():
+    """There is nothing to open and nothing to prove."""
+
+    rows = PAGE.split("const WIZARD=[")[1].split("];")[0].splitlines()
+    gspro_only = [row for row in rows if "gspro:true" in row]
+    assert len(gspro_only) == 2
+    assert all('"open"' in row or '"test"' in row for row in gspro_only)
+
+    source = wizard_source()
+    local = source.index("if(isLocal(data))")
+    assert local < source.index('step:"open"'), "the local answer has to come first"
+    assert "wizRange" in source
 
 
 def test_choosing_a_simulator_is_a_step_rather_than_buried_in_advanced():
-    """It used to be reachable only through Advanced, so an E6 owner was told
-    to open GSPro and had nowhere obvious to correct it."""
+    """It used to be reachable only through Advanced."""
 
     source = wizard_source()
-    assert "Which simulator do you use?" in source
-    assert "wizSimGspro" in source and "wizSimE6" in source
+    assert "How do you want to play?" in source
+    assert "wizLocal" in source and "wizGspro" in source
+
+
+def test_nothing_is_offered_that_does_not_work():
+    assert "E6" not in PAGE
 
 
 def test_a_pi_that_was_never_on_wifi_is_explained():
@@ -144,7 +162,7 @@ def test_the_simulator_steps_can_be_left_for_later():
     wizard = wizard_source()
     blocked = [
         block for block in wizard.split("if(")
-        if ("!sim.connected" in block or "!sim.ready" in block)
+        if block.startswith(("!sim.connected)", "!sim.ready)")) and "step:" in block
     ]
     assert len(blocked) == 2, "expected the open and test steps, found {}".format(len(blocked))
     for block in blocked:

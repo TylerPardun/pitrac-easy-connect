@@ -46,6 +46,16 @@ def readable_club(raw: Optional[str]) -> str:
     return CLUB_NAMES.get(key, str(raw).strip())
 
 
+def simulator_club(readable: str) -> str:
+    """The code a simulator would send PiTrac for this club.
+
+    PiTrac only distinguishes a putter, which it measures with different camera
+    and strobe settings, from everything else.
+    """
+
+    return "PT" if readable == "Putter" else "DR"
+
+
 def club_from_simulator_message(message: Dict[str, Any]) -> Optional[str]:
     """Pull a club out of whatever the simulator sent, if there is one.
 
@@ -96,9 +106,9 @@ def ball_from_shot(payload: Dict[str, Any]) -> Dict[str, Any]:
     if isinstance(ball, dict) and ball:
         declared = str(payload.get("Units", "") or "").strip().lower()
         return {
-            "speed": _number(ball.get("Speed") or ball.get("BallSpeed")),
-            "launch": _number(ball.get("VLA") or ball.get("LaunchAngle")),
-            "direction": _number(ball.get("HLA") or ball.get("LaunchDirection")),
+            "speed": _number(_first(ball, "Speed", "BallSpeed")),
+            "launch": _number(_first(ball, "VLA", "LaunchAngle")),
+            "direction": _number(_first(ball, "HLA", "LaunchDirection")),
             "backSpin": _number(ball.get("BackSpin")),
             "sideSpin": _number(ball.get("SideSpin")),
             "totalSpin": _number(ball.get("TotalSpin")),
@@ -106,6 +116,19 @@ def ball_from_shot(payload: Dict[str, Any]) -> Dict[str, Any]:
             "unitsUnexpected": bool(declared) and declared != EXPECTED_UNITS,
         }
     return {}
+
+
+def _first(ball: Dict[str, Any], *names: str) -> Any:
+    """Whichever of these the message carries.
+
+    By presence, not truth: a ball hit dead straight has a direction of exactly
+    zero, which is a measurement and not a missing one.
+    """
+
+    for name in names:
+        if ball.get(name) is not None:
+            return ball[name]
+    return None
 
 
 def _number(value: Any) -> Optional[float]:
@@ -120,7 +143,9 @@ class Shot:
     at: float
     club: str = ""
     simulator: str = ""
-    delivered: bool = True
+    #: Whether a simulator was given it. None when there was nobody to give it
+    #: to, which is every shot on the Local Range.
+    delivered: Optional[bool] = True
     ball: Dict[str, Any] = field(default_factory=dict)
 
     def as_dict(self) -> Dict[str, Any]:
@@ -171,7 +196,8 @@ class ShotLog:
             self._store.set("club", readable)
         return readable
 
-    def record(self, payload: Dict[str, Any], simulator: str, delivered: bool = True,
+    def record(self, payload: Dict[str, Any], simulator: str,
+               delivered: Optional[bool] = True,
                ball: Optional[Dict[str, Any]] = None) -> Shot:
         """Keep one shot.
 
@@ -208,9 +234,9 @@ class ShotLog:
             shots = list(self._store.get("shots") or [])
 
         grouped: Dict[str, List[Dict[str, Any]]] = {}
+        # Every measured swing, whatever became of it afterwards. Whether GSPro
+        # was open says nothing about how the ball was struck.
         for shot in shots:
-            if not shot.get("delivered"):
-                continue
             grouped.setdefault(shot.get("club") or "Not recorded", []).append(shot)
 
         summary = []

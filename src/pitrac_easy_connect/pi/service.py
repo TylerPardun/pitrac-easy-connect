@@ -484,9 +484,14 @@ class PiService:
         elif kind == "shotResult":
             self.relay.handle_shot_result(frame)
         elif kind == "simulatorStatus":
+            reported = dict(frame.get("status") or {})
             with self._lock:
-                self._simulator_status = dict(frame.get("status") or {})
-            self.refresh()
+                news = reported != self._simulator_status
+                self._simulator_status = reported
+            # Only for news. A refresh pushes a status back, and earlier desktop
+            # releases answer every push with another of these.
+            if news:
+                self.refresh()
         elif kind == "command":
             self._run_command(session, frame)
 

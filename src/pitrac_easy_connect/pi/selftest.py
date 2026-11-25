@@ -501,6 +501,16 @@ class SelfTest:
             )
         from ..common.errors import SIM_NOT_RUNNING, lookup
 
+        if status.get("local"):
+            # The Local Range is drawn by the computer itself. There is no
+            # simulator to open and nothing to prove with a test shot.
+            ready = bool(status.get("ready"))
+            return CheckResult(
+                "simulator", "Local Range", PASS if ready else FAIL,
+                status.get("message", ""),
+                None if ready else lookup(str(status.get("errorCode", ""))),
+                critical=True,
+            )
         if status.get("ready"):
             return CheckResult(
                 "simulator",

@@ -462,15 +462,17 @@ def test_switching_simulators_clears_the_accepted_test_shot(rig):
     rig.companion.send_test_shot()
     assert rig.companion.status()["ready"] is True
 
-    rig.companion.select_simulator("e6")
+    rig.companion.select_simulator("local")
+    rig.companion.select_simulator("gspro")
     status = rig.companion.status()
     assert status["ready"] is False
     assert status["simulatorStatus"]["testShotAccepted"] is False
 
 
 def test_an_unsupported_simulator_is_refused(rig):
-    with pytest.raises(ValueError, match="Only GSPro and E6"):
-        rig.companion.select_simulator("trackman")
+    for name in ("trackman", "e6", ""):
+        with pytest.raises(ValueError, match="Choose Local Range or GSPro"):
+            rig.companion.select_simulator(name)
 
 
 def test_the_enclosure_learns_the_simulator_state(rig):
@@ -837,21 +839,77 @@ def test_a_search_that_sends_and_hears_nothing_reports_no_problem(rig):
     assert result["problem"] is None
 
 
-def test_a_gspro_shot_is_never_sent_to_a_simulator_that_cannot_read_it(tmp_path):
+def test_another_simulators_messages_are_never_sent_to_gspro(rig):
     """PiTrac sends one simulator's own messages and nothing here translates them."""
 
-    from pitrac_easy_connect.models import TEST_SHOT
-    from pitrac_easy_connect.protocols import gspro_message
+    result = rig.companion._forward_shot(1, "e6", {"Type": "SendShot"})
+    assert result["accepted"] is False
+    assert result["code"] == "PT-SIM-006"
+    assert len(rig.companion.shots.recent()) == 1, "the swing itself is not lost"
+    assert rig.mock.received == []
 
-    rig = Rig(tmp_path, Simulator.E6)
-    try:
-        rig.companion.select_simulator("e6")
-        result = rig.companion._forward_shot(1, "gspro", gspro_message(TEST_SHOT))
-        assert result["accepted"] is False
-        assert result["code"] == "PT-SIM-006"
-        kept = rig.companion.shots.recent()
-        assert len(kept) == 1 and kept[0]["delivered"] is False, "the swing itself is not lost"
-        session = rig.companion._session
-        assert session is None or session.messages_sent == 0
-    finally:
-        rig.close()
+
+def test_a_connected_computer_leaves_the_enclosure_alone(rig):
+    """Each end answered the other's status with its own, so the enclosure ran
+    its self-test thousands of times a second while it was meant to be timing
+    a golf ball."""
+
+    rig.pair()
+    assert rig.wait_linked() is True
+    time.sleep(0.5)
+    runs = []
+    real = rig.pi.selftest.run
+    rig.pi.selftest.run = lambda: runs.append(1) or real()
+    time.sleep(3)
+    assert len(runs) <= 3, "the self-test ran {} times in three idle seconds".format(len(runs))
+
+
+def test_an_earlier_desktop_cannot_make_the_enclosure_spin(rig):
+    rig.pair()
+    assert rig.wait_linked() is True
+    time.sleep(0.5)
+    runs = []
+    real = rig.pi.selftest.run
+    rig.pi.selftest.run = lambda: runs.append(1) or real()
+    for _ in range(200):
+        rig.companion._report_simulator_state()
+    time.sleep(1)
+    assert len(runs) <= 3
+
+
+def test_the_enclosure_hears_again_after_the_link_comes_back(rig):
+    """Acting once must not mean acting once ever."""
+
+    rig.pair()
+    assert rig.wait_linked() is True
+    rig.companion.disconnect()
+    deadline = time.monotonic() + 5
+    while rig.pi._simulator_status is not None and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert rig.pi._simulator_status is None
+    rig.companion.connect(rig.pi.identity.device_id)
+    assert rig.wait_linked(timeout=10) is True
+    deadline = time.monotonic() + 5
+    while rig.pi._simulator_status is None and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert rig.pi._simulator_status is not None
+
+
+def test_the_enclosure_learns_that_the_simulator_closed(rig):
+    """Nothing announces it, and no shot has to be lost to find out."""
+
+    rig.pair()
+    assert rig.wait_linked() is True
+    rig.companion.send_test_shot()
+    deadline = time.monotonic() + 5
+    while not (rig.pi._simulator_status or {}).get("ready") and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert rig.pi._simulator_status["ready"] is True
+
+    rig.mock.stop()
+    rig.companion._session._drop("closed")
+    rig.pi.refresh()
+    deadline = time.monotonic() + 5
+    while rig.pi._simulator_status.get("connected") and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert rig.pi._simulator_status["connected"] is False

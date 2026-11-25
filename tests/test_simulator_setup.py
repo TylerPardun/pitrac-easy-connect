@@ -1,4 +1,4 @@
-"""Connecting GSPro or E6 has a place of its own.
+"""Choosing how to play, and connecting GSPro, has a place of its own.
 
 The picker used to live inside a collapsed Advanced section on the Play pane,
 and the only guidance for getting a simulator listening appeared inside the
@@ -12,9 +12,6 @@ computer and the simulator running on it.
 """
 
 import pathlib
-import re
-
-import pytest
 
 PAGE = (pathlib.Path(__file__).resolve().parent.parent
         / "src" / "pitrac_easy_connect" / "companion" / "page.py").read_text()
@@ -34,13 +31,20 @@ def test_it_is_offered_on_the_board():
     assert 'pane:"simulator"' in board, "the board does not offer the simulator"
 
 
-def test_both_simulators_are_described_with_the_screen_that_starts_listening():
+def test_gspro_is_described_with_the_screen_that_starts_listening():
     """The step people miss: the port only opens on a particular screen."""
 
     where = PAGE.split("const SIM_WHERE = {")[1].split("};")[0]
     assert "Open Connect" in where, "GSPro's listening screen is not named"
-    assert "start a session" in where, "E6's listening step is not named"
-    assert "921" in where and "2483" in where, "the ports are not stated"
+    assert "921" in where, "the port is not stated"
+
+
+def test_the_local_range_is_offered_wherever_gspro_is():
+    assert PAGE.count('data-sim="local"') == PAGE.count('data-sim="gspro"') == 2
+
+
+def test_gspros_connection_buttons_are_not_shown_for_the_local_range():
+    assert '$("simButtons").classList.toggle("hidden", local)' in render_source()
 
 
 def test_the_address_it_dials_is_shown():
@@ -82,10 +86,3 @@ def test_the_check_and_test_buttons_reuse_the_existing_actions():
 
     assert '$("simCheck").addEventListener' in PAGE
     assert 'doAction("check"' in PAGE and 'doAction("test"' in PAGE
-
-
-@pytest.mark.parametrize("simulator,port", [("gspro", "921"), ("e6", "2483")])
-def test_each_simulator_names_its_own_port(simulator, port):
-    where = PAGE.split("const SIM_WHERE = {")[1].split("};")[0]
-    block = where.split(simulator + ":")[1].split("}")[0]
-    assert port in block, "{} is not told to look at {}".format(simulator, port)

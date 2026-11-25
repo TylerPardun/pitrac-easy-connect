@@ -188,6 +188,8 @@ PAGE = r"""<!doctype html>
     font-variant-numeric:tabular-nums;line-height:1.1}
   .hudval{font-size:.9rem;color:var(--muted);font-variant-numeric:tabular-nums}
   .hudunit{font-size:.7rem;color:var(--faint)}
+  .hudball{margin-top:6px;font-size:.74rem;color:var(--muted);
+    font-variant-numeric:tabular-nums}
   .hudclub{margin-top:6px;font-size:.7rem;font-weight:700;letter-spacing:.08em;
     text-transform:uppercase;color:var(--green)}
   .views{position:relative}
@@ -209,6 +211,7 @@ PAGE = r"""<!doctype html>
   .viewbtn:focus-visible{outline:2px solid var(--green);outline-offset:2px}
   .rangecount{font-size:.72rem;color:var(--muted);font-variant-numeric:tabular-nums;
     text-align:right;line-height:1.25}
+  .rangeclubpick{width:auto;max-width:150px;padding:6px 8px;font-size:.8rem}
   .rangeclubs{flex:none;max-height:34%;overflow-y:auto;padding:12px 16px 16px;
     border-top:1px solid var(--line)}
   .rangeclub{display:flex;align-items:baseline;gap:10px;padding:7px 0;
@@ -283,7 +286,7 @@ PAGE = r"""<!doctype html>
 <body>
 <nav class="tabs hidden" id="tabs">
   <button data-pane="play" class="on">Play</button>
-  <button data-pane="simulator">Simulator</button>
+  <button data-pane="simulator">Play mode</button>
   <button data-pane="range">Range</button>
   <button data-pane="shots">Shots</button>
   <button data-pane="pitrac">PiTrac</button>
@@ -344,10 +347,10 @@ PAGE = r"""<!doctype html>
   <details class="adv" id="adv">
     <summary>Advanced</summary>
     <div class="advbody">
-      <h3>Simulator</h3>
+      <h3>Play mode</h3>
       <div class="row2">
-        <button class="quiet" data-sim="gspro" id="simGspro">GSPro</button>
-        <button class="quiet" data-sim="e6" id="simE6">E6 Connect</button>
+        <button class="quiet" data-sim="local">Local Range</button>
+        <button class="quiet" data-sim="gspro">GSPro</button>
       </div>
 
       <h3>PiTrac</h3>
@@ -396,6 +399,7 @@ PAGE = r"""<!doctype html>
       <div class="hudrow"><span class="hudlabel">Total</span><span class="hudval" id="hudTotal">--</span></div>
       <div class="hudrow"><span class="hudlabel">Apex</span><span class="hudval" id="hudApex">--</span></div>
       <div class="hudrow"><span class="hudlabel">Offline</span><span class="hudval" id="hudOffline">--</span></div>
+      <div class="hudball" id="hudBall"></div>
       <div class="hudclub" id="hudClub"></div>
     </div>
 
@@ -410,6 +414,7 @@ PAGE = r"""<!doctype html>
         </div>
       </div>
       <div class="rangeright">
+        <select id="rangeClub" class="rangeclubpick" aria-label="Club in hand"></select>
         <span class="rangecount" id="rangeCount"></span>
         <button class="viewbtn" id="rangeDemo">Demo shot</button>
         <button class="viewbtn" id="rangeClear">Clear</button>
@@ -421,13 +426,14 @@ PAGE = r"""<!doctype html>
 </div>
 
 <div class="pane" id="pane-simulator"><div class="shots">
-  <h3 class="sech">Which simulator</h3>
+  <h3 class="sech">How do you want to play?</h3>
   <div class="row2">
+    <button class="quiet" data-sim="local">Local Range</button>
     <button class="quiet" data-sim="gspro">GSPro</button>
-    <button class="quiet" data-sim="e6">E6 Connect</button>
   </div>
+  <div class="why" id="simNote"></div>
 
-  <h3 class="sech">Connection</h3>
+  <h3 class="sech" id="simSection">Connection</h3>
   <div class="status">
     <div class="dot" id="simDot"></div>
     <div style="flex:1">
@@ -438,7 +444,7 @@ PAGE = r"""<!doctype html>
 
   <div class="simsteps" id="simSteps"></div>
 
-  <div class="row2">
+  <div class="row2" id="simButtons">
     <button class="quiet" id="simCheck">Check again</button>
     <button class="quiet" id="simTest">Send a test shot</button>
   </div>
@@ -592,11 +598,22 @@ async function run(button, work){
 // of the way and the whole app is theirs.
 const WIZARD=[
   {key:"find",  label:"Connect"},
-  {key:"sim",   label:"Simulator"},
-  {key:"open",  label:"Open it"},
-  {key:"test",  label:"Test shot"},
+  {key:"sim",   label:"Play mode"},
+  {key:"open",  label:"Open it",   gspro:true},
+  {key:"test",  label:"Test shot", gspro:true},
   {key:"done",  label:"Ready"},
 ];
+//: The Local Range has nothing to open and nothing to prove.
+function wizardSteps(data){
+  return WIZARD.filter(step=>!step.gspro || data.simulator==="gspro");
+}
+function isLocal(data){ return data.simulator==="local"; }
+
+//: Why a play mode cannot be used on this computer, if it cannot.
+function modeNote(data, value){
+  const mode=(data.playModes||[]).find(m=>m.value===value);
+  return (mode && mode.note) || "";
+}
 let wizard={started:false, simPicked:false, reachedEnclosure:false};
 
 const CANNOT_FIND=`<ol>
@@ -617,8 +634,7 @@ function wizardView(data){
 
   if(!wizard.started) return {step:null,
     dot:"", head:"Let's get you playing", sub:"",
-    why:"Three short steps: connect to your PiTrac, tell it which simulator "+
-        "you use, and hit one test shot to prove it works.",
+    why:"Connect to your PiTrac, choose how you want to play, and you're there.",
     actions:[{label:"Get started", id:"wizStart", primary:true}]};
 
   if(!linked) return {step:"find",
@@ -636,16 +652,26 @@ function wizardView(data){
     actions:[{label:"Open the PiTrac setup page", id:"setup", primary:true}]};
 
   if(!wizard.simPicked) return {step:"sim",
-    dot:"", head:"Which simulator do you use?", sub:name,
-    why:"You can change this later.",
-    actions:[{label:"GSPro", id:"wizSimGspro", primary:data.simulator==="gspro"},
-             {label:"E6 Connect", id:"wizSimE6", primary:data.simulator==="e6"}]};
+    dot:"", head:"How do you want to play?", sub:name,
+    why:"Local Range works on its own, with nothing else to buy or open. "+
+        (modeNote(data,"gspro") || "GSPro needs its own license. ")+
+        " You can change this later.",
+    actions:[{label:"Local Range", id:"wizLocal", primary:true},
+             {label:"GSPro", id:"wizGspro", primary:false}]};
+
+  if(isLocal(data)) return sim.ready ? {step:"done",
+    dot:"good", head:"You're ready to play", sub:"Local Range · "+name,
+    why:"Hit a ball and it appears on the range. You will not see these steps "+
+        "again — next time you open this it goes straight to playing.",
+    actions:[{label:"Go to the range", id:"wizRange", primary:true}]}
+  : {step:"sim", dot:"bad", head:"Shots cannot be saved", sub:name, why:sim.message,
+    actions:[{label:"Check again", id:"check", primary:true},
+             {label:"Finish later", id:"wizFinish", primary:false}]};
 
   if(!sim.connected) return {step:"open",
     dot:"bad", head:"Open "+esc(data.simulatorLabel), sub:name,
-    why:data.simulator==="gspro"
-      ? "In GSPro, open the Open Connect screen so it is waiting for a device."
-      : "In E6 Connect, start a session and step onto the tee.",
+    why:"In GSPro, open the Open Connect screen so it is waiting for a device. "+
+        modeNote(data,"gspro"),
     // Finish later, because these last steps need a simulator running and
     // the rest of the app does not. Without it, anyone who opened this
     // before starting GSPro was held here.
@@ -673,11 +699,12 @@ function wizardView(data){
 //: leading somewhere empty.
 function boardCards(data){
   const linked=!!(data.link && data.link.connected);
-  const shots=((data.shotLog&&data.shotLog.shots)||[]).length;
+  const shots=(data.shotLog&&data.shotLog.total)||0;
   const sim=data.simulatorStatus||{};
   return [
-    {pane:"simulator", title:"GSPro / E6 Connect",
-     detail:sim.ready ? "Ready to play through " + esc(data.simulatorLabel || "your simulator")
+    {pane:"simulator", title:"Play mode",
+     detail:isLocal(data) ? "Local Range. GSPro can be used instead."
+            : sim.ready ? "Ready to play through " + esc(data.simulatorLabel || "your simulator")
             : sim.connected ? "Connected. One test shot proves the rest."
             : "Connect " + esc(data.simulatorLabel || "your simulator") + " on this computer."},
     {pane:"range", title:"Practice range",
@@ -686,8 +713,7 @@ function boardCards(data){
      detail:shots ? shots+(shots===1?" shot recorded":" shots recorded")
                   : "Every shot, with the club it was hit with."},
     {pane:"pitrac", title:"PiTrac dashboard", needsLink:true,
-     detail:linked ? (sim.connected ? "Connected to "+esc(data.simulatorLabel)
-                                    : "Cameras, calibration and shot images.")
+     detail:linked ? "Cameras, calibration and shot images."
                    : "Connect to PiTrac to open this."},
     {pane:"setup", title:"Enclosure setup", needsLink:true,
      detail:linked ? "Wi-Fi, backups, updates and ownership."
@@ -701,8 +727,6 @@ function boardCards(data){
 const SIM_WHERE = {
   gspro: {port: 921, screen: "Open Connect",
           how: "In GSPro, open the <strong>Open Connect</strong> screen so it is waiting for a device."},
-  e6:    {port: 2483, screen: "a session",
-          how: "In E6 Connect, <strong>start a session</strong> and step onto the tee."},
 };
 
 //: Deliberately not a wizard. Nothing here is ordered or gated: the steps are
@@ -711,10 +735,25 @@ const SIM_WHERE = {
 //: between this computer and the simulator on it and needs no PiTrac at all.
 function renderSimulator(data){
   const sim = data.simulatorStatus || {};
-  const which = data.simulator === "e6" ? "e6" : "gspro";
-  const where = SIM_WHERE[which];
   const label = data.simulatorLabel || "your simulator";
   const linked = !!(data.link && data.link.connected);
+  const local = isLocal(data);
+
+  $("simNote").textContent = modeNote(data, "gspro");
+  $("simSection").textContent = local ? "Local Range" : "Connection";
+  $("simButtons").classList.toggle("hidden", local);
+  if(local){
+    $("simDot").className = "dot " + (sim.ready ? "good" : "bad");
+    $("simHead").textContent = sim.ready ? "Recording on this computer" : "Shots cannot be saved";
+    $("simWhy").textContent = sim.ready
+      ? "Every measured shot is saved here and drawn on the Range tab. Nothing else has to be open."
+      : sim.message;
+    $("simSteps").innerHTML = "";
+    $("simWhere").textContent = linked ? ""
+      : "PiTrac is not connected, so there are no shots to record yet.";
+    return;
+  }
+  const where = SIM_WHERE.gspro;
 
   $("simDot").className = "dot " + (sim.ready ? "good" : sim.connected ? "busy" : "bad");
   $("simHead").textContent = sim.ready ? "Ready to play"
@@ -756,10 +795,11 @@ function renderWizard(view){
   const showing=!!(view && view.step!==undefined);
   $("wiz").classList.toggle("hidden", !showing || !view.step);
   if(!showing || !view.step) return;
-  const at=WIZARD.findIndex(s=>s.key===view.step);
-  $("wizRail").innerHTML=WIZARD.map((s,i)=>
+  const steps=wizardSteps(status);
+  const at=steps.findIndex(s=>s.key===view.step);
+  $("wizRail").innerHTML=steps.map((s,i)=>
     `<i class="${i===at?"on":(i<at?"done":"")}"></i>`).join("");
-  $("wizStep").textContent="Step "+(at+1)+" of "+WIZARD.length+" · "+WIZARD[at].label;
+  $("wizStep").textContent="Step "+(at+1)+" of "+steps.length+" · "+steps[at].label;
 }
 
 // --- the single line, and the single thing to do about it ----------------
@@ -786,11 +826,17 @@ function present(data){
     why:"Easy-Connect is connected, but the launch monitor cannot measure a shot yet.",
     actions:[{label:"Open the PiTrac setup page", id:"setup", primary:true}]};
 
+  if(isLocal(data)) return sim.ready ? {
+    dot:"good", head:"Ready to play", sub:"Local Range · "+name,
+    why:"", actions:[{label:"Go to the range", id:"range", primary:true}]}
+  : {
+    dot:"bad", head:"Shots cannot be saved", sub:name, why:sim.message,
+    actions:[{label:"Check again", id:"check", primary:true}]};
+
   if(!sim.connected) return {
     dot:"bad", head:"Open "+esc(data.simulatorLabel), sub:name,
-    why:data.simulator==="gspro"
-      ? "In GSPro, open the Open Connect screen so it is waiting for a device."
-      : "In E6 Connect, start a session and step onto the tee.",
+    why:"In GSPro, open the Open Connect screen so it is waiting for a device. "+
+        modeNote(data,"gspro"),
     actions:[{label:"Check again", id:"check", primary:true}]};
 
   if(!sim.ready) return {
@@ -885,6 +931,7 @@ function render(data){
   document.body.classList.toggle("guiding", guiding);
   renderBoard(data, guiding);
   renderSimulator(data);
+  $("testShot").classList.toggle("hidden", isLocal(data));
   // A demo shot exists so the range can be seen before there is a
   // launch monitor to fill it. Once the enclosure reports it can
   // measure -- cameras attached, calibration present, its program
@@ -911,10 +958,15 @@ function render(data){
 function doAction(id, button){
   if(id==="wizStart"){ wizard.started=true; return refresh(); }
   if(id==="wizBackSim"){ wizard.simPicked=false; return refresh(); }
-  if(id==="wizSimGspro"||id==="wizSimE6") return run(button, async()=>{
-    await api("/api/simulator",{simulator:id==="wizSimGspro"?"gspro":"e6"});
+  if(id==="wizLocal"||id==="wizGspro") return run(button, async()=>{
+    await api("/api/simulator",{simulator:id==="wizLocal"?"local":"gspro"});
     wizard.simPicked=true;
   });
+  if(id==="wizRange") return run(button, async()=>{
+    await api("/api/finish-setup",{done:true});
+    showPane("range");
+  });
+  if(id==="range") return showPane("range");
   if(id==="wizFinish") return run(button, ()=>api("/api/finish-setup",{done:true}));
   if(id==="find") return run(button, findDevices);
   if(id==="check") return run(button, ()=>api("/api/check",{}));
@@ -1181,8 +1233,8 @@ function renderDetails(data){
   const rows=[["Enclosure",device.displayName||"-"],["Device",device.deviceId||"-"],
     ["Address",(data.link&&data.link.address)||"-"],
     ["Wi-Fi",(network.connection&&network.connection.ssid)||"-"],
-    ["Shots sent",shots.delivered!=null?shots.delivered:"-"],
-    ["Not delivered",shots.lost!=null?shots.lost:"-"],
+    [isLocal(data)?"Shots recorded":"Shots sent",shots.delivered!=null?shots.delivered:"-"],
+    [isLocal(data)?"Not recorded":"Not delivered",shots.lost!=null?shots.lost:"-"],
     ["PiTrac",device.version||"-"],["Easy-Connect",data.version],
     ["Versions match",update.enclosureVersion?(update.versionsMatch?"yes":"no — update both"):"-"],
     ["Updates",update.detail||"-"]];
@@ -1329,7 +1381,7 @@ $("showRaw").addEventListener("click",e=>run(e.target, async()=>{
   const data = await api("/api/raw-shots");
   const host = $("rawShots");
   if(!data.shots.length){
-    host.innerHTML='<div class="note">Nothing yet. Hit a ball, or send a test shot.</div>';
+    host.innerHTML='<div class="note">Nothing yet. Hit a ball.</div>';
     return;
   }
   const warn = data.unitsUnexpected
@@ -1373,7 +1425,7 @@ $("forget").addEventListener("click",e=>run(e.target, async()=>{
   await api("/api/forget",{deviceId:status.activeDeviceId});
 }));
 $("quit").addEventListener("click",e=>run(e.target, async()=>{
-  if(!confirm("Stop Easy-Connect?\n\nShots will stop reaching your simulator until you start it again.")) return;
+  if(!confirm("Stop Easy-Connect?\n\nShots will not be recorded or sent anywhere until you start it again.")) return;
   await api("/api/quit",{});
   document.body.innerHTML='<main><div class="brand">PiTrac Easy-Connect</div>'+
     '<div class="status"><div class="dot"></div><div><h1>Easy-Connect has stopped</h1>'+
@@ -2209,14 +2261,31 @@ const RANGE = (function(){
            seconds: Math.max(0.8, newest.flightSeconds || 3)};
       lastFrame = 0;
     }
-    renderHud(newest);
+    renderHud(newest, data.unflown);
     renderClubs();
     schedule();
   }
 
-  function renderHud(shot){
+  // What was measured, with a dash for anything that was not. Zero is a
+  // measurement: a ball hit dead straight has a direction of 0.
+  function measured(ball){
+    const part=function(value, digits, unit){
+      return value==null ? "-" : Number(value).toFixed(digits)+unit; };
+    const side=ball.direction;
+    return [part(ball.speed,1," mph"), part(ball.launch,1,"\u00b0"),
+      side==null ? "-" : side===0 ? "0.0\u00b0" : Math.abs(side).toFixed(1)+"\u00b0 "+(side>0?"R":"L"),
+      part(ball.backSpin,0," rpm")].join(" \u00b7 ");
+  }
+
+  function renderHud(shot, unflown){
     const one = function(id, value){ const el=$(id); if(el) el.textContent=value; };
-    if(!shot){
+    if(unflown){
+      // Newer than any flight here: a later one would have cleared it.
+      ["hudCarry","hudTotal","hudApex","hudOffline"].forEach(id=>one(id,"--"));
+      one("hudBall", measured(unflown.ball));
+      one("hudClub", (unflown.club ? unflown.club+" \u00b7 " : "")+"along the ground");
+    }else if(!shot){
+      one("hudBall","");
       one("hudCarry","--"); one("hudTotal","--"); one("hudApex","--");
       one("hudOffline","--");
       const club=$("hudClub"); if(club) club.textContent="";
@@ -2227,6 +2296,7 @@ const RANGE = (function(){
       const off = Math.round(shot.offlineYards);
       one("hudOffline", off===0 ? "straight" :
         Math.abs(off)+" yd "+(off>0?"right":"left"));
+      one("hudBall", measured(shot.ball||{}));
       const club=$("hudClub"); if(club) club.textContent = shot.club || "";
     }
     const c=$("rangeCount");
@@ -2306,20 +2376,26 @@ const CLUBS=["Driver","3 wood","5 wood","3 hybrid","4 hybrid","3 iron","4 iron",
 let clubReady=false, camerasAsked=false;
 
 function fillClubs(current){
-  const select=$("club");
+  const selects=[$("club"), $("rangeClub")];
   if(!clubReady){
-    select.innerHTML='<option value="">Not recorded</option>'+
-      CLUBS.map(c=>`<option value="${esc(c)}">${esc(c)}</option>`).join("");
-    select.addEventListener("change",e=>run(null,()=>api("/api/club",{club:e.target.value})));
+    selects.forEach((select,i)=>{
+      select.innerHTML='<option value="">'+(i?"Club":"Not recorded")+'</option>'+
+        CLUBS.map(c=>`<option value="${esc(c)}">${esc(c)}</option>`).join("");
+      select.addEventListener("change",e=>run(null,()=>api("/api/club",{club:e.target.value})));
+    });
     clubReady=true;
   }
-  if(document.activeElement!==select) select.value=current||"";
+  selects.forEach(select=>{
+    if(document.activeElement!==select) select.value=current||"";
+  });
 }
 
 function renderShots(log){
   if(!log) return;
   fillClubs(log.club);
-  $("clubNote").textContent = log.club
+  $("clubNote").textContent = isLocal(status)
+    ? "Choose the club you are about to hit. Putter also switches PiTrac to measuring putts, from the next ball you place."
+    : log.club
     ? "Your simulator sets this automatically when you change club."
     : "Your simulator will set this when you change club, or choose it here.";
 
@@ -2350,11 +2426,12 @@ function renderRecent(log){
   $("recent").className = recent.length ? "scroller" : "empty";
   $("recent").innerHTML = recent.length ? `<table class="shot">
     <thead><tr><th>Time</th><th>Club</th><th class="num">Speed</th><th class="num">Launch</th>
-      <th class="num">Spin</th></tr></thead>
-    <tbody>${recent.map(s=>`<tr class="${s.delivered?"":"lost"}">
+      <th class="num">Direction</th><th class="num">Spin</th></tr></thead>
+    <tbody>${recent.map(s=>`<tr class="${esc(s.delivered===false?"lost":"")}">
       <td>${esc(s.timeText)}</td><td>${esc(s.club||"-")}</td>
       <td class="num">${s.speed==null?"-":s.speed}</td>
       <td class="num">${s.launch==null?"-":s.launch}</td>
+      <td class="num">${s.direction==null?"-":s.direction===0?"0":Math.abs(s.direction)+(s.direction>0?" R":" L")}</td>
       <td class="num">${s.backSpin==null?"-":s.backSpin}</td></tr>`).join("")}
     </tbody></table>` : "Shots appear here as you hit them.";
 }

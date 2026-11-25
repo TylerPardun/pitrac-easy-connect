@@ -37,6 +37,7 @@ from ..common.errors import (
     PAIR_NOT_PAIRED,
     PAIR_RATE_LIMITED,
     PAIR_REVOKED,
+    CFG_WRITE_FAILED,
     SIM_FORMAT_MISMATCH,
     SIM_NOT_RUNNING,
     EasyConnectError,
@@ -54,7 +55,7 @@ from ..common.updates import (
     coordinate_update,
 )
 from ..common.versions import compare
-from ..models import TEST_SHOT, Simulator
+from ..models import TEST_SHOT, PlayMode, Simulator
 from . import self_update
 from .link_client import CompanionLinkClient
 from . import shotlog
@@ -171,7 +172,7 @@ class CompanionService:
         self.store = ConfigStore(
             config_path or default_config_path(),
             defaults={
-                "simulator": Simulator.GSPRO.value,
+                "simulator": PlayMode.LOCAL.value,
                 "enclosures": {},
                 "activeDeviceId": "",
                 # An update spans a desktop replacement and restart. Keeping
@@ -206,10 +207,15 @@ class CompanionService:
         self._last_connect_error_device_id: str = ""
         self._test_shot_accepted = False
         self._last_simulator_error: Optional[Dict[str, str]] = None
+        #: Why the last swing could not be saved, until one can be.
+        self._capture_error = ""
         self._last_shot_at: Optional[float] = None
         self._shots_delivered = 0
         self._shots_lost = 0
         self._pi_status: Dict[str, Any] = {}
+        self._was_linked = False
+        #: What the enclosure was last told, to know when that stops being true.
+        self._reported_simulator: Optional[Dict[str, Any]] = None
         self._pending_update_target = str(self.store.get("updateTarget", "") or "")
         #: The practice range. In memory only: a session is a bucket of balls.
         self.range = RangeSession()
@@ -293,26 +299,49 @@ class CompanionService:
     # --- Simulator selection ---------------------------------------------
 
     @property
-    def simulator(self) -> Simulator:
-        return Simulator(self.store.get("simulator", Simulator.GSPRO.value))
+    def mode(self) -> PlayMode:
+        try:
+            return PlayMode(self.store.get("simulator", PlayMode.LOCAL.value))
+        except ValueError:
+            # Something an earlier release offered and this one does not.
+            return PlayMode.LOCAL
+
+    @property
+    def simulator(self) -> Optional[Simulator]:
+        return self.mode.simulator
 
     def _on_link_state(self) -> None:
+        """Something about the link changed. Called for every status it pushes.
+
+        So this only acts on arriving and leaving. Answering each push with
+        this computer's own state made the enclosure run its self-test and push
+        again, thousands of times a second for as long as a computer was
+        connected, on a machine that is trying to time a golf ball.
+        """
+
         client = self._link
-        if client is None or not client.connected:
-            # The enclosure has gone. Anything half-sent belongs to a swing
-            # that will never be completed.
-            with self._lock:
+        connected = client is not None and client.connected
+        with self._lock:
+            arrived = connected and not self._was_linked
+            self._was_linked = connected
+            if not connected:
+                # The enclosure has gone. Anything half-sent belongs to a swing
+                # that will never be completed.
                 self._forget_pending_ball()
+        if not arrived:
             return
         self._report_simulator_state()
+        if self.mode is PlayMode.LOCAL:
+            self._tell_pitrac_the_club()
 
     def select_simulator(self, name: str) -> Dict[str, Any]:
         try:
-            simulator = Simulator(str(name))
+            mode = PlayMode(str(name))
         except ValueError as exc:
-            raise ValueError("Only GSPro and E6 Connect are supported") from exc
+            raise ValueError("Choose Local Range or GSPro") from exc
+        leaving_local = self.mode is PlayMode.LOCAL and mode is not PlayMode.LOCAL
         with self._lock:
-            self.store.set("simulator", simulator.value)
+            self.store.set("simulator", mode.value)
             self._test_shot_accepted = False
             self._last_simulator_error = None
             # Measurements gathered for the previous simulator's protocol have
@@ -321,8 +350,26 @@ class CompanionService:
             if self._session is not None:
                 self._session.close()
                 self._session = None
-        self.connect_simulator()
+        if leaving_local:
+            # GSPro will say which club is in hand when it connects. Until it
+            # does, PiTrac should not go on measuring putts.
+            self._tell_pitrac_the_club("")
+        if mode is PlayMode.LOCAL:
+            self._tell_pitrac_the_club()
+            self._report_simulator_state()
+        else:
+            self.connect_simulator()
         return self.status()
+
+    def play_modes(self) -> List[Dict[str, Any]]:
+        """What can be chosen, and why one cannot be used on this computer."""
+
+        on_windows_only = "" if sys.platform == "win32" else "GSPro runs only on Windows."
+        return [
+            {"value": PlayMode.LOCAL.value, "label": PlayMode.LOCAL.label, "note": ""},
+            {"value": PlayMode.GSPRO.value, "label": PlayMode.GSPRO.label,
+             "note": on_windows_only},
+        ]
 
     def reveal_downloaded_update(self) -> Dict[str, Any]:
         """Reveal only this process's verified manual-update package.
@@ -840,17 +887,27 @@ class CompanionService:
     def disconnect(self) -> None:
         with self._lock:
             client, self._link = self._link, None
+            self._was_linked = False
         if client is not None:
             client.stop()
 
     def _on_enclosure_status(self, payload: Dict[str, Any]) -> None:
         with self._lock:
             self._pi_status = dict(payload)
+            stale = self._reported_simulator
+        # A simulator that closes does not say so to anyone, so each of the
+        # enclosure's regular reports is a chance to notice. Only if something
+        # changed: this must never answer a report with nothing new.
+        if stale is not None and self.simulator_status() != stale:
+            self._report_simulator_state()
 
     # --- The simulator on this computer -----------------------------------
 
     def connect_simulator(self) -> bool:
         simulator = self.simulator
+        if simulator is None:
+            self._report_simulator_state()
+            return False
         with self._lock:
             session = self._session
             if session is not None and session.simulator is not simulator:
@@ -887,12 +944,16 @@ class CompanionService:
     def _forward_shot(self, sequence: int, simulator: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         """A shot arriving from the enclosure. Deliver it now or lose it honestly."""
 
+        if self.mode is PlayMode.LOCAL:
+            return self._capture_locally(simulator, payload)
+
+        counts = self._is_swing(simulator, payload)
         if simulator and simulator != self.simulator.value:
             # What travels over the link is one simulator's own protocol, and
             # nothing here translates it. Sending GSPro's messages to anything
             # else would be noise at best.
             with self._lock:
-                self._shots_lost += 1
+                self._shots_lost += counts
                 self._last_simulator_error = SIM_FORMAT_MISMATCH.as_dict()
             self._record_shot(payload, simulator, delivered=False)
             self._report_simulator_state()
@@ -906,7 +967,7 @@ class CompanionService:
         if session is None or not session.connected:
             if not self.connect_simulator():
                 with self._lock:
-                    self._shots_lost += 1
+                    self._shots_lost += counts
                 # The golfer hit a ball and PiTrac measured it. That the
                 # simulator is not running is a fact about the simulator, not
                 # about the shot, so it is kept and drawn like any other. The
@@ -935,15 +996,16 @@ class CompanionService:
                 raise OSError("the simulator closed the connection")
         except OSError as exc:
             with self._lock:
-                self._shots_lost += 1
+                self._shots_lost += counts
                 self._last_simulator_error = SIM_NOT_RUNNING.as_dict(str(exc))
             self._record_shot(payload, simulator, delivered=False)
             self._report_simulator_state()
             return {"accepted": False, "code": SIM_NOT_RUNNING.code, "message": str(exc)}
 
         with self._lock:
-            self._shots_delivered += 1
-            self._last_shot_at = time.time()
+            self._shots_delivered += counts
+            if counts:
+                self._last_shot_at = time.time()
         self._record_shot(payload, simulator, delivered=True)
         # "Acknowledged" means the simulator answered after this shot was sent.
         # It is not correlated to *this* shot -- neither protocol carries an id
@@ -956,8 +1018,66 @@ class CompanionService:
                 "delivered" if acknowledged else "sent", self.simulator.label),
         }
 
-    def _record_shot(self, payload: Dict[str, Any], simulator: str, delivered: bool) -> None:
+    def _capture_locally(self, simulator: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Keep a shot for the range here. Nothing else has to be running."""
+
+        if not self._is_swing(simulator, payload):
+            # PiTrac sends these when it connects and as balls come and go, and
+            # forgets the club whenever its connection drops.
+            self._tell_pitrac_the_club()
+            return {"accepted": True, "message": ""}
+
+        captured = self._record_shot(payload, simulator, delivered=None)
+        with self._lock:
+            if captured:
+                self._shots_delivered += 1
+                self._last_shot_at = time.time()
+            else:
+                self._shots_lost += 1
+        self._report_simulator_state()
+        if not captured:
+            return {"accepted": False, "code": CFG_WRITE_FAILED.code,
+                    "message": CFG_WRITE_FAILED.failed}
+        return {"accepted": True, "acknowledged": True, "message": "recorded on the Local Range"}
+
+    def _is_swing(self, simulator: str, payload: Dict[str, Any]) -> bool:
+        """Whether this message is a ball being hit, rather than a heartbeat."""
+
+        from ..pi.relay import is_shot_message
+
+        return is_shot_message(self._protocol(simulator), payload)
+
+    @staticmethod
+    def _protocol(simulator: str) -> Simulator:
+        try:
+            return Simulator(simulator)
+        except ValueError:
+            return Simulator.GSPRO
+
+    def _tell_pitrac_the_club(self, club: Optional[str] = None) -> None:
+        """Say which club is in hand, as GSPro would.
+
+        PiTrac measures a putt with different camera and strobe settings, and
+        the only thing that tells it to is a simulator. On the Local Range this
+        is the simulator.
+        """
+
+        client = self._link
+        if client is None:
+            return
+        client.send_simulator_message({
+            "Code": 201,
+            "Message": "Easy-Connect player information",
+            "Player": {"Club": shotlog.simulator_club(self.shots.club if club is None else club)},
+        })
+
+    def _record_shot(
+        self, payload: Dict[str, Any], simulator: str, delivered: Optional[bool]
+    ) -> bool:
         """Keep the shot, with the club. Never let logging break shot delivery.
+
+        Returns whether it was saved. One that could not be is still drawn: a
+        full disk is no reason to lose the flight as well as the record.
 
         The range is fed from here too, so a shot appears on it whether or not
         a simulator was listening. Both are wrapped: a shot that reached the
@@ -981,19 +1101,24 @@ class CompanionService:
         # relay already knows the difference; this now asks it.
         ball = self._ball_for_history(simulator, payload)
         if ball is None:
-            return
+            return False
 
+        saved = True
         try:
-            shot = self.shots.record(
-                payload, simulator or self.simulator.value,
+            self.shots.record(
+                payload,
+                PlayMode.LOCAL.value if delivered is None else simulator or self.mode.value,
                 delivered=delivered, ball=ball,
             )
-        except Exception:
-            return
+            self._capture_error = ""
+        except Exception as exc:
+            saved = False
+            self._capture_error = str(exc) or exc.__class__.__name__
         try:
-            self.range.record(shot.ball, shot.club)
+            self.range.record(ball, self.shots.club)
         except Exception:
             pass
+        return saved
 
     def _ball_for_history(self, simulator: str, payload: Dict[str, Any]):
         """The ball data for a completed swing, or None if this is not one.
@@ -1002,14 +1127,7 @@ class CompanionService:
         another, so the numbers are held until the swing is actually taken.
         """
 
-        from ..models import Simulator as _Simulator
-        from ..pi.relay import is_shot_message
         from .shotlog import ball_from_shot
-
-        try:
-            which = _Simulator(simulator) if simulator else self.simulator
-        except ValueError:
-            which = self.simulator
 
         measured = ball_from_shot(payload)
         if measured:
@@ -1017,7 +1135,7 @@ class CompanionService:
                 self._pending_ball = measured
                 self._pending_ball_at = time.monotonic()
 
-        if not is_shot_message(which, payload):
+        if not self._is_swing(simulator, payload):
             return None
 
         with self._lock:
@@ -1064,12 +1182,21 @@ class CompanionService:
         return False
 
     def check_simulator(self) -> Dict[str, Any]:
+        if self.mode is PlayMode.LOCAL:
+            # The one thing that can be wrong here is saving, so save something.
+            try:
+                self.shots.set_club(self.shots.club)
+                self._capture_error = ""
+            except Exception as exc:
+                self._capture_error = str(exc) or exc.__class__.__name__
         self.connect_simulator()
         return self.status()
 
     def send_test_shot(self) -> Dict[str, Any]:
         """Send one deliberate shot. The user is warned before this is called."""
 
+        if self.mode is PlayMode.LOCAL:
+            raise ValueError("The Local Range has no simulator to send a test shot to")
         if not self.connect_simulator():
             with self._lock:
                 self._test_shot_accepted = False
@@ -1090,19 +1217,39 @@ class CompanionService:
         client = self._link
         if client is None or not client.connected:
             return
-        client.send_simulator_status(self.simulator_status())
+        status = self.simulator_status()
+        with self._lock:
+            self._reported_simulator = status
+        client.send_simulator_status(status)
 
     # --- Reporting --------------------------------------------------------
 
     def simulator_status(self) -> Dict[str, Any]:
+        if self.mode is PlayMode.LOCAL:
+            error = self._capture_error
+            return {
+                "simulator": self.mode.value,
+                "simulatorLabel": self.mode.label,
+                # Nothing has to be opened or connected to, so the only way
+                # this is not ready is if shots cannot be saved.
+                "connected": True,
+                "ready": not error,
+                "local": True,
+                "testShotAccepted": False,
+                "message": (
+                    "Shots cannot be saved: {}".format(error) if error
+                    else "Recording on this computer"
+                ),
+                "errorCode": CFG_WRITE_FAILED.code if error else "",
+            }
         with self._lock:
             session = self._session
             accepted = self._test_shot_accepted
             error = dict(self._last_simulator_error) if self._last_simulator_error else None
         connected = bool(session and session.connected)
         return {
-            "simulator": self.simulator.value,
-            "simulatorLabel": self.simulator.label,
+            "simulator": self.mode.value,
+            "simulatorLabel": self.mode.label,
             "connected": connected,
             "ready": connected and accepted,
             "testShotAccepted": accepted,
@@ -1125,7 +1272,7 @@ class CompanionService:
         # calibration is present, and its measurement program is running, so
         # this step is answered from the enclosure's own self-test.
         measuring, measuring_detail = self._enclosure_measuring(linked, pi_status)
-        steps = [
+        steps: List[Dict[str, Any]] = [
             {
                 "key": "pitrac",
                 "title": "PiTrac is measuring",
@@ -1142,7 +1289,16 @@ class CompanionService:
                     else "Not connected"
                 ),
             },
-            {
+        ]
+        if self.mode is PlayMode.LOCAL:
+            steps.append({
+                "key": "capture",
+                "title": "Shots are being recorded",
+                "ok": simulator["ready"],
+                "detail": simulator["message"],
+            })
+        else:
+            steps += [{
                 "key": "simulator",
                 "title": "{} is connected".format(self.simulator.label),
                 "ok": simulator["connected"],
@@ -1157,8 +1313,7 @@ class CompanionService:
                     if simulator["ready"]
                     else "Not confirmed yet"
                 ),
-            },
-        ]
+            }]
         for step in steps:
             step["blocking"] = not step["ok"]
         return steps
@@ -1217,7 +1372,9 @@ class CompanionService:
             return State.SETUP_REQUIRED
         if not steps.get("pitrac", False):
             return State.RECOVERY_REQUIRED
-        if not steps.get("simulator", False):
+        if not steps.get("capture", True):
+            return State.RECOVERY_REQUIRED
+        if not steps.get("simulator", True):
             return State.SIMULATOR_ACTION_REQUIRED
         # Everything works except an acknowledged test shot.
         return State.CONNECTED
@@ -1287,8 +1444,9 @@ class CompanionService:
             "headline": state.headline,
             "detail": state.detail,
             "ready": state is State.READY_TO_PLAY,
-            "simulator": self.simulator.value,
-            "simulatorLabel": self.simulator.label,
+            "simulator": self.mode.value,
+            "simulatorLabel": self.mode.label,
+            "playModes": self.play_modes(),
             "simulatorStatus": self.simulator_status(),
             "chain": chain,
             "nextStep": blocking["title"] if blocking else "",
@@ -1988,7 +2146,10 @@ class CompanionService:
         return dashboard_url(client.host) if client else ""
 
     def set_club(self, club: str) -> Dict[str, Any]:
-        return {"club": self.shots.set_club(club)}
+        chosen = self.shots.set_club(club)
+        if self.mode is PlayMode.LOCAL:
+            self._tell_pitrac_the_club()
+        return {"club": chosen}
 
     def clear_shots(self) -> Dict[str, Any]:
         self.shots.clear()

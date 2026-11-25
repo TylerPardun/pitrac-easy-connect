@@ -122,15 +122,32 @@ def test_e6_field_names_are_understood_too(log):
     assert shot["launch"] == 14.0
 
 
-def test_a_shot_that_never_reached_the_simulator_is_marked_and_excluded(log):
+def test_every_measured_swing_counts_towards_its_club(log):
+    """Whether GSPro was open says nothing about how the ball was struck. The
+    averages used to leave these out, so without a simulator there were none."""
+
     log.set_club("Driver")
     log.record({"BallData": {"Speed": 150.0}}, "gspro", delivered=True)
-    log.record({"BallData": {"Speed": 9999.0}}, "gspro", delivered=False)
+    log.record({"BallData": {"Speed": 154.0}}, "gspro", delivered=False)
+    log.record({"BallData": {"Speed": 158.0}}, "local", delivered=None)
 
-    assert log.recent()[0]["delivered"] is False
-    # A shot nobody received must not distort the averages.
-    assert log.by_club()[0]["shots"] == 1
-    assert log.by_club()[0]["speed"] == 150.0
+    assert [shot["delivered"] for shot in log.recent()] == [None, False, True]
+    assert log.by_club()[0]["shots"] == 3
+    assert log.by_club()[0]["speed"] == 154.0
+
+
+@pytest.mark.parametrize("names", [
+    ("Speed", "VLA", "HLA"), ("BallSpeed", "LaunchAngle", "LaunchDirection"),
+])
+def test_exactly_zero_is_a_measurement(log, names):
+    speed, launch, direction = names
+    log.record({"BallData": {speed: 4.2, launch: 0.0, direction: 0.0,
+                             "BackSpin": 0, "SideSpin": 0}}, "gspro")
+    shot = log.recent()[0]
+    assert (shot["launch"], shot["direction"]) == (0.0, 0.0)
+    assert (shot["backSpin"], shot["sideSpin"]) == (0.0, 0.0)
+    assert shot["totalSpin"] is None, "and what was not sent stays missing"
+    assert log.by_club()[0]["direction"] == 0.0
 
 
 def test_shots_with_no_ball_data_do_not_break_anything(log):

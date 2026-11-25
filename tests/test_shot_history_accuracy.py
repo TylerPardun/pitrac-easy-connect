@@ -122,8 +122,8 @@ def test_changing_simulator_discards_half_gathered_measurements(rig):
     assert rig.wait_linked() is True
 
     rig.companion._forward_shot(1, "e6", E6_SWING[0])
+    rig.companion.select_simulator("local")
     rig.companion.select_simulator("gspro")
-    rig.companion.select_simulator("e6")
     rig.companion._forward_shot(2, "e6", {"Type": "SendShot"})
 
     recent = rig.companion.shots.recent(5)

@@ -37,6 +37,14 @@ def _finite(value: Any, default: float = 0.0) -> float:
     return number if math.isfinite(number) else default
 
 
+def _measured(value: Any) -> Optional[float]:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) else None
+
+
 class RangeSession:
     """Shots hit since the range was last cleared."""
 
@@ -45,6 +53,7 @@ class RangeSession:
         self._limit = limit
         self._shots: List[Dict[str, Any]] = []
         self._next_id = 1
+        self._unflown: Optional[Dict[str, Any]] = None
         self.conditions = {
             "pressurePa": flight.STANDARD_PRESSURE_PA,
             "temperatureC": flight.STANDARD_TEMPERATURE_C,
@@ -88,9 +97,15 @@ class RangeSession:
         """Fly one measured shot and add it to the range.
 
         ``ball`` is the normalised shape the shot log produces. A shot the
-        model cannot fly is dropped rather than added as a flat line, because a
-        dot on the tee looks like a bug.
+        model cannot fly is not added as a flat line, because a dot on the tee
+        looks like a bug. It is remembered as the latest one instead, so that a
+        putt does not look like a swing that was missed.
         """
+
+        measured = {
+            key: _measured(ball.get(key))
+            for key in ("speed", "launch", "direction", "backSpin", "sideSpin")
+        }
 
         result = flight.simulate(
             _finite(ball.get("speed")),
@@ -101,6 +116,8 @@ class RangeSession:
             density=self.density,
         )
         if not result["points"]:
+            with self._lock:
+                self._unflown = {"at": time.time(), "club": club or "", "ball": measured}
             return None
 
         with self._lock:
@@ -108,17 +125,15 @@ class RangeSession:
                 "id": self._next_id,
                 "at": time.time(),
                 "club": club or "",
-                "ball": {
-                    "speed": _finite(ball.get("speed")),
-                    "launch": _finite(ball.get("launch")),
-                    "direction": _finite(ball.get("direction")),
-                    "backSpin": _finite(ball.get("backSpin")),
-                    "sideSpin": _finite(ball.get("sideSpin")),
-                },
+                # None where the launch monitor gave nothing. The flight above
+                # has to assume zero for those; the numbers shown must not
+                # claim zero was measured.
+                "ball": measured,
                 **{key: value for key, value in result.items() if key != "points"},
                 "points": result["points"],
             }
             self._next_id += 1
+            self._unflown = None
             self._shots.append(shot)
             del self._shots[: max(0, len(self._shots) - self._limit)]
             return shot
@@ -126,6 +141,7 @@ class RangeSession:
     def clear(self) -> Dict[str, Any]:
         with self._lock:
             self._shots = []
+            self._unflown = None
         return self.status()
 
     # --- Reading ----------------------------------------------------------
@@ -182,6 +198,7 @@ class RangeSession:
             "markers": list(MARKERS),
             "conditions": dict(self.conditions, density=self.density),
             "count": len(shots),
+            "unflown": self._unflown,
         }
 
 

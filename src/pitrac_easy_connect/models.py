@@ -1,9 +1,12 @@
 from dataclasses import asdict, dataclass
 from enum import Enum
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 
 class Simulator(str, Enum):
+    """A protocol PiTrac can speak to the relay. What to do with the shots when
+    they reach this computer is a :class:`PlayMode`."""
+
     GSPRO = "gspro"
     E6 = "e6"
 
@@ -14,6 +17,29 @@ class Simulator(str, Enum):
     @property
     def default_port(self) -> int:
         return 921 if self is Simulator.GSPRO else 2483
+
+
+class PlayMode(str, Enum):
+    """Where a measured shot goes once it reaches this computer.
+
+    E6 Connect is not here. It authenticates whoever sends it a shot with an
+    exchange that has to arrive byte for byte, and the relay carries messages
+    rather than bytes, so offering it would be offering something that does not
+    work.
+    """
+
+    LOCAL = "local"
+    GSPRO = "gspro"
+
+    @property
+    def label(self) -> str:
+        return "Local Range" if self is PlayMode.LOCAL else "GSPro"
+
+    @property
+    def simulator(self) -> Optional[Simulator]:
+        """The program on this computer that has to be running, if any."""
+
+        return None if self is PlayMode.LOCAL else Simulator.GSPRO
 
 
 @dataclass(frozen=True)
