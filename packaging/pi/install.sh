@@ -67,8 +67,8 @@ if [ "$UNINSTALL" = yes ]; then
     systemctl daemon-reload
     say "Removed, including the journal size limits this installer had set."
     say "Settings were kept in $STATE_DIR."
-    say "PiTrac's simulator address still points at the relay; set it in PiTrac's"
-    say "dashboard if you want to send shots somewhere else."
+    say "PiTrac still lists a simulator named Easy-Connect. Delete it in PiTrac's"
+    say "dashboard if you are not going to install this again."
     exit 0
 fi
 
@@ -110,7 +110,12 @@ if command -v iw >/dev/null && ! iw list 2>/dev/null | grep -qE '^\s+\* AP$'; th
 fi
 
 step "Finding the PiTrac installation"
-PITRAC_USER="${SUDO_USER:-pitracuser}"
+# Whoever PiTrac's own service runs as, when it is installed. The account this
+# was run from is only a guess, and a wrong one finds the wrong home directory.
+PITRAC_USER="$(systemctl show -p User --value pitrac-web.service 2>/dev/null || true)"
+if [ -z "$PITRAC_USER" ] || [ "$PITRAC_USER" = root ]; then
+    PITRAC_USER="${SUDO_USER:-pitracuser}"
+fi
 PITRAC_HOME="$(getent passwd "$PITRAC_USER" | cut -d: -f6)"
 [ -n "$PITRAC_HOME" ] || die "Could not find the home directory for $PITRAC_USER."
 PITRAC_CONFIG_DIR="$PITRAC_HOME/.pitrac/config"
@@ -122,7 +127,19 @@ if [ ! -x /usr/lib/pitrac/pitrac_lm ]; then
     say "         if you want shots forwarded to your simulator."
 fi
 
-install -d -o "$PITRAC_USER" -g "$PITRAC_USER" "$PITRAC_CONFIG_DIR"
+# Ask PiTrac itself, because that is how shots will be connected. Not fatal:
+# PiTrac may still be starting, and Easy-Connect keeps checking.
+PITRAC_URL="http://127.0.0.1:8080"
+if curl -fs -m 5 "$PITRAC_URL/api/sims" >/dev/null 2>&1 \
+    && curl -fs -m 5 "$PITRAC_URL/api/setup/status" >/dev/null 2>&1; then
+    say "PiTrac is running and can be connected"
+elif curl -s -m 5 -o /dev/null "$PITRAC_URL/health" 2>/dev/null; then
+    say "WARNING: PiTrac is running, but is too old (or too new) for this release."
+    say "         Install the PiTrac revision named in README.md, then run this again."
+else
+    say "WARNING: PiTrac's dashboard is not answering yet. Easy-Connect will"
+    say "         connect to it when it does."
+fi
 
 step "Installing the application"
 [ -d "$HERE/../../src/pitrac_easy_connect" ] || die "Run this from the repository's packaging/pi directory."

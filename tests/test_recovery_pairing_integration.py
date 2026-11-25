@@ -11,7 +11,7 @@ from pitrac_easy_connect.common.errors import EasyConnectError
 from pitrac_easy_connect.common.updates import PACKAGED, UpdateStatus
 from pitrac_easy_connect.companion.service import CompanionService
 from pitrac_easy_connect.models import Simulator
-from pitrac_easy_connect.pi.pitrac import PitracInstallation
+from pitrac_fixture import make_pitrac
 from pitrac_easy_connect.pi.portal import PortalServer
 from pitrac_easy_connect.pi.service import PiService, ServicePaths
 from pitrac_easy_connect.pi.simulated import home_network_pi
@@ -66,10 +66,8 @@ class RecoveryRig:
             running_processes=[],
         )
         self.backend.connect("Ferndale", "GoodPassword1")
-        self.pitrac = PitracInstallation(
-            tmp_path / "missing" / "user_settings.json",
-            tmp_path / "missing" / "calibration_data.json",
-        )
+        self.pitrac = make_pitrac(tmp_path)
+        self.pitrac.api.reachable = False
         self.models = tmp_path / "missing-models"
         self.models.mkdir()
         self.pi = None

@@ -15,7 +15,7 @@ import pytest
 
 from pitrac_easy_connect.common.errors import EasyConnectError
 from pitrac_easy_connect.models import Simulator
-from pitrac_easy_connect.pi.pitrac import PitracInstallation
+from pitrac_fixture import make_pitrac
 from pitrac_easy_connect.pi.service import PiService, ServicePaths
 from pitrac_easy_connect.pi.simulated import home_network_pi
 from test_companion import Rig, rig  # noqa: F401  (fixture)
@@ -210,7 +210,7 @@ def test_a_nearly_full_card_is_reported_before_anything_breaks(tmp_path):
     service = PiService(
         backend,
         paths=ServicePaths(tmp_path / "state"),
-        pitrac=PitracInstallation(tmp_path / "settings.json", tmp_path / "calibration.json"),
+        pitrac=make_pitrac(tmp_path),
         relay_ports={Simulator.GSPRO: 0, Simulator.E6: 0},
         link_port=0, discovery_port=0, manage_hostname=False, boot_grace=0.0,
     )
@@ -238,7 +238,7 @@ def test_a_wrong_clock_is_named_rather_than_causing_a_confusing_failure(tmp_path
     service = PiService(
         backend,
         paths=ServicePaths(tmp_path / "state"),
-        pitrac=PitracInstallation(tmp_path / "settings.json", tmp_path / "calibration.json"),
+        pitrac=make_pitrac(tmp_path),
         relay_ports={Simulator.GSPRO: 0, Simulator.E6: 0},
         link_port=0, discovery_port=0, manage_hostname=False, boot_grace=0.0,
     )

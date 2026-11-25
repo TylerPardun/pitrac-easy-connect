@@ -23,8 +23,14 @@ enclosure, and the printed owner card keeps working.
 accepting it would give a plausible-looking but incorrect ball flight, which is
 worse than refusing. So calibration coming from a different device ID needs an
 explicit acknowledgement.
+
+**Strobe calibration belongs to one circuit board.** It sets how hard the strobe
+is driven, so a value from another board is a risk to the hardware rather than
+just a wrong number. It is never taken from another enclosure, acknowledged or
+not; this enclosure keeps its own.
 """
 
+import copy
 import json
 import time
 from dataclasses import dataclass, field
@@ -35,13 +41,14 @@ from typing import Any, Dict, List
 from .. import __version__
 from ..common import jsontext
 from ..common.configstore import ConfigStore, atomic_write_bytes
-from .pitrac import SIMULATOR_KEYS
+from .pitrac_api import PitracApiError
 from ..common.errors import (
     BACKUP_ROLLBACK_FAILED,
     CFG_BACKUP_INVALID,
     CFG_BACKUP_WRONG_DEVICE,
+    CFG_CALIBRATION_REFUSED,
+    CFG_PITRAC_NEEDED,
     CFG_SCHEMA_NEWER,
-    CFG_WRITE_FAILED,
     EasyConnectError,
 )
 
@@ -62,6 +69,13 @@ SECTION_LABELS = {
     SECTION_IDENTITY: "Enclosure identity and setup Wi-Fi password",
     SECTION_PAIRINGS: "Paired computers",
 }
+#: How hard this enclosure's own strobe board is driven.
+STROBE_KEY = "gs_config.strobing.kDAC_setting"
+
+#: Where PiTrac has kept its simulator destinations. Wiring, not a preference:
+#: a backup must never redirect where this enclosure's shots go.
+SIMULATOR_SETTINGS = ("gs_config.golf_simulator_interfaces", "simulators")
+
 SECRET_SECTIONS = {SECTION_IDENTITY, SECTION_PAIRINGS}
 
 
@@ -150,8 +164,24 @@ class BackupManager:
         pairing secrets has to be looked after like the owner card itself.
         """
 
+        return self._document(self._pitrac_export(), include_identity, include_pairings)
+
+    def _pitrac_export(self) -> Dict[str, Any]:
+        """PiTrac's calibration and settings, or a refusal.
+
+        A backup that silently left calibration out would look complete until
+        the day it was needed.
+        """
+
+        try:
+            return self.pitrac.export()
+        except PitracApiError as exc:
+            raise EasyConnectError(CFG_PITRAC_NEEDED, str(exc)) from exc
+
+    def _document(
+        self, exported: Dict[str, Any], include_identity: bool, include_pairings: bool
+    ) -> Dict[str, Any]:
         identity = self.identity_store.identity
-        pitrac_settings, readable = self.pitrac.read_settings()
 
         sections: List[str] = []
         payload: Dict[str, Any] = {
@@ -164,7 +194,7 @@ class BackupManager:
             },
         }
 
-        calibration = self.pitrac.read_calibration()
+        calibration = exported.get("calibration_data") or {}
         if calibration:
             payload[SECTION_CALIBRATION] = calibration
             sections.append(SECTION_CALIBRATION)
@@ -173,7 +203,7 @@ class BackupManager:
             "settings": self.settings.all(),
             "displayName": identity.display_name,
             "hardwareProfile": identity.hardware_profile,
-            "pitracSettings": pitrac_settings if readable else {},
+            "pitracSettings": exported.get("user_settings") or {},
         }
         sections.append(SECTION_PREFERENCES)
 
@@ -199,7 +229,7 @@ class BackupManager:
         }
 
     def create_bytes(self, **kwargs: Any) -> bytes:
-        return (json.dumps(self.create(**kwargs), indent=2, sort_keys=True) + "\n").encode("utf-8")
+        return _file_bytes(self.create(**kwargs))
 
     def suggested_filename(self) -> str:
         identity = self.identity_store.identity
@@ -305,48 +335,53 @@ class BackupManager:
         # and then raised, leaving the enclosure half restored.
         self._check_sections(payload, available, identity, pairings)
 
+        # Read before anything is changed, so that a PiTrac that cannot be
+        # reached stops the restore here. Nothing that PiTrac holds is touched
+        # when neither of its sections was asked for, so then it may be down.
+        needs_pitrac = wants_calibration or (
+            preferences and SECTION_PREFERENCES in available
+        )
+        exported: Dict[str, Any] = {}
+        try:
+            exported = self._pitrac_export()
+        except EasyConnectError:
+            if needs_pitrac:
+                raise
+
         # Always take a snapshot first, so a restore can itself be undone.
-        snapshot = self._snapshot()
+        snapshot = self._snapshot(exported)
         result = RestoreResult(pre_restore_backup=snapshot)
+        own_calibration = info.same_device or becoming_same_device
 
         # What each thing being changed looked like beforehand, so a failure
         # can be undone directly. Replaying a restore from the snapshot would
         # go back through the code that just failed.
-        undo = self._remember(wants_calibration, preferences, identity, pairings)
+        undo = self._remember(exported, wants_calibration, preferences, identity, pairings)
         try:
             return self._apply(payload, available, result, wants_calibration,
-                               calibration, preferences, identity, pairings)
+                               calibration, preferences, identity, pairings,
+                               exported, own_calibration)
         except Exception:
             self._put_back(undo)
             raise
 
-    def _remember(self, calibration: bool, preferences: bool,
+    def _remember(self, exported: Dict[str, Any], calibration: bool, preferences: bool,
                   identity: bool, pairings: bool) -> Dict[str, Any]:
         state: Dict[str, Any] = {}
         if calibration:
-            try:
-                state["calibration"] = self.pitrac.calibration_path.read_bytes()
-            except OSError:
-                state["calibration"] = None
+            state["calibration"] = exported.get("calibration_data") or {}
         if preferences:
             state["settings"] = dict(self.settings.all())
             state["displayName"] = self.identity_store.identity.display_name
-            # PiTrac's own settings file is written by the same step. Leaving
-            # it out meant a rollback put Easy-Connect's preferences back and
-            # left PiTrac changed.
-            try:
-                state["pitracSettings"] = self.pitrac.settings_path.read_bytes()
-            except OSError:
-                state["pitracSettings"] = None
+            # PiTrac's own settings are written by the same step. Leaving them
+            # out meant a rollback put Easy-Connect's preferences back and left
+            # PiTrac changed.
+            state["pitracSettings"] = exported.get("user_settings") or {}
         if identity:
             state["identity"] = self.identity_store.identity.as_dict(include_secrets=True)
         if pairings:
             state["pairings"] = self.pairings.export()
         return state
-
-    def _write_raw(self, path: Path, payload: bytes) -> None:
-        atomic_write_bytes(path, payload)
-        self.pitrac.restore_owner_of(path)
 
     def _put_back(self, state: Dict[str, Any]) -> None:
         """Undo whatever a failed restore had already written.
@@ -360,14 +395,11 @@ class BackupManager:
 
         if "calibration" in state:
             try:
-                if state["calibration"] is None:
-                    self.pitrac.calibration_path.unlink(missing_ok=True)
-                else:
-                    # _write_raw, not a bare atomic write: rolling back must
-                    # leave the file owned by PiTrac, exactly as restoring it
-                    # would. Written as root, PiTrac could no longer save it.
-                    self._write_raw(self.pitrac.calibration_path, state["calibration"])
-            except OSError as exc:
+                refused = self.pitrac.import_(calibration_data=state["calibration"])
+                if refused:
+                    failures.append("calibration: PiTrac refused {}".format(
+                        ", ".join(sorted(refused))))
+            except PitracApiError as exc:
                 failures.append("calibration: {}".format(exc))
         if "settings" in state:
             try:
@@ -376,11 +408,8 @@ class BackupManager:
                 failures.append("preferences: {}".format(exc))
         if "pitracSettings" in state:
             try:
-                if state["pitracSettings"] is None:
-                    self.pitrac.settings_path.unlink(missing_ok=True)
-                else:
-                    self._write_raw(self.pitrac.settings_path, state["pitracSettings"])
-            except Exception as exc:
+                self.pitrac.import_(user_settings=state["pitracSettings"])
+            except PitracApiError as exc:
                 failures.append("PiTrac settings: {}".format(exc))
         if "identity" in state:
             try:
@@ -403,9 +432,10 @@ class BackupManager:
             )
 
     def _apply(self, payload, available, result, wants_calibration,
-               calibration, preferences, identity, pairings) -> RestoreResult:
+               calibration, preferences, identity, pairings,
+               exported, own_calibration) -> RestoreResult:
         if wants_calibration:
-            self._write_json(self.pitrac.calibration_path, payload[SECTION_CALIBRATION])
+            self._restore_calibration(payload[SECTION_CALIBRATION], exported, own_calibration)
             result.restored.append(SECTION_CALIBRATION)
             result.needs_restart = True
         elif calibration:
@@ -448,6 +478,30 @@ class BackupManager:
         if pairings and SECTION_PAIRINGS in available:
             self.pairings.validate(payload[SECTION_PAIRINGS])
 
+    def _restore_calibration(
+        self, wanted: Any, exported: Dict[str, Any], own_calibration: bool
+    ) -> None:
+        if not isinstance(wanted, dict):
+            raise EasyConnectError(CFG_BACKUP_INVALID, "the calibration in the backup is not readable")
+        restored = copy.deepcopy(wanted)
+        if not own_calibration:
+            # PiTrac replaces the whole section, so leaving the key out would
+            # erase this board's own value rather than keep it.
+            _uproot(restored, STROBE_KEY)
+            mine = _dig(exported.get("calibration_data") or {}, STROBE_KEY)
+            if mine is not None:
+                _plant(restored, STROBE_KEY, mine)
+        try:
+            refused = self.pitrac.import_(calibration_data=restored)
+        except PitracApiError as exc:
+            raise EasyConnectError(CFG_PITRAC_NEEDED, str(exc)) from exc
+        if refused:
+            # Part of a calibration is not a calibration.
+            raise EasyConnectError(
+                CFG_CALIBRATION_REFUSED,
+                "; ".join("{}: {}".format(key, why) for key, why in sorted(refused.items())),
+            )
+
     def _restore_preferences(self, section: Dict[str, Any]) -> None:
         settings = section.get("settings")
         if isinstance(settings, dict):
@@ -463,25 +517,21 @@ class BackupManager:
         pitrac_settings = section.get("pitracSettings")
         if isinstance(pitrac_settings, dict) and pitrac_settings:
             # The backup's settings win. They are what the owner asked to have
-            # back. Merging the other way round -- which is what this did --
-            # let every current value override the backup, so restoring a
-            # backup made when a camera gain was 7 onto a machine set to 8
-            # silently left it at 8 and reported success.
-            #
-            # The exception is where PiTrac has been told to send its shots.
-            # That is this installation's own wiring, not a preference, and a
-            # backup from another machine must not redirect it.
-            current, readable = self.pitrac.read_settings()
-            restored = dict(pitrac_settings)
-            if readable:
-                for keys in SIMULATOR_KEYS.values():
-                    for dotted in keys:
-                        value = _dig(current, dotted)
-                        if value is not None:
-                            _plant(restored, dotted, value)
-            self._write_json(self.pitrac.settings_path, restored)
+            # back. The exception is where PiTrac sends its shots, which is
+            # this installation's own wiring. PiTrac now keeps that apart from
+            # its settings, but still acts on the old keys if they reappear,
+            # so a backup from before that change must not bring them in.
+            restored = copy.deepcopy(pitrac_settings)
+            for dotted in SIMULATOR_SETTINGS:
+                _uproot(restored, dotted)
+            try:
+                # Values this PiTrac no longer accepts are left out by PiTrac;
+                # for a preference that is the right outcome.
+                self.pitrac.import_(user_settings=restored)
+            except PitracApiError as exc:
+                raise EasyConnectError(CFG_PITRAC_NEEDED, str(exc)) from exc
 
-    def _snapshot(self) -> str:
+    def _snapshot(self, exported: Dict[str, Any]) -> str:
         try:
             self.backup_dir.mkdir(parents=True, exist_ok=True)
             path = self._snapshot_path()
@@ -491,7 +541,7 @@ class BackupManager:
             # be reversed.
             atomic_write_bytes(
                 path,
-                self.create_bytes(include_identity=True, include_pairings=True),
+                _file_bytes(self._document(exported, include_identity=True, include_pairings=True)),
                 mode=0o600,
             )
             self._prune_snapshots()
@@ -533,13 +583,9 @@ class BackupManager:
             except OSError:
                 continue
 
-    def _write_json(self, path: Path, value: Dict[str, Any]) -> None:
-        payload = (json.dumps(value, indent=2, sort_keys=True) + "\n").encode("utf-8")
-        try:
-            atomic_write_bytes(path, payload)
-        except OSError as exc:
-            raise EasyConnectError(CFG_WRITE_FAILED, str(exc)) from exc
-        self.pitrac.restore_owner_of(path)
+
+def _file_bytes(document: Dict[str, Any]) -> bytes:
+    return (json.dumps(document, indent=2, sort_keys=True) + "\n").encode("utf-8")
 
 
 def _dig(document: Dict[str, Any], dotted: str) -> Any:
@@ -565,3 +611,14 @@ def _plant(document: Dict[str, Any], dotted: str, value: Any) -> None:
             node[part] = nxt
         node = nxt
     node[parts[-1]] = value
+
+
+def _uproot(document: Dict[str, Any], dotted: str) -> None:
+    """Remove whatever is at a dotted path, if anything is."""
+
+    *parents, last = dotted.split(".")
+    node: Any = document
+    for part in parents:
+        node = node.get(part) if isinstance(node, dict) else None
+    if isinstance(node, dict):
+        node.pop(last, None)

@@ -12,7 +12,7 @@ import pytest
 
 from pitrac_easy_connect.common.states import State
 from pitrac_easy_connect.models import Simulator
-from pitrac_easy_connect.pi.pitrac import PitracInstallation
+from pitrac_fixture import make_pitrac
 from pitrac_easy_connect.pi.portal import PortalServer
 from pitrac_easy_connect.pi.service import PiService, ServicePaths
 from pitrac_easy_connect.pi.simulated import home_network_pi
@@ -25,9 +25,7 @@ from conftest import start_serving
 @pytest.fixture
 def service(tmp_path):
     backend = home_network_pi(country="US")
-    pitrac = PitracInstallation(
-        tmp_path / "user_settings.json", tmp_path / "calibration_data.json"
-    )
+    pitrac = make_pitrac(tmp_path)
     built = PiService(
         backend,
         paths=ServicePaths(tmp_path / "state"),
@@ -80,11 +78,86 @@ def test_the_setup_hotspot_is_named_after_the_device(service):
 
 
 def test_pitrac_is_pointed_at_the_relay_on_first_boot(service):
-    assert service.pitrac.points_at_relay(service.relay.ports) is True
+    sims = service.pitrac.api.sims()
+    assert [(sim["type"], sim["name"], sim["on"]) for sim in sims] == [("gspro", "Easy-Connect", True)]
+    assert sims[0]["settings"] == {
+        "host": "127.0.0.1", "port": service.relay.ports[Simulator.GSPRO]}
 
 
 def test_pointing_pitrac_at_the_relay_is_idempotent(service):
-    assert service.pitrac.point_at_relay(service.relay.ports) == []
+    assert service.pitrac.ensure_relay_target(service.relay.ports) == []
+    assert len(service.pitrac.api.sims()) == 1
+
+
+def test_other_simulators_the_owner_added_are_left_alone(tmp_path):
+    pitrac = make_pitrac(tmp_path)
+    theirs = [
+        pitrac.api.add_sim("ogs", "192.168.1.20", 3111, name="OpenGolfSim"),
+        pitrac.api.add_sim("gspro", "192.168.1.50", 921, name="Sim PC"),
+    ]
+    pitrac.ensure_relay_target({Simulator.GSPRO: 9210, Simulator.E6: 9248})
+    sims = pitrac.api.sims()
+    assert len(sims) == 3
+    assert all(sim["on"] for sim in sims)
+    assert [sim["id"] for sim in sims[:2]] == [sim["id"] for sim in theirs]
+
+
+def test_a_target_made_by_hand_is_adopted_not_doubled(tmp_path):
+    pitrac = make_pitrac(tmp_path)
+    mine = pitrac.api.add_sim("gspro", "localhost", 9210, name="Range")
+    assert pitrac.ensure_relay_target({Simulator.GSPRO: 9210, Simulator.E6: 9248}) == []
+    assert [sim["id"] for sim in pitrac.api.sims()] == [mine["id"]]
+
+
+def test_targets_left_by_an_earlier_release_cannot_double_a_shot(tmp_path):
+    """PiTrac turns the two old settings into two enabled simulators, and a
+    second GSPro entry at the same port would deliver every shot again."""
+
+    pitrac = make_pitrac(tmp_path)
+    for kind, port in (("gspro", 9210), ("e6", 9248), ("gspro", 9210)):
+        pitrac.api.add_sim(kind, "127.0.0.1", port)
+    pitrac.ensure_relay_target({Simulator.GSPRO: 9210, Simulator.E6: 9248})
+    assert [sim["on"] for sim in pitrac.api.sims()] == [True, False, False]
+
+
+def test_an_edited_address_is_corrected_but_an_off_switch_is_respected(tmp_path):
+    pitrac = make_pitrac(tmp_path)
+    pitrac.api.add_sim("gspro", "10.0.0.9", 1, name="Easy-Connect", on=False)
+    changed = pitrac.ensure_relay_target({Simulator.GSPRO: 9210, Simulator.E6: 9248})
+    sims = pitrac.api.sims()
+    assert len(changed) == 1
+    assert sims[0]["settings"] == {"host": "127.0.0.1", "port": 9210}
+    assert sims[0]["on"] is False
+
+
+def test_pitrac_starting_after_easy_connect_still_gets_connected(tmp_path):
+    """It usually does: both start at boot and PiTrac is the slower of the two."""
+
+    pitrac = make_pitrac(tmp_path)
+    pitrac.api.reachable = False
+    built = PiService(
+        home_network_pi(country="US"), ServicePaths(tmp_path / "state"), pitrac,
+        {Simulator.GSPRO: 0, Simulator.E6: 0}, 0, 0, manage_hostname=False, boot_grace=0.0,
+    )
+    built.start()
+    try:
+        assert pitrac.api._sims == []
+        pitrac.api.reachable = True
+        built._ensure_relay_target()
+        assert len(pitrac.api.sims()) == 1
+
+        # Deleting it is respected while PiTrac stays up, and healed when it
+        # has been away, which is when it may have been reinstalled.
+        pitrac.api.remove_sims()
+        built._ensure_relay_target()
+        assert pitrac.api.sims() == []
+        pitrac.api.reachable = False
+        built._ensure_relay_target()
+        pitrac.api.reachable = True
+        built._ensure_relay_target()
+        assert len(pitrac.api.sims()) == 1
+    finally:
+        built.stop()
 
 
 def test_the_enclosure_advertises_itself_for_discovery(service):
@@ -100,7 +173,7 @@ def test_the_stable_hostname_and_mdns_health_are_reported(tmp_path):
     built = PiService(
         backend,
         paths=ServicePaths(tmp_path / "state"),
-        pitrac=PitracInstallation(tmp_path / "s.json", tmp_path / "c.json"),
+        pitrac=make_pitrac(tmp_path),
         relay_ports={Simulator.GSPRO: 0, Simulator.E6: 0},
         link_port=0,
         discovery_port=0,
@@ -144,7 +217,7 @@ def test_udp_discovery_keeps_working_when_mdns_publication_fails(tmp_path, monke
     built = PiService(
         backend,
         paths=ServicePaths(tmp_path / "state"),
-        pitrac=PitracInstallation(tmp_path / "s.json", tmp_path / "c.json"),
+        pitrac=make_pitrac(tmp_path),
         relay_ports={Simulator.GSPRO: 0, Simulator.E6: 0},
         link_port=0,
         discovery_port=0,
@@ -184,7 +257,7 @@ def test_the_beacon_describes_the_enclosure_without_secrets(service):
 
 def test_the_identity_survives_a_restart(tmp_path):
     backend = home_network_pi(country="US")
-    pitrac = PitracInstallation(tmp_path / "s.json", tmp_path / "c.json")
+    pitrac = make_pitrac(tmp_path)
     paths = ServicePaths(tmp_path / "state")
     ports = {Simulator.GSPRO: 0, Simulator.E6: 0}
 
@@ -583,7 +656,7 @@ def test_the_service_survives_repeated_restarts(tmp_path):
     """Ten start/stop cycles must not leak threads or lose the identity."""
 
     backend = home_network_pi(country="US")
-    pitrac = PitracInstallation(tmp_path / "s.json", tmp_path / "c.json")
+    pitrac = make_pitrac(tmp_path)
     paths = ServicePaths(tmp_path / "state")
     ports = {Simulator.GSPRO: 0, Simulator.E6: 0}
 
@@ -611,7 +684,7 @@ def test_a_second_service_on_the_same_ports_reports_it_is_not_listening(tmp_path
     """Two copies must not silently half-work."""
 
     backend = home_network_pi(country="US")
-    pitrac = PitracInstallation(tmp_path / "s.json", tmp_path / "c.json")
+    pitrac = make_pitrac(tmp_path)
     first = PiService(
         backend, ServicePaths(tmp_path / "a"), pitrac,
         {Simulator.GSPRO: 0, Simulator.E6: 0}, 0, 0, manage_hostname=False, boot_grace=0.0,
@@ -649,7 +722,7 @@ def test_a_read_only_state_directory_fails_loudly_not_silently(tmp_path):
             PiService(
                 home_network_pi(country="US"),
                 ServicePaths(state),
-                PitracInstallation(tmp_path / "s.json", tmp_path / "c.json"),
+                make_pitrac(tmp_path),
                 {Simulator.GSPRO: 0, Simulator.E6: 0},
                 0, 0, manage_hostname=False, boot_grace=0.0,
             )
@@ -690,7 +763,7 @@ def test_recent_shot_images_are_listed_for_the_app(tmp_path):
     (images / "notes.txt").write_text("not an image")
     (images / ".hidden.png").write_bytes(b"x")
 
-    pitrac = PitracInstallation(tmp_path / "s.json", tmp_path / "c.json", images_dir=images)
+    pitrac = make_pitrac(tmp_path, images_dir=images)
     listed = pitrac.recent_images()
 
     assert [item["name"] for item in listed] == ["shot_b.jpg", "shot_a.png"], "newest first"
@@ -700,9 +773,7 @@ def test_recent_shot_images_are_listed_for_the_app(tmp_path):
 
 
 def test_a_missing_images_directory_is_not_an_error(tmp_path):
-    pitrac = PitracInstallation(
-        tmp_path / "s.json", tmp_path / "c.json", images_dir=tmp_path / "nope"
-    )
+    pitrac = make_pitrac(tmp_path, images_dir=tmp_path / "nope")
     assert pitrac.recent_images() == []
 
 
@@ -711,7 +782,7 @@ def test_image_listing_is_capped(tmp_path):
     images.mkdir()
     for index in range(40):
         (images / "shot_{}.png".format(index)).write_bytes(b"x")
-    pitrac = PitracInstallation(tmp_path / "s.json", tmp_path / "c.json", images_dir=images)
+    pitrac = make_pitrac(tmp_path, images_dir=images)
     assert len(pitrac.recent_images(limit=12)) == 12
 
 

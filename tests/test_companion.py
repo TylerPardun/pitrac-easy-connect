@@ -13,7 +13,7 @@ from pitrac_easy_connect.common.states import State
 from pitrac_easy_connect.companion.service import CompanionService
 from pitrac_easy_connect.mock_simulators import RunningMock
 from pitrac_easy_connect.models import Simulator
-from pitrac_easy_connect.pi.pitrac import PitracInstallation
+from pitrac_fixture import make_pitrac
 from pitrac_easy_connect.pi.portal import PortalServer
 from pitrac_easy_connect.pi.service import PiService, ServicePaths
 from pitrac_easy_connect.pi.simulated import home_network_pi
@@ -26,10 +26,6 @@ class Rig:
         self.mock = RunningMock(simulator).start()
         pitrac_dir = tmp_path / "pitrac"
         pitrac_dir.mkdir(parents=True, exist_ok=True)
-        (pitrac_dir / "calibration_data.json").write_text(
-            '{"gs_config": {"cameras": {"kCamera1CalibrationMatrix": [[1]],'
-            ' "kCamera2CalibrationMatrix": [[1]]}}}'
-        )
         models = tmp_path / "pi-models"
         for name in ("yolo26-ball-detector", "spin-predictor"):
             (models / name).mkdir(parents=True)
@@ -39,9 +35,7 @@ class Rig:
         self.pi = PiService(
             home_network_pi(country="US"),
             paths=ServicePaths(tmp_path / "pi"),
-            pitrac=PitracInstallation(
-                pitrac_dir / "user_settings.json", pitrac_dir / "calibration_data.json"
-            ),
+            pitrac=make_pitrac(pitrac_dir, calibrated=True),
             relay_ports={Simulator.GSPRO: 0, Simulator.E6: 0},
             link_port=0,
             discovery_port=0,
@@ -841,3 +835,23 @@ def test_a_search_that_sends_and_hears_nothing_reports_no_problem(rig):
 
     result = rig.companion.search_payload(timeout=0.2)
     assert result["problem"] is None
+
+
+def test_a_gspro_shot_is_never_sent_to_a_simulator_that_cannot_read_it(tmp_path):
+    """PiTrac sends one simulator's own messages and nothing here translates them."""
+
+    from pitrac_easy_connect.models import TEST_SHOT
+    from pitrac_easy_connect.protocols import gspro_message
+
+    rig = Rig(tmp_path, Simulator.E6)
+    try:
+        rig.companion.select_simulator("e6")
+        result = rig.companion._forward_shot(1, "gspro", gspro_message(TEST_SHOT))
+        assert result["accepted"] is False
+        assert result["code"] == "PT-SIM-006"
+        kept = rig.companion.shots.recent()
+        assert len(kept) == 1 and kept[0]["delivered"] is False, "the swing itself is not lost"
+        session = rig.companion._session
+        assert session is None or session.messages_sent == 0
+    finally:
+        rig.close()

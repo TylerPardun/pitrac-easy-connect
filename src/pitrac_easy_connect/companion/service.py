@@ -37,6 +37,7 @@ from ..common.errors import (
     PAIR_NOT_PAIRED,
     PAIR_RATE_LIMITED,
     PAIR_REVOKED,
+    SIM_FORMAT_MISMATCH,
     SIM_NOT_RUNNING,
     EasyConnectError,
     lookup,
@@ -886,6 +887,21 @@ class CompanionService:
     def _forward_shot(self, sequence: int, simulator: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         """A shot arriving from the enclosure. Deliver it now or lose it honestly."""
 
+        if simulator and simulator != self.simulator.value:
+            # What travels over the link is one simulator's own protocol, and
+            # nothing here translates it. Sending GSPro's messages to anything
+            # else would be noise at best.
+            with self._lock:
+                self._shots_lost += 1
+                self._last_simulator_error = SIM_FORMAT_MISMATCH.as_dict()
+            self._record_shot(payload, simulator, delivered=False)
+            self._report_simulator_state()
+            return {
+                "accepted": False,
+                "code": SIM_FORMAT_MISMATCH.code,
+                "message": SIM_FORMAT_MISMATCH.failed,
+            }
+
         session = self._session
         if session is None or not session.connected:
             if not self.connect_simulator():
@@ -1148,7 +1164,10 @@ class CompanionService:
         return steps
 
     #: Enclosure self-test checks this computer cannot evaluate for itself.
-    ENCLOSURE_CHECKS = ("hardware", "cameras", "calibration", "pitracMeasurement", "pitracTarget")
+    ENCLOSURE_CHECKS = (
+        "hardware", "cameras", "pitracWeb", "calibration", "strobe",
+        "pitracMeasurement", "pitracTarget",
+    )
 
     def _enclosure_measuring(self, linked: bool, pi_status: Dict[str, Any]):
         """Whether the enclosure says it can actually measure a shot."""

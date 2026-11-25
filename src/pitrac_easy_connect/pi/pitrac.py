@@ -1,38 +1,28 @@
 """Easy Connect's dealings with the PiTrac installation already on the Pi.
 
 Easy Connect is a separate service. It does not build, patch, or link against
-PiTrac; it reads PiTrac's state and writes four configuration values through the
-same file PiTrac's own dashboard uses.
+PiTrac; it asks PiTrac's own web server what it is doing, and adds one entry to
+the list of simulators PiTrac sends shots to.
 
-Those four values point PiTrac's simulator output at the local relay:
-
-    gs_config.golf_simulator_interfaces.GSPro.kGSProConnectAddress = 127.0.0.1
-    gs_config.golf_simulator_interfaces.GSPro.kGSProConnectPort    = 9210
-    gs_config.golf_simulator_interfaces.E6.kE6ConnectAddress       = 127.0.0.1
-    gs_config.golf_simulator_interfaces.E6.kE6ConnectPort          = 9248
-
-They are written once, at install time, and never touched again — which is the
-whole point of the relay. Moving to a new house changes nothing here.
-
-``user_settings.json`` is shared with PiTrac's dashboard, so it is always merged
-rather than replaced, and written atomically so an interrupted save cannot leave
-PiTrac with a file it refuses to parse. The nesting matches what PiTrac's own
-configuration manager builds from a dotted key.
+That entry is a GSPro-format target at ``127.0.0.1:9210``, where the local relay
+listens. It is made once and reused, which is the whole point of the relay:
+moving to a new house changes nothing here. Any other simulators the owner has
+added are theirs, and are left alone.
 """
 
-import json
 import os
 import re
-from dataclasses import dataclass
+import threading
+import time
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from ..common.configstore import atomic_write_bytes
 from ..models import Simulator
+from .pitrac_api import PitracApi, PitracApiError, PitracUnreachable
 
 PITRAC_HOME = Path(os.path.expanduser("~/.pitrac"))
-USER_SETTINGS = PITRAC_HOME / "config" / "user_settings.json"
-CALIBRATION_DATA = PITRAC_HOME / "config" / "calibration_data.json"
+PITRAC_CONFIG_DIR = PITRAC_HOME / "config"
 PITRAC_WEB_SERVICE = "pitrac-web.service"
 PITRAC_WEB_PORT = 8080
 
@@ -61,139 +51,192 @@ IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
 #: A deliberately narrow filename, checked before it is ever put in a URL.
 SAFE_IMAGE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,120}$")
 
-SIMULATOR_KEYS = {
-    Simulator.GSPRO: (
-        "gs_config.golf_simulator_interfaces.GSPro.kGSProConnectAddress",
-        "gs_config.golf_simulator_interfaces.GSPro.kGSProConnectPort",
-    ),
-    Simulator.E6: (
-        "gs_config.golf_simulator_interfaces.E6.kE6ConnectAddress",
-        "gs_config.golf_simulator_interfaces.E6.kE6ConnectPort",
-    ),
-}
+#: What our entry in PiTrac's list of simulators is called.
+RELAY_SIM_NAME = "Easy-Connect"
+RELAY_SIM_TYPE = "gspro"
+LOOPBACK_HOSTS = {"127.0.0.1", "localhost"}
 
-#: Calibration is worthless if it came from a different pair of cameras, so the
-#: check looks for the intrinsics PiTrac's calibration wizard writes.
-CALIBRATION_KEYS = (
-    "gs_config.cameras.kCamera1CalibrationMatrix",
-    "gs_config.cameras.kCamera2CalibrationMatrix",
-)
+#: How long one look at PiTrac answers further questions. The self-test and the
+#: setup page ask several at once, and a PiTrac that is not answering should
+#: cost one timeout rather than one each.
+SNAPSHOT_SECONDS = 2.0
+
+CONNECTED = "connected"
 
 
-def get_nested(document: Dict[str, Any], dotted_key: str) -> Any:
-    value: Any = document
-    for part in dotted_key.split("."):
-        if not isinstance(value, dict) or part not in value:
+@dataclass(frozen=True)
+class RelayTarget:
+    """PiTrac's entry for the local relay, as PiTrac itself reports it."""
+
+    sim_id: str
+    on: bool
+    correct: bool
+    status: str
+    detail: str
+
+    @property
+    def delivering(self) -> bool:
+        return self.on and self.correct and self.status == CONNECTED
+
+
+@dataclass(frozen=True)
+class PitracSnapshot:
+    """One consistent look at PiTrac: either all of it was read, or none was."""
+
+    at: float = 0.0
+    reachable: bool = False
+    supported: bool = False
+    detail: str = ""
+    sims: List[Dict[str, Any]] = field(default_factory=list)
+    setup: Dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def readable(self) -> bool:
+        return self.reachable and self.supported
+
+    def uncalibrated(self) -> List[str]:
+        """What still needs calibrating, in words. Empty once everything is done."""
+
+        missing = []
+        for number in (1, 2):
+            camera = (self.setup.get("cameras") or {}).get("camera{}".format(number)) or {}
+            if not camera.get("lens_calibrated"):
+                missing.append("camera {} lens".format(number))
+            if not camera.get("position_calibrated"):
+                missing.append("camera {} position".format(number))
+        return missing
+
+    @property
+    def calibrated(self) -> bool:
+        return self.readable and not self.uncalibrated()
+
+    @property
+    def strobe(self) -> Dict[str, Any]:
+        return self.setup.get("strobe") or {}
+
+    def relay_target(self, port: int) -> Optional[RelayTarget]:
+        sim = find_relay_sim(self.sims, port)
+        if sim is None:
             return None
-        value = value[part]
-    return value
+        return RelayTarget(
+            sim_id=sim["id"],
+            on=sim["on"],
+            correct=_points_at(sim, port),
+            status=str(sim.get("status", "")),
+            detail=str(sim.get("detail", "")),
+        )
+
+    def direct_gspro_targets(self, port: int) -> List[str]:
+        """GSPro targets that bypass the relay, which would score a shot twice."""
+
+        return [
+            str(sim.get("target") or sim.get("name") or "GSPro")
+            for sim in self.sims
+            if sim["type"] == RELAY_SIM_TYPE and sim["on"] and not _points_at(sim, port)
+            and sim.get("name") != RELAY_SIM_NAME
+        ]
 
 
-def set_nested(document: Dict[str, Any], dotted_key: str, value: Any) -> bool:
-    """Set a dotted key, creating the nesting PiTrac's config manager expects."""
+def _points_at(sim: Dict[str, Any], port: int) -> bool:
+    settings = sim.get("settings") or {}
+    try:
+        configured = int(settings.get("port") or 0)
+    except (TypeError, ValueError):
+        return False
+    host = str(settings.get("host", "")).strip().lower()
+    return host in LOOPBACK_HOSTS and configured == int(port)
 
-    parts = dotted_key.split(".")
-    current = document
-    for part in parts[:-1]:
-        if part not in current:
-            current[part] = {}
-        elif not isinstance(current[part], dict):
-            return False
-        current = current[part]
-    current[parts[-1]] = value
-    return True
+
+def find_relay_sim(sims: List[Dict[str, Any]], port: int) -> Optional[Dict[str, Any]]:
+    """Our entry: the one that points at the relay, or failing that, by name.
+
+    By endpoint first, so a target the owner made by hand is adopted rather than
+    doubled. By name second, so one whose address was edited is repaired.
+    """
+
+    ours = [sim for sim in sims if sim["type"] == RELAY_SIM_TYPE]
+    pointing = [sim for sim in ours if _points_at(sim, port)]
+    for group in (
+        [sim for sim in pointing if sim["on"]],
+        pointing,
+        [sim for sim in ours if sim.get("name") == RELAY_SIM_NAME],
+    ):
+        if group:
+            return group[0]
+    return None
 
 
 @dataclass(frozen=True)
 class PitracStatus:
-    settings_readable: bool
+    snapshot: PitracSnapshot
     measurement_running: bool
     web_active: bool
-    calibrated: bool
-    simulator_target: Dict[str, Any]
-    relay_configured: bool
+    target: Optional[RelayTarget]
 
     def as_dict(self) -> Dict[str, Any]:
         return {
             "measurementRunning": self.measurement_running,
             "webActive": self.web_active,
-            "calibrated": self.calibrated,
-            "simulatorTarget": self.simulator_target,
-            "relayConfigured": self.relay_configured,
-            "settingsReadable": self.settings_readable,
+            "reachable": self.snapshot.reachable,
+            "supported": self.snapshot.supported,
+            "calibrated": self.snapshot.calibrated,
+            "relayConfigured": bool(self.target and self.target.on and self.target.correct),
+            "relayConnected": bool(self.target and self.target.delivering),
         }
 
 
 class PitracInstallation:
     def __init__(
         self,
-        settings_path: Path = USER_SETTINGS,
-        calibration_path: Path = CALIBRATION_DATA,
+        api: Optional[PitracApi] = None,
+        config_dir: Path = PITRAC_CONFIG_DIR,
         images_dir: Path = IMAGES_DIR,
     ):
-        self.settings_path = Path(settings_path)
-        self.calibration_path = Path(calibration_path)
+        self.api = api if api is not None else PitracApi()
+        self.config_dir = Path(config_dir)
         self.images_dir = Path(images_dir)
+        self._lock = threading.Lock()
+        self._snapshot = PitracSnapshot()
 
     # --- Reading ----------------------------------------------------------
 
-    def read_settings(self) -> Tuple[Dict[str, Any], bool]:
-        """Return PiTrac's user settings and whether the file was usable.
+    def snapshot(self, max_age: float = SNAPSHOT_SECONDS) -> PitracSnapshot:
+        """What PiTrac says about itself, at most ``max_age`` seconds old."""
 
-        A missing file is normal — PiTrac runs on defaults until something
-        overrides them — and counts as usable with empty contents. A file that
-        exists but will not parse counts as unusable, because overwriting it
-        would destroy settings the user made in PiTrac's own dashboard.
-        """
+        with self._lock:
+            last = self._snapshot
+            if last.at and time.monotonic() - last.at < max_age:
+                return last
+            self._snapshot = self._look()
+            return self._snapshot
 
+    def _look(self) -> PitracSnapshot:
         try:
-            raw = self.settings_path.read_text(encoding="utf-8")
-        except FileNotFoundError:
-            return {}, True
-        except OSError:
-            return {}, False
-        try:
-            document = json.loads(raw)
-        except ValueError:
-            return {}, False
-        return (document, True) if isinstance(document, dict) else ({}, False)
+            sims = self.api.sims()
+            setup = self.api.setup_status()
+        except PitracUnreachable as exc:
+            return PitracSnapshot(at=time.monotonic(), detail=str(exc))
+        except PitracApiError as exc:
+            return PitracSnapshot(at=time.monotonic(), reachable=True, detail=str(exc))
+        return PitracSnapshot(
+            at=time.monotonic(), reachable=True, supported=True, sims=sims, setup=setup
+        )
 
-    def read_calibration(self) -> Dict[str, Any]:
-        try:
-            document = json.loads(self.calibration_path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            return {}
-        return document if isinstance(document, dict) else {}
+    def invalidate(self) -> None:
+        with self._lock:
+            self._snapshot = PitracSnapshot()
 
-    def is_calibrated(self) -> bool:
-        calibration = self.read_calibration()
-        if not calibration:
-            return False
-        return all(get_nested(calibration, key) for key in CALIBRATION_KEYS)
+    def export(self) -> Dict[str, Any]:
+        """PiTrac's settings and calibration. Raises ``PitracApiError``."""
 
-    def simulator_target(self, simulator: Simulator) -> Dict[str, Any]:
-        settings, _readable = self.read_settings()
-        address_key, port_key = SIMULATOR_KEYS[simulator]
-        return {
-            "address": get_nested(settings, address_key) or "",
-            "port": get_nested(settings, port_key),
-        }
+        return self.api.export_config()
 
-    def points_at_relay(self, relay_ports: Dict[Simulator, int], host: str = "127.0.0.1") -> bool:
-        settings, readable = self.read_settings()
-        if not readable:
-            return False
-        for simulator, port in relay_ports.items():
-            address_key, port_key = SIMULATOR_KEYS[simulator]
-            if get_nested(settings, address_key) != host:
-                return False
-            try:
-                configured = int(get_nested(settings, port_key) or 0)
-            except (TypeError, ValueError):
-                return False
-            if configured != int(port):
-                return False
-        return True
+    def import_(self, **sections: Dict[str, Any]) -> Dict[str, str]:
+        """Replace whole sections, returning the keys PiTrac would not take."""
+
+        skipped = self.api.import_config(sections)
+        self.invalidate()
+        return skipped
 
     def recent_images(self, limit: int = 12) -> List[Dict[str, Any]]:
         """The most recent shot images PiTrac has written, newest first.
@@ -239,33 +282,50 @@ class PitracInstallation:
 
     # --- Writing ----------------------------------------------------------
 
-    def point_at_relay(
-        self, relay_ports: Dict[Simulator, int], host: str = "127.0.0.1"
-    ) -> List[str]:
-        """Aim PiTrac's simulator output at the local relay. Returns keys changed."""
+    def ensure_relay_target(self, relay_ports: Dict[Simulator, int]) -> List[str]:
+        """Make sure PiTrac has exactly one entry for the relay.
 
-        settings, readable = self.read_settings()
-        if not readable:
-            raise OSError(
-                "{} could not be read, so it will not be overwritten".format(self.settings_path)
-            )
+        Returns what was changed, in words; empty when nothing needed to be.
+        Raises ``PitracApiError`` when PiTrac cannot be asked.
 
+        An entry the owner switched off stays off. That is their decision to
+        make in PiTrac's dashboard, and the self-test says plainly what it
+        costs. A second entry pointing at the same relay is switched off
+        rather than deleted: two would each deliver every shot.
+        """
+
+        port = int(relay_ports[Simulator.GSPRO])
+        wanted = {"host": "127.0.0.1", "port": port}
         changed: List[str] = []
-        for simulator, port in relay_ports.items():
-            address_key, port_key = SIMULATOR_KEYS[simulator]
-            if get_nested(settings, address_key) != host:
-                set_nested(settings, address_key, host)
-                changed.append(address_key)
-            if get_nested(settings, port_key) != int(port):
-                set_nested(settings, port_key, int(port))
-                changed.append(port_key)
+        try:
+            sims = self.api.sims()
+            ours = find_relay_sim(sims, port)
+            if ours is None:
+                self.api.create_sim({
+                    "type": RELAY_SIM_TYPE, "name": RELAY_SIM_NAME, "on": True, "settings": wanted,
+                })
+                return ["Added Easy-Connect to PiTrac's simulators"]
+            if not _points_at(ours, port):
+                self.api.update_sim(ours["id"], {"settings": wanted})
+                changed.append("Corrected Easy-Connect's address in PiTrac")
+            for sim in sims:
+                if sim["id"] != ours["id"] and sim["on"] and self._is_stray(sim, relay_ports):
+                    self.api.update_sim(sim["id"], {"on": False})
+                    changed.append("Switched off a duplicate simulator in PiTrac ({})".format(
+                        sim.get("name") or sim["type"]))
+            return changed
+        finally:
+            self.invalidate()
 
-        if changed:
-            owner = self._intended_owner()
-            payload = (json.dumps(settings, indent=2, sort_keys=True) + "\n").encode("utf-8")
-            atomic_write_bytes(self.settings_path, payload)
-            self._restore_owner(owner)
-        return changed
+    @staticmethod
+    def _is_stray(sim: Dict[str, Any], relay_ports: Dict[Simulator, int]) -> bool:
+        """Another entry aimed at one of the relay's own ports.
+
+        Earlier releases had PiTrac send to both a GSPro and an E6 port, and
+        PiTrac turns those settings into entries of their own when it upgrades.
+        """
+
+        return any(_points_at(sim, port) for port in relay_ports.values())
 
     def intended_owner_ids(self):
         """The uid and gid PiTrac's own files carry, for anything we install."""
@@ -290,18 +350,16 @@ class PitracInstallation:
             return None
 
     def _intended_owner(self) -> Optional[Tuple[int, int]]:
-        """Who should own the settings file after we write it.
+        """Whose PiTrac this is, judged by who owns its configuration.
 
-        Easy Connect runs as root so it can drive NetworkManager, but PiTrac's
-        own dashboard runs as ``pitracuser``. If root created this file, the
-        dashboard would silently lose the ability to save settings, so the
-        existing owner — or the owner of the directory, when the file is new —
-        is put back afterwards.
+        Easy Connect runs as root so it can drive NetworkManager, but PiTrac
+        runs as an ordinary user. Anything installed for it has to be readable
+        by that user rather than by root.
         """
 
         if not hasattr(os, "chown"):
             return None
-        for candidate in (self.settings_path, self.settings_path.parent):
+        for candidate in (self.config_dir, self.config_dir.parent):
             try:
                 info = candidate.stat()
             except OSError:
@@ -309,49 +367,13 @@ class PitracInstallation:
             return info.st_uid, info.st_gid
         return None
 
-    def restore_owner_of(self, path: "Path") -> None:
-        """Give a file the ownership PiTrac's own files carry.
-
-        Easy-Connect runs as root; PiTrac's dashboard does not. A file written
-        here as root would be one the dashboard could no longer save.
-
-        This used to ignore the path it was given and chown the settings file
-        instead, so calibration -- the other file a restore writes -- was left
-        owned by root, and the dashboard could no longer save it. Callers that
-        wanted a different file had to swap ``settings_path`` around the call
-        to work around it.
-        """
-
-        self._restore_owner(self._intended_owner(), path)
-
-    def _restore_owner(
-        self, owner: Optional[Tuple[int, int]], *paths: "Path"
-    ) -> None:
-        """Chown the given files, or the settings file when none are named."""
-
-        if owner is None or not hasattr(os, "geteuid") or os.geteuid() != 0:
-            return
-        targets = paths or (self.settings_path,)
-        for target in targets:
-            # The atomic write leaves a .bak beside whatever it replaced, and
-            # that copy is PiTrac's too.
-            for path in (target, target.with_name(target.name + ".bak")):
-                try:
-                    os.chown(path, owner[0], owner[1])
-                except OSError:
-                    continue
-
     # --- Reporting --------------------------------------------------------
 
     def status(self, backend, relay_ports: Dict[Simulator, int]) -> PitracStatus:
-        _settings, readable = self.read_settings()
+        snapshot = self.snapshot()
         return PitracStatus(
-            settings_readable=readable,
+            snapshot=snapshot,
             measurement_running=backend.process_running(PITRAC_PROCESS),
             web_active=backend.service_status(PITRAC_WEB_SERVICE).active,
-            calibrated=self.is_calibrated(),
-            simulator_target={
-                simulator.value: self.simulator_target(simulator) for simulator in SIMULATOR_KEYS
-            },
-            relay_configured=self.points_at_relay(relay_ports),
+            target=snapshot.relay_target(relay_ports[Simulator.GSPRO]),
         )

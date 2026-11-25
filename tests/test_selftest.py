@@ -4,7 +4,7 @@ import pytest
 
 from pitrac_easy_connect.common.states import State
 from pitrac_easy_connect.models import Simulator
-from pitrac_easy_connect.pi.pitrac import PitracInstallation
+from pitrac_fixture import make_pitrac
 from pitrac_easy_connect.pi.selftest import (
     FAIL,
     PASS,
@@ -13,6 +13,7 @@ from pitrac_easy_connect.pi.selftest import (
     SelfTest,
     state_for,
 )
+from pitrac_easy_connect.pi.pitrac_api import PitracUnsupported
 from pitrac_easy_connect.pi.simulated import home_network_pi
 
 RELAY_PORTS = {Simulator.GSPRO: 9210, Simulator.E6: 9248}
@@ -22,14 +23,7 @@ def build(tmp_path, **overrides):
     backend = home_network_pi(country="US")
     backend.connect("Ferndale", "GoodPassword1")
 
-    settings = tmp_path / "user_settings.json"
-    calibration = tmp_path / "calibration_data.json"
-    pitrac = PitracInstallation(settings, calibration)
-    pitrac.point_at_relay(RELAY_PORTS)
-    calibration.write_text(
-        '{"gs_config": {"cameras": {"kCamera1CalibrationMatrix": [[1]],'
-        ' "kCamera2CalibrationMatrix": [[1]]}}}'
-    )
+    pitrac = make_pitrac(tmp_path, calibrated=True, relay_ports=RELAY_PORTS)
 
     # A healthy enclosure has the detection models installed. They are licensed
     # separately from PiTrac and are not installed with it, so a unit can be
@@ -76,7 +70,7 @@ def test_a_healthy_enclosure_is_ready(tmp_path):
 def test_every_check_reports_something(tmp_path):
     _backend, _pitrac, selftest = build(tmp_path)
     report = selftest.run()
-    assert len(report.checks) == 15
+    assert len(report.checks) == 16
     assert all(check.status in (PASS, FAIL, WARN, UNAVAILABLE) for check in report.checks)
 
 
@@ -94,10 +88,51 @@ def test_unplugging_a_camera_removes_readiness(tmp_path):
 
 def test_missing_calibration_removes_readiness(tmp_path):
     _backend, pitrac, selftest = build(tmp_path)
-    pitrac.calibration_path.unlink()
+    pitrac.api.calibration = {}
     report = selftest.run()
     assert report.ready is False
     assert find(report, "calibration").error.code == "PT-PI-002"
+
+
+def test_half_a_calibration_is_not_a_calibration(tmp_path):
+    """Lens and position are separate procedures, and both are needed."""
+
+    _backend, pitrac, selftest = build(tmp_path)
+    del pitrac.api.calibration["gs_config"]["cameras"]["kCamera2Angles"]
+    check = find(selftest.run(), "calibration")
+    assert check.status == FAIL
+    assert check.detail == "Not calibrated yet: camera 2 position"
+
+
+def test_an_uncalibrated_strobe_removes_readiness(tmp_path):
+    _backend, pitrac, selftest = build(tmp_path)
+    pitrac.api.strobe = {"required": True, "safe": False, "reason": "V3 board requires strobe calibration"}
+    report = selftest.run()
+    assert report.ready is False
+    assert find(report, "strobe").error.code == "PT-PI-014"
+
+
+def test_a_pitrac_that_does_not_answer_is_unknown_not_uncalibrated(tmp_path):
+    """Telling somebody to calibrate again because a service was restarting
+    would cost them an hour for nothing."""
+
+    _backend, pitrac, selftest = build(tmp_path)
+    pitrac.api.reachable = False
+    report = selftest.run()
+    assert report.ready is False
+    assert report.first_problem.key == "pitracWeb"
+    for key in ("calibration", "strobe", "pitracTarget"):
+        assert find(report, key).status == UNAVAILABLE
+        assert find(report, key).error.code == "PT-PI-004"
+
+
+def test_a_pitrac_this_release_cannot_use_says_so(tmp_path):
+    _backend, pitrac, selftest = build(tmp_path)
+    pitrac.api.error = PitracUnsupported("PiTrac does not offer /api/sims")
+    report = selftest.run()
+    assert report.ready is False
+    assert report.first_problem.error.code == "PT-PI-015"
+    assert state_for(report, {"connection": {"ssid": "x"}}, True) is State.RECOVERY_REQUIRED
 
 
 def test_stopping_pitrac_removes_readiness(tmp_path):
@@ -150,10 +185,34 @@ def test_a_connected_simulator_with_no_accepted_test_shot_is_not_ready(tmp_path)
 
 def test_pitrac_pointed_somewhere_else_removes_readiness(tmp_path):
     _backend, pitrac, selftest = build(tmp_path)
-    pitrac.settings_path.write_text("{}")
+    pitrac.api.remove_sims()
     report = selftest.run()
     assert report.ready is False
     assert find(report, "pitracTarget").status == FAIL
+    assert find(report, "pitracTarget").error.code == "PT-PI-016"
+
+
+@pytest.mark.parametrize("change, said", [
+    ({"on": False}, "turned off"),
+    ({"status": "error"}, "not connected"),
+    ({"status": "connecting"}, "not connected"),
+])
+def test_a_configured_target_that_is_not_delivering_is_not_ready(tmp_path, change, said):
+    """Configured is not connected. The old check stopped at configured."""
+
+    _backend, pitrac, selftest = build(tmp_path)
+    pitrac.api._sims[0].update(change)
+    check = find(selftest.run(), "pitracTarget")
+    assert check.status == FAIL
+    assert said in check.detail
+
+
+def test_a_second_route_to_gspro_is_mentioned_but_does_not_stop_play(tmp_path):
+    _backend, pitrac, selftest = build(tmp_path)
+    pitrac.api.add_sim("gspro", "192.168.1.50", 921, name="Sim PC")
+    report = selftest.run()
+    assert report.ready is True
+    assert "192.168.1.50:921" in find(report, "pitracTarget").detail
 
 
 def test_unsupported_hardware_removes_readiness(tmp_path):
@@ -230,16 +289,20 @@ def test_a_check_that_raises_does_not_stop_the_others(tmp_path):
 
     _backend, _pitrac, selftest = build(tmp_path, config_problems=explode)
     report = selftest.run()
-    assert len(report.checks) == 15
+    assert len(report.checks) == 16
     assert find(report, "configuration").status == UNAVAILABLE
 
 
-def test_a_missing_dashboard_service_is_unavailable_not_failed(tmp_path):
-    backend, _pitrac, selftest = build(tmp_path)
-    backend.services = {}
-    report = selftest.run()
-    assert find(report, "pitracWeb").status == UNAVAILABLE
-    assert report.ready is True, "the dashboard is not needed to hit a ball"
+def test_a_dashboard_that_is_not_answering_removes_readiness(tmp_path):
+    """Every measured shot goes through it on its way out."""
+
+    backend, pitrac, selftest = build(tmp_path)
+    pitrac.api.reachable = False
+    for services, said in (({}, "not installed"), ({"pitrac-web.service": True}, "not answering")):
+        backend.services = services
+        check = find(selftest.run(), "pitracWeb")
+        assert check.status == FAIL
+        assert said in check.detail
 
 
 # --- The word the user sees ----------------------------------------------

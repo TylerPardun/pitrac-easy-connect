@@ -11,9 +11,10 @@ This backend is also what lets the whole Pi service run on a Mac during
 development.
 """
 
+import copy
 import threading
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from .backend import (
     SECURITY_ENTERPRISE,
@@ -28,6 +29,7 @@ from .backend import (
     WifiNetwork,
 )
 from .nmcli_backend import HOTSPOT_PROFILE, PROFILE_PREFIX
+from .pitrac_api import PitracRefused, PitracUnreachable
 
 
 @dataclass
@@ -341,3 +343,115 @@ def home_network_pi(**kwargs) -> SimulatedPi:
     backend.add_network("Campus", security=SECURITY_ENTERPRISE, signal=55)
     backend.add_network("HiddenLab", password="secretlab", signal=60, hidden=True)
     return backend
+
+
+class SimulatedPitracApi:
+    """PiTrac's web server, held in memory.
+
+    Answers in the shapes ``tests/test_pitrac_contract.py`` checks against the
+    real one, so a change upstream shows up there rather than on the enclosure.
+    """
+
+    def __init__(self, calibrated: bool = False):
+        self.reachable = True
+        #: Anything raised here stands in for a PiTrac that answers differently.
+        self.error: Optional[Exception] = None
+        self.user_settings: Dict[str, Any] = {}
+        self.calibration: Dict[str, Any] = {}
+        self.strobe: Dict[str, Any] = {"required": False, "safe": True, "reason": ""}
+        #: Keys this stand-in will not accept in an import, as PiTrac refuses
+        #: values it considers invalid.
+        self.rejects: Dict[str, str] = {}
+        self._sims: List[Dict[str, Any]] = []
+        self._next = 1
+        if calibrated:
+            self.calibrate()
+
+    def calibrate(self) -> None:
+        self.calibration = {"gs_config": {"cameras": {
+            "kCamera{}{}".format(number, key): [[1.0]]
+            for number in (1, 2)
+            for key in ("CalibrationMatrix", "FocalLength", "Angles")
+        }}}
+
+    def _answering(self) -> None:
+        if not self.reachable:
+            raise PitracUnreachable("simulated: not answering")
+        if self.error is not None:
+            raise self.error
+
+    def add_sim(self, sim_type: str, host: str, port: int, name: str = "", on: bool = True):
+        sim = {
+            "id": "sim-{}".format(self._next),
+            "type": sim_type,
+            "name": name or sim_type,
+            "on": on,
+            "settings": {"host": host, "port": port},
+        }
+        self._next += 1
+        self._sims.append(sim)
+        return sim
+
+    def remove_sims(self) -> None:
+        self._sims = []
+
+    @staticmethod
+    def _described(sim: Dict[str, Any]) -> Dict[str, Any]:
+        target = "{}:{}".format(sim["settings"]["host"], sim["settings"]["port"])
+        return dict(
+            copy.deepcopy(sim),
+            status=sim.get("status") or ("connected" if sim["on"] else "off"),
+            detail="",
+            target=target,
+        )
+
+    def sims(self) -> List[Dict[str, Any]]:
+        self._answering()
+        return [self._described(sim) for sim in self._sims]
+
+    def create_sim(self, body: Dict[str, Any]) -> Dict[str, Any]:
+        self._answering()
+        sim = self.add_sim(
+            body["type"], body["settings"]["host"], body["settings"]["port"],
+            body.get("name", ""), body.get("on", True),
+        )
+        return self._described(sim)
+
+    def update_sim(self, sim_id: str, body: Dict[str, Any]) -> Dict[str, Any]:
+        self._answering()
+        for sim in self._sims:
+            if sim["id"] == sim_id:
+                sim["settings"].update(body.get("settings", {}))
+                sim["on"] = body.get("on", sim["on"])
+                return self._described(sim)
+        raise PitracRefused("Unknown simulator")
+
+    def setup_status(self) -> Dict[str, Any]:
+        self._answering()
+        saved = (self.calibration.get("gs_config") or {}).get("cameras") or {}
+        return {
+            "strobe": dict(self.strobe),
+            "cameras": {
+                "camera{}".format(number): {
+                    "lens_calibrated": "kCamera{}CalibrationMatrix".format(number) in saved,
+                    "position_calibrated": "kCamera{}FocalLength".format(number) in saved
+                    and "kCamera{}Angles".format(number) in saved,
+                }
+                for number in (1, 2)
+            },
+        }
+
+    def export_config(self) -> Dict[str, Any]:
+        self._answering()
+        return {
+            "user_settings": copy.deepcopy(self.user_settings),
+            "calibration_data": copy.deepcopy(self.calibration),
+        }
+
+    def import_config(self, document: Dict[str, Any]) -> Dict[str, str]:
+        self._answering()
+        if isinstance(document.get("user_settings"), dict):
+            self.user_settings = copy.deepcopy(document["user_settings"])
+        if isinstance(document.get("calibration_data"), dict):
+            self.calibration = copy.deepcopy(document["calibration_data"])
+        return dict(self.rejects)

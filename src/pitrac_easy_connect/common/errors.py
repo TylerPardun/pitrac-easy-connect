@@ -266,6 +266,25 @@ PI_CONFIG_CORRUPT = _define(
     "PiTrac restored the last good copy of that file.",
     "Check your simulator choice on the setup page. Everything else was recovered.",
 )
+PI_STROBE_UNSAFE = _define(
+    "PT-PI-014",
+    "The strobe has not been calibrated for this board, so PiTrac will not fire it.",
+    "Networking and pairing are working normally.",
+    "Open PiTrac's dashboard, run strobe calibration, then restart PiTrac.",
+)
+PI_PITRAC_UNSUPPORTED = _define(
+    "PT-PI-015",
+    "This version of PiTrac does not work with this version of Easy-Connect.",
+    "Nothing in PiTrac was changed.",
+    "Install the PiTrac revision named in the Easy-Connect README, or a newer Easy-Connect.",
+)
+PI_NO_RELAY_TARGET = _define(
+    "PT-PI-016",
+    "PiTrac is not sending its shots to Easy-Connect.",
+    "PiTrac can still measure shots and show them in its own dashboard.",
+    "In PiTrac's dashboard, turn on the simulator named Easy-Connect. "
+    "If it is not there, press Restart PiTrac and it will be added again.",
+)
 PI_NO_MODELS = _define(
     "PT-PI-011",
     "PiTrac's ball-detection models are not installed.",
@@ -377,6 +396,12 @@ SIM_BAD_RESPONSE = _define(
     "No shot was scored and nothing was changed.",
     "Check that the simulator version is one this release supports. The versions are in the guide.",
 )
+SIM_FORMAT_MISMATCH = _define(
+    "PT-SIM-006",
+    "PiTrac's shots are in GSPro's format, which the selected simulator cannot use.",
+    "The shot was still recorded, and appears in your history and on the range.",
+    "Choose GSPro on the Simulator page.",
+)
 
 # Configuration and storage -------------------------------------------------
 
@@ -385,6 +410,18 @@ CFG_WRITE_FAILED = _define(
     "A setting could not be saved.",
     "The previous setting is still in place and still valid.",
     "Check free space on the maintenance screen, then try again.",
+)
+CFG_PITRAC_NEEDED = _define(
+    "PT-CFG-009",
+    "PiTrac could not be reached, so its calibration and settings were not read or changed.",
+    "Nothing was lost or overwritten.",
+    "Press Restart PiTrac, wait until its dashboard opens, then try again.",
+)
+CFG_CALIBRATION_REFUSED = _define(
+    "PT-CFG-010",
+    "PiTrac would not accept some of the calibration in that backup.",
+    "The calibration that was there before has been put back.",
+    "The backup may be from a different PiTrac version. Calibrate again in PiTrac's dashboard.",
 )
 CFG_SCHEMA_NEWER = _define(
     "PT-CFG-002",

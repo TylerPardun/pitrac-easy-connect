@@ -16,6 +16,7 @@ from ..common import discovery, link
 from ..models import Simulator
 from .backend import PiBackend
 from .nmcli_backend import NmcliBackend
+from .pitrac_api import DEFAULT_URL, PitracApi
 from .portal import PORTAL_PORT, PortalServer
 from .relay import DEFAULT_RELAY_PORTS
 from .service import DEFAULT_STATE_DIR, PiService, ServicePaths
@@ -43,6 +44,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="PiTrac's config directory (default ~/.pitrac/config)",
     )
     parser.add_argument(
+        "--pitrac-url", default=DEFAULT_URL,
+        help="where PiTrac's own web server answers (default %(default)s)",
+    )
+    parser.add_argument(
         "--pitrac-images-dir", type=Path, default=None,
         help="where PiTrac writes shot images (default <pitrac home>/LM_Shares/Images)",
     )
@@ -63,25 +68,30 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def build_pitrac(args) -> "PitracInstallation":
-    """Choose which PiTrac installation to read and configure.
+    """Choose which PiTrac installation to talk to.
 
-    In simulated mode this defaults to a directory inside the state directory,
-    so running the service on a development machine never writes into a real
-    ``~/.pitrac`` that belongs to something else.
+    In simulated mode that is a stand-in held in memory, so running the service
+    on a development machine never touches a real PiTrac.
     """
 
-    from .pitrac import CALIBRATION_DATA, IMAGES_DIR, USER_SETTINGS, PitracInstallation
+    from .pitrac import IMAGES_DIR, PITRAC_CONFIG_DIR, PitracInstallation
+
+    if args.simulate:
+        from .simulated import SimulatedPitracApi
+
+        api = SimulatedPitracApi(calibrated=True)
+    else:
+        api = PitracApi(args.pitrac_url)
 
     directory = args.pitrac_config_dir
     if directory is None and args.simulate:
         directory = Path(args.state_dir) / "pitrac-config"
     if directory is None:
         return PitracInstallation(
-            USER_SETTINGS, CALIBRATION_DATA, args.pitrac_images_dir or IMAGES_DIR
+            api, PITRAC_CONFIG_DIR, args.pitrac_images_dir or IMAGES_DIR
         )
 
     directory = Path(directory)
-    directory.mkdir(parents=True, exist_ok=True)
 
     # The service runs as root, so "~" is root's home, not the home of whoever
     # runs PiTrac. Everything PiTrac owns is found relative to its config
@@ -90,9 +100,7 @@ def build_pitrac(args) -> "PitracInstallation":
     if images is None:
         pitrac_home = directory.parent.parent
         images = pitrac_home / "LM_Shares" / "Images"
-    return PitracInstallation(
-        directory / "user_settings.json", directory / "calibration_data.json", Path(images)
-    )
+    return PitracInstallation(api, directory, Path(images))
 
 
 def build_backend(args) -> PiBackend:

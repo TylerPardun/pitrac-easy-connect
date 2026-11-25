@@ -28,7 +28,7 @@ import manifest_fixture
 from pitrac_easy_connect.common import release_manifest
 from pitrac_easy_connect.models import Simulator
 from pitrac_easy_connect.pi.downloads import CompanionDownloads
-from pitrac_easy_connect.pi.pitrac import PitracInstallation
+from pitrac_fixture import make_pitrac
 from pitrac_easy_connect.pi.portal import PortalServer
 from pitrac_easy_connect.pi.service import PiService, ServicePaths
 from pitrac_easy_connect.pi.simulated import home_network_pi
@@ -48,7 +48,7 @@ def served(tmp_path):
     service = PiService(
         home_network_pi(country="US"),
         paths=ServicePaths(tmp_path / "state"),
-        pitrac=PitracInstallation(tmp_path / "s.json", tmp_path / "c.json"),
+        pitrac=make_pitrac(tmp_path),
         relay_ports={Simulator.GSPRO: 0, Simulator.E6: 0},
         link_port=0, discovery_port=0, manage_hostname=False, boot_grace=0.0)
     service.start()

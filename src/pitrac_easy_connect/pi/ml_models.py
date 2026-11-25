@@ -34,6 +34,8 @@ import tempfile
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
+from .pitrac_api import TESTED_COMMIT
+
 #: Where PiTrac's installer puts the models for the launch monitor to load.
 INSTALLED_DIR = Path(os.environ.get("PITRAC_MODELS_DIR", "/etc/pitrac/models"))
 
@@ -41,7 +43,10 @@ INSTALLED_DIR = Path(os.environ.get("PITRAC_MODELS_DIR", "/etc/pitrac/models"))
 MODEL_NAMES = ("yolo26-ball-detector", "spin-predictor")
 
 #: Where the models sit inside a clone of the PiTrac repository.
-REPO_MODELS_SUBPATH = Path("Software/LMSourceCode/ml_models")
+REPO_MODELS_SUBPATH = Path("Software/LMSourceCode/ml_assets")
+
+#: Where clones from before October 2026 kept them.
+OLD_REPO_MODELS_SUBPATH = Path("Software/LMSourceCode/ml_models")
 
 #: Places a PiTrac clone is normally found. Searched in order.
 REPO_CANDIDATES = ("~/PiTrac", "~/pitrac", "/opt/PiTrac", "/usr/src/PiTrac")
@@ -53,8 +58,13 @@ MODEL_FILES = ("best.ncnn.param", "best.ncnn.bin")
 #: serving a copy of these from anywhere of ours would be redistribution, which
 #: their licence forbids outright. The download goes straight from them to the
 #: person who accepted their terms.
+#:
+#: From the revision this release was tested with, not whatever is newest: a
+#: model has to match the PiTrac that loads it, and this path has moved before.
 SOURCE_BASE = (
-    "https://raw.githubusercontent.com/PiTracLM/PiTrac/main/Software/LMSourceCode/ml_models"
+    "https://raw.githubusercontent.com/PiTracLM/PiTrac/{}/{}".format(
+        TESTED_COMMIT, REPO_MODELS_SUBPATH.as_posix()
+    )
 )
 
 #: Their licence, shown before anything is fetched. Read live rather than
@@ -77,9 +87,19 @@ def find_repo(candidates=REPO_CANDIDATES, home: Optional[str] = None) -> Optiona
             path = Path(home) / candidate[2:]
         else:
             path = path.expanduser()
-        if (path / REPO_MODELS_SUBPATH).exists() or (path / ".git").exists():
+        if _repo_models(path) or (path / ".git").exists():
             return path
     return None
+
+
+def _repo_models(repo: Path) -> List[Path]:
+    """Every place in a clone that holds models, old layout or new."""
+
+    return [
+        repo / subpath
+        for subpath in (REPO_MODELS_SUBPATH, OLD_REPO_MODELS_SUBPATH)
+        if (repo / subpath).exists()
+    ]
 
 
 def _files_under(directory: Path) -> List[Path]:
@@ -108,13 +128,12 @@ def status(
 
     repo = repo if repo is not None else find_repo(home=home)
     installed = installed_files(installed_dir)
-    repo_models = repo / REPO_MODELS_SUBPATH if repo else None
     return {
         "installed": all(count > 0 for count in installed.values()),
         "installedDir": str(installed_dir),
         "installedFiles": installed,
         "repo": str(repo) if repo else "",
-        "repoCopy": bool(repo_models and _files_under(repo_models)),
+        "repoCopy": bool(repo and any(_files_under(path) for path in _repo_models(repo))),
         "repoHistory": bool(repo and (repo / ".git").is_dir()),
     }
 
@@ -148,8 +167,7 @@ def remove(
         shutil.rmtree(repo, ignore_errors=True)
         removed.append(str(repo))
     elif repo:
-        models = repo / REPO_MODELS_SUBPATH
-        if models.exists():
+        for models in _repo_models(repo):
             shutil.rmtree(models, ignore_errors=True)
             removed.append(str(models))
 

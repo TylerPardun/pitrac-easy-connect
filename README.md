@@ -84,6 +84,17 @@ a blank memory card, install PiTrac first by following
 It covers the entire process, from flashing the card to running the launch
 monitor.
 
+This release was built and tested against one PiTrac revision. PiTrac has no
+numbered releases, so check that revision out before building it:
+
+```bash
+git checkout 78f1de60fd21398f34d348f19f55e73029bc95f9
+```
+
+A newer PiTrac may work. Easy-Connect checks what PiTrac answers and says so
+plainly when it cannot use it, but PiTrac's own update button can move it past
+what has been tested.
+
 Once PiTrac is working, copy this repository to the Pi. From your own computer:
 
 ```bash

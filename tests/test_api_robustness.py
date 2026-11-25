@@ -25,7 +25,7 @@ from pitrac_easy_connect.models import Simulator
 from pitrac_easy_connect.pi.portal import PortalServer
 from pitrac_easy_connect.pi.service import PiService, ServicePaths
 from pitrac_easy_connect.pi.simulated import home_network_pi
-from pitrac_easy_connect.pi.pitrac import PitracInstallation
+from pitrac_fixture import make_pitrac
 
 #: Routes that stop the machine, wipe it, or hand out a file. Exercised
 #: elsewhere; hammering them here would end the test run.
@@ -97,9 +97,7 @@ def companion(tmp_path):
 
 @pytest.fixture
 def portal(tmp_path):
-    pitrac = PitracInstallation(
-        tmp_path / "user_settings.json", tmp_path / "calibration_data.json"
-    )
+    pitrac = make_pitrac(tmp_path)
     service = PiService(
         home_network_pi(country="US"),
         paths=ServicePaths(tmp_path / "state"),

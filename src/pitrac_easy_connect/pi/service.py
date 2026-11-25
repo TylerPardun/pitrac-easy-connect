@@ -31,6 +31,7 @@ from .link_server import CompanionLinkServer, CompanionSession
 from .pairing import PairingManager
 from . import ml_models
 from .pitrac import PitracInstallation
+from .pitrac_api import PitracApiError, PitracUnreachable
 from .relay import DEFAULT_RELAY_PORTS, ShotRelay
 from .selftest import SelfTest, state_for
 from .wifi import WifiProvisioner
@@ -158,6 +159,7 @@ class PiService:
         self._stop = threading.Event()
         self._poller: Optional[threading.Thread] = None
         self._boot_messages: List[str] = []
+        self._relay_target_checked = False
         self._hostname_error = ""
         self._mdns_published = False
         self._mdns_error = ""
@@ -207,14 +209,9 @@ class PiService:
         except OSError as exc:
             self._note("Shot relay could not start: {}".format(exc))
 
-        # 3. Point PiTrac at the relay. Idempotent, so this is a no-op after
-        #    the first boot.
-        try:
-            changed = self.pitrac.point_at_relay(self.relay.ports)
-            if changed:
-                self._note("Pointed PiTrac at Easy-Connect ({} settings)".format(len(changed)))
-        except OSError as exc:
-            self._note("Could not update PiTrac settings: {}".format(exc))
+        # 3. Have PiTrac send its shots to the relay. PiTrac is usually still
+        #    starting at this point, so the running loop tries again.
+        self._ensure_relay_target()
 
         if self.manage_hostname:
             self._apply_hostname()
@@ -349,10 +346,37 @@ class PiService:
             if time.monotonic() - last_refresh > POLL_SECONDS * 2:
                 last_refresh = time.monotonic()
                 try:
+                    self._ensure_relay_target()
                     self.refresh()
                 except Exception:
                     pass
             self._stop.wait(POLL_SECONDS)
+
+    def _ensure_relay_target(self) -> None:
+        """Check PiTrac's simulators once each time PiTrac comes up.
+
+        Once, rather than continuously, so that what the owner changes in
+        PiTrac's dashboard stays changed. Again after PiTrac has been away,
+        because that is when it may have been updated or reinstalled.
+        """
+
+        if not self.relay.listening:
+            return
+        snapshot = self.pitrac.snapshot()
+        if not snapshot.readable:
+            self._relay_target_checked = False
+            return
+        if self._relay_target_checked:
+            return
+        try:
+            for change in self.pitrac.ensure_relay_target(self.relay.ports):
+                self._note(change)
+        except PitracUnreachable:
+            return
+        except PitracApiError as exc:
+            # Refused is not going to change by asking every few seconds.
+            self._note("Could not add Easy-Connect to PiTrac's simulators: {}".format(exc))
+        self._relay_target_checked = True
 
     def refresh(self) -> State:
         report = self.selftest.run()
@@ -819,6 +843,10 @@ class PiService:
         from .pitrac import PITRAC_WEB_SERVICE
 
         self.backend.restart_service(PITRAC_WEB_SERVICE)
+        # A restart may be somebody following the advice to get a deleted
+        # simulator entry back, so check for it again when PiTrac returns.
+        self._relay_target_checked = False
+        self.pitrac.invalidate()
         self.refresh()
         return {"restarted": PITRAC_WEB_SERVICE}
 

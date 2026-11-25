@@ -32,9 +32,14 @@ from ..common.errors import (
     PI_WEB_STOPPED,
     PI_MEASURE_STOPPED,
     PI_NO_MODELS,
+    PI_NO_RELAY_TARGET,
+    PI_PITRAC_UNSUPPORTED,
+    PI_STROBE_UNSAFE,
     ErrorInfo,
 )
 from ..common.states import State
+from ..models import Simulator
+from .pitrac import CONNECTED
 
 PASS = "pass"
 FAIL = "fail"
@@ -156,8 +161,9 @@ class SelfTest:
             self._clock,
             self._configuration,
             self._cameras,
-            self._calibration,
             self._pitrac_web,
+            self._calibration,
+            self._strobe,
             self._pitrac_measurement,
             self._pitrac_models,
             self._pitrac_target,
@@ -280,28 +286,87 @@ class SelfTest:
         )
 
     def _calibration(self) -> CheckResult:
-        if self.pitrac.is_calibrated():
-            return CheckResult("calibration", "Camera calibration", PASS, "Calibration data found")
+        snapshot = self.pitrac.snapshot()
+        if not snapshot.readable:
+            return self._unknown("calibration", "Camera calibration", snapshot)
+        missing = snapshot.uncalibrated()
+        if not missing:
+            return CheckResult(
+                "calibration", "Camera calibration", PASS, "Both cameras are calibrated",
+                critical=True,
+            )
         return CheckResult(
             "calibration",
             "Camera calibration",
             FAIL,
-            "No calibration data has been saved",
+            "Not calibrated yet: {}".format(", ".join(missing)),
             PI_NO_CALIBRATION,
             critical=True,
+        )
+
+    def _strobe(self) -> CheckResult:
+        """Whether PiTrac considers the strobe safe to fire.
+
+        Only boards with an adjustable strobe need calibrating, and PiTrac
+        refuses to start measuring until they are.
+        """
+
+        snapshot = self.pitrac.snapshot()
+        if not snapshot.readable:
+            return self._unknown("strobe", "Strobe", snapshot)
+        strobe = snapshot.strobe
+        if strobe.get("safe"):
+            return CheckResult(
+                "strobe",
+                "Strobe",
+                PASS,
+                "Calibrated" if strobe.get("required") else "This board needs no calibration",
+                critical=True,
+            )
+        return CheckResult(
+            "strobe", "Strobe", FAIL, str(strobe.get("reason") or "Not calibrated"),
+            PI_STROBE_UNSAFE, critical=True,
+        )
+
+    @staticmethod
+    def _unknown(key: str, title: str, snapshot) -> CheckResult:
+        """PiTrac could not be read, so this is not known either way."""
+
+        if snapshot.reachable:
+            return CheckResult(
+                key, title, UNAVAILABLE, snapshot.detail, PI_PITRAC_UNSUPPORTED, critical=True
+            )
+        return CheckResult(
+            key, title, UNAVAILABLE, "PiTrac is not answering, so this is not known",
+            PI_WEB_STOPPED, critical=True,
         )
 
     def _pitrac_web(self) -> CheckResult:
         from .pitrac import PITRAC_WEB_SERVICE
 
+        # Answering is the test, not what systemd thinks: every measured shot
+        # goes through this server on its way out, so a running unit that does
+        # not answer delivers nothing.
+        snapshot = self.pitrac.snapshot()
+        if snapshot.readable:
+            return CheckResult(
+                "pitracWeb", "PiTrac dashboard", PASS, "Running", critical=True
+            )
+        if snapshot.reachable:
+            return CheckResult(
+                "pitracWeb", "PiTrac dashboard", FAIL, snapshot.detail,
+                PI_PITRAC_UNSUPPORTED, critical=True,
+            )
         status = self.backend.service_status(PITRAC_WEB_SERVICE)
         if not status.present:
-            return CheckResult(
-                "pitracWeb", "PiTrac dashboard", UNAVAILABLE, "The dashboard service is not installed"
-            )
-        if status.active:
-            return CheckResult("pitracWeb", "PiTrac dashboard", PASS, "Running")
-        return CheckResult("pitracWeb", "PiTrac dashboard", FAIL, status.detail, PI_WEB_STOPPED)
+            detail = "The dashboard service is not installed"
+        elif status.active:
+            detail = "Running, but not answering"
+        else:
+            detail = status.detail or "Stopped"
+        return CheckResult(
+            "pitracWeb", "PiTrac dashboard", FAIL, detail, PI_WEB_STOPPED, critical=True
+        )
 
     def _pitrac_measurement(self) -> CheckResult:
         from .pitrac import PITRAC_PROCESS
@@ -362,17 +427,33 @@ class SelfTest:
                 CFG_WRITE_FAILED,
                 critical=True,
             )
-        if not self.pitrac.points_at_relay(self.relay_ports):
+        snapshot = self.pitrac.snapshot()
+        if not snapshot.readable:
+            return self._unknown("pitracTarget", "Shot delivery", snapshot)
+        port = self.relay_ports[Simulator.GSPRO]
+        target = snapshot.relay_target(port)
+        if target is None or not target.correct:
+            detail = "PiTrac has no simulator pointed at Easy-Connect"
+        elif not target.on:
+            detail = "The Easy-Connect simulator is turned off in PiTrac"
+        elif target.status != CONNECTED:
+            detail = "PiTrac is not connected to Easy-Connect yet"
+            if target.detail:
+                detail += ": {}".format(target.detail)
+        else:
+            doubled = snapshot.direct_gspro_targets(port)
+            if doubled:
+                # Not a failure: shots do arrive. They may arrive twice.
+                return CheckResult(
+                    "pitracTarget", "Shot delivery", PASS,
+                    "PiTrac is sending shots to Easy-Connect, and also straight to GSPro at {}. "
+                    "Turn that one off in PiTrac if shots count twice.".format(", ".join(doubled)),
+                )
             return CheckResult(
-                "pitracTarget",
-                "Shot delivery",
-                FAIL,
-                "PiTrac is not pointed at Easy-Connect",
-                CFG_WRITE_FAILED,
-                critical=True,
+                "pitracTarget", "Shot delivery", PASS, "PiTrac is sending shots to Easy-Connect"
             )
         return CheckResult(
-            "pitracTarget", "Shot delivery", PASS, "PiTrac is sending shots to Easy-Connect"
+            "pitracTarget", "Shot delivery", FAIL, detail, PI_NO_RELAY_TARGET, critical=True
         )
 
     # --- The path to the simulator ---------------------------------------
@@ -470,7 +551,10 @@ def state_for(report: SelfTestReport, network: Dict[str, Any], companion: bool) 
         if connection.get("isHotspot") and not network.get("directMode"):
             return State.SETUP_REQUIRED
 
-    if blocking & {"hardware", "cameras", "calibration", "pitracMeasurement", "pitracTarget"}:
+    if blocking & {
+        "hardware", "cameras", "pitracWeb", "calibration", "strobe",
+        "pitracMeasurement", "pitracTarget",
+    }:
         return State.RECOVERY_REQUIRED
     if blocking & {"companion"}:
         return State.SETUP_REQUIRED

@@ -5,13 +5,12 @@ pairing takes one click, but calibration means setting up a rig again. These
 tests are mostly about the ways a restore could quietly make things worse.
 """
 
+import copy
 import json
 import pathlib
 from unittest import mock
 
 import pytest
-
-from conftest import on_posix
 
 from pitrac_easy_connect.common.configstore import ConfigStore
 from pitrac_easy_connect.common.errors import EasyConnectError
@@ -26,13 +25,17 @@ from pitrac_easy_connect.pi.backup import (
     BackupManager,
 )
 from pitrac_easy_connect.pi.pairing import PairingManager
-from pitrac_easy_connect.pi.pitrac import PitracInstallation
+from pitrac_fixture import make_pitrac
 
 CALIBRATION = {
     "gs_config": {
         "cameras": {
             "kCamera1CalibrationMatrix": [["1833.5", "0.0", "697.2"]],
+            "kCamera1FocalLength": "6.1",
+            "kCamera1Angles": ["1.2", "-3.4"],
             "kCamera2CalibrationMatrix": [["2340.2", "0.0", "698.4"]],
+            "kCamera2FocalLength": "6.2",
+            "kCamera2Angles": ["0.8", "2.2"],
         }
     }
 }
@@ -43,9 +46,8 @@ def build(tmp_path, name="a"):
     root.mkdir(parents=True, exist_ok=True)
     identity = IdentityStore(root / "device.json")
     settings = ConfigStore(root / "settings.json", {"simulator": Simulator.GSPRO.value})
-    pitrac = PitracInstallation(root / "user_settings.json", root / "calibration_data.json")
-    pitrac.calibration_path.write_text(json.dumps(CALIBRATION))
-    pitrac.point_at_relay({Simulator.GSPRO: 9210, Simulator.E6: 9248})
+    pitrac = make_pitrac(root, relay_ports={Simulator.GSPRO: 9210, Simulator.E6: 9248})
+    pitrac.api.calibration = copy.deepcopy(CALIBRATION)
     pairings = PairingManager(root / "pairings.json", identity.identity.device_id)
     manager = BackupManager(identity, settings, pitrac, pairings, root / "backups")
     return identity, settings, pitrac, pairings, manager
@@ -152,14 +154,14 @@ def test_a_corrupt_backup_cannot_overwrite_working_calibration(tmp_path):
     """The acceptance criterion: a bad backup leaves the good data alone."""
 
     _identity, _settings, pitrac, _pairings, manager = build(tmp_path)
-    before = pitrac.read_calibration()
+    before = copy.deepcopy(pitrac.api.calibration)
 
     with pytest.raises(EasyConnectError):
         manager.restore(b'{"format":"pitrac-easy-connect-backup","formatVersion":1,'
                         b'"checksum":"wrong","payload":{"sections":["calibration"]}}')
 
-    assert pitrac.read_calibration() == before
-    assert pitrac.is_calibrated() is True
+    assert pitrac.api.calibration == before
+    assert pitrac.snapshot().calibrated is True
 
 
 # --- Restoring onto the same enclosure ------------------------------------
@@ -169,13 +171,13 @@ def test_calibration_can_be_restored_after_it_is_lost(tmp_path):
     _identity, _settings, pitrac, _pairings, manager = build(tmp_path)
     backup = manager.create_bytes()
 
-    pitrac.calibration_path.unlink()
-    assert pitrac.is_calibrated() is False
+    pitrac.api.calibration = {}
+    assert pitrac.snapshot().calibrated is False
 
     result = manager.restore(backup)
     assert SECTION_CALIBRATION in result.restored
-    assert pitrac.is_calibrated() is True
-    assert pitrac.read_calibration() == CALIBRATION
+    assert pitrac.snapshot().calibrated is True
+    assert pitrac.api.calibration == CALIBRATION
 
 
 def test_preferences_come_back_too(tmp_path):
@@ -208,9 +210,8 @@ def test_restoring_keeps_the_relay_pointers_this_build_wrote(tmp_path):
     document["checksum"] = checksum_of(document["payload"])
 
     manager.restore(json.dumps(document))
-    assert pitrac.points_at_relay({Simulator.GSPRO: 9210, Simulator.E6: 9248}) is True
-    settings, _readable = pitrac.read_settings()
-    assert settings["gs_config"]["cameras"]["kCamera1Gain"] == 7
+    assert pitrac.snapshot().relay_target(9210).delivering is True
+    assert pitrac.api.user_settings["gs_config"]["cameras"]["kCamera1Gain"] == 7
 
 
 def test_a_restore_takes_a_snapshot_first(tmp_path):
@@ -277,12 +278,12 @@ def test_calibration_from_another_enclosure_is_refused_by_default(tmp_path):
 
     _a_identity, _a_settings, _a_pitrac, _a_pairings, first = build(tmp_path, "a")
     _b_identity, _b_settings, second_pitrac, _b_pairings, second = build(tmp_path, "b")
-    second_pitrac.calibration_path.unlink()
+    second_pitrac.api.calibration = {}
 
     with pytest.raises(EasyConnectError) as caught:
         second.restore(first.create_bytes())
     assert caught.value.info.code == "PT-CFG-004"
-    assert second_pitrac.is_calibrated() is False
+    assert second_pitrac.snapshot().calibrated is False
 
 
 def test_calibration_from_another_enclosure_can_be_forced_deliberately(tmp_path):
@@ -291,7 +292,7 @@ def test_calibration_from_another_enclosure_can_be_forced_deliberately(tmp_path)
 
     result = second.restore(first.create_bytes(), confirm_different_device=True)
     assert SECTION_CALIBRATION in result.restored
-    assert second_pitrac.read_calibration() == CALIBRATION
+    assert second_pitrac.api.calibration == CALIBRATION
 
 
 def test_preferences_alone_restore_without_the_device_warning(tmp_path):
@@ -321,7 +322,7 @@ def test_a_rebuilt_card_can_become_the_same_enclosure_again(tmp_path):
 
     # A fresh installation: new identity, no calibration, nothing paired.
     new_identity, _s, new_pitrac, new_pairings, rebuilt = build(tmp_path, "rebuilt")
-    new_pitrac.calibration_path.unlink()
+    new_pitrac.api.calibration = {}
     assert new_identity.identity.device_id != original.device_id
 
     result = rebuilt.restore(backup, identity=True, pairings=True)
@@ -329,7 +330,7 @@ def test_a_rebuilt_card_can_become_the_same_enclosure_again(tmp_path):
     assert new_identity.identity.device_id == original.device_id
     assert new_identity.identity.setup_password == original.setup_password
     assert new_identity.identity.setup_ssid == original.setup_ssid, "the owner card still works"
-    assert new_pitrac.is_calibrated() is True
+    assert new_pitrac.snapshot().calibrated is True
     assert new_pairings.count == 1
     assert set(result.restored) >= {SECTION_CALIBRATION, SECTION_IDENTITY, SECTION_PAIRINGS}
 
@@ -339,7 +340,7 @@ def test_restoring_identity_makes_the_calibration_check_pass_quietly(tmp_path):
     backup = manager.create_bytes(include_identity=True)
 
     _new_identity, _s, new_pitrac, _p, rebuilt = build(tmp_path, "rebuilt")
-    new_pitrac.calibration_path.unlink()
+    new_pitrac.api.calibration = {}
 
     # No confirm_different_device needed: restoring identity means it is the
     # same enclosure, so the calibration belongs to it.
@@ -379,7 +380,7 @@ def test_a_bad_identity_stops_the_restore_before_anything_changes(tmp_path):
     _identity, _settings, pitrac, _pairings, manager = build(tmp_path)
     document = json.loads(manager.create_bytes(include_identity=True).decode())
 
-    calibration_before = pitrac.calibration_path.read_text()
+    calibration_before = copy.deepcopy(pitrac.api.calibration)
     document["payload"]["identity"]["deviceId"] = "!!not a device id!!"
     from pitrac_easy_connect.pi.backup import checksum_of
 
@@ -388,7 +389,7 @@ def test_a_bad_identity_stops_the_restore_before_anything_changes(tmp_path):
     with pytest.raises(Exception):
         manager.restore(document, calibration=True, preferences=True, identity=True)
 
-    assert pitrac.calibration_path.read_text() == calibration_before, \
+    assert pitrac.api.calibration == calibration_before, \
         "calibration must not have been written before the identity was checked"
 
 
@@ -420,7 +421,7 @@ def test_a_failure_partway_through_a_restore_puts_everything_back(tmp_path, monk
 
     document["checksum"] = checksum_of(document["payload"])
 
-    before = pitrac.calibration_path.read_text()
+    before = copy.deepcopy(pitrac.api.calibration)
 
     def explode(*_args, **_kwargs):
         raise RuntimeError("the card filled up")
@@ -429,7 +430,7 @@ def test_a_failure_partway_through_a_restore_puts_everything_back(tmp_path, monk
     with pytest.raises(Exception):
         manager.restore(document, calibration=True, preferences=True)
 
-    assert pitrac.calibration_path.read_text() == before, \
+    assert pitrac.api.calibration == before, \
         "calibration was left changed by a restore that failed"
 
 
@@ -440,44 +441,39 @@ def test_restoring_actually_restores_a_pitrac_setting(tmp_path):
 
     _identity, _settings, pitrac, _pairings, manager = build(tmp_path)
 
-    pitrac.settings_path.write_text(json.dumps(
-        {"gs_config": {"cameras": {"kCamera1Gain": 7}}}))
+    pitrac.api.user_settings = {"gs_config": {"cameras": {"kCamera1Gain": 7}}}
     document = json.loads(manager.create_bytes().decode())
 
     # The machine has since been changed.
-    pitrac.settings_path.write_text(json.dumps(
-        {"gs_config": {"cameras": {"kCamera1Gain": 8}}}))
+    pitrac.api.user_settings = {"gs_config": {"cameras": {"kCamera1Gain": 8}}}
 
     manager.restore(document, preferences=True)
 
-    after = json.loads(pitrac.settings_path.read_text())
+    after = copy.deepcopy(pitrac.api.user_settings)
     assert after["gs_config"]["cameras"]["kCamera1Gain"] == 7, \
         "the backup's value should have been restored"
 
 
 def test_a_restore_does_not_redirect_where_shots_are_sent(tmp_path):
-    """That is this installation's own wiring, not a preference. A backup from
-    another machine must not point this one's shots somewhere else."""
+    """That is this installation's own wiring, not a preference. PiTrac turns
+    these keys into new simulators if they ever reappear in its settings."""
 
     _identity, _settings, pitrac, _pairings, manager = build(tmp_path)
-
-    pitrac.settings_path.write_text(json.dumps({"gs_config": {
-        "cameras": {"kCamera1Gain": 7},
-        "golf_simulator_interfaces": {"GSPro": {
-            "kGSProConnectAddress": "10.9.9.9", "kGSProConnectPort": 1111}},
-    }}))
+    pitrac.api.user_settings = {
+        "gs_config": {
+            "cameras": {"kCamera1Gain": 7},
+            "golf_simulator_interfaces": {"GSPro": {
+                "kGSProConnectAddress": "10.9.9.9", "kGSProConnectPort": 1111}},
+        },
+        "simulators": {"gspro": {"host": "10.9.9.9", "enabled": True}},
+    }
     document = json.loads(manager.create_bytes().decode())
-
-    pitrac.point_at_relay({Simulator.GSPRO: 9210, Simulator.E6: 9248})
-    before = json.loads(pitrac.settings_path.read_text())
-    wired = before["gs_config"]["golf_simulator_interfaces"]["GSPro"]
+    sims = pitrac.api.sims()
 
     manager.restore(document, preferences=True)
 
-    after = json.loads(pitrac.settings_path.read_text())
-    assert after["gs_config"]["cameras"]["kCamera1Gain"] == 7, "the setting restored"
-    assert after["gs_config"]["golf_simulator_interfaces"]["GSPro"] == wired, \
-        "but the relay wiring stayed as this machine had it"
+    assert pitrac.api.user_settings == {"gs_config": {"cameras": {"kCamera1Gain": 7}}}
+    assert pitrac.api.sims() == sims, "the relay wiring stayed as this machine had it"
 
 
 def test_a_failed_restore_puts_pitracs_own_settings_back_too(tmp_path, monkeypatch):
@@ -486,13 +482,11 @@ def test_a_failed_restore_puts_pitracs_own_settings_back_too(tmp_path, monkeypat
     PiTrac changed while everything else was put back."""
 
     _identity, _settings, pitrac, _pairings, manager = build(tmp_path)
-    pitrac.settings_path.write_text(json.dumps(
-        {"gs_config": {"cameras": {"kCamera1Gain": 7}}}))
+    pitrac.api.user_settings = {"gs_config": {"cameras": {"kCamera1Gain": 7}}}
     document = json.loads(manager.create_bytes(include_identity=True).decode())
 
-    pitrac.settings_path.write_text(json.dumps(
-        {"gs_config": {"cameras": {"kCamera1Gain": 8}}}))
-    before = pitrac.settings_path.read_text()
+    pitrac.api.user_settings = {"gs_config": {"cameras": {"kCamera1Gain": 8}}}
+    before = copy.deepcopy(pitrac.api.user_settings)
 
     def explode(_section):
         raise RuntimeError("the identity section is corrupt")
@@ -502,7 +496,7 @@ def test_a_failed_restore_puts_pitracs_own_settings_back_too(tmp_path, monkeypat
         manager.restore(document, preferences=True, identity=True,
                         confirm_different_device=True)
 
-    assert pitrac.settings_path.read_text() == before, \
+    assert pitrac.api.user_settings == before, \
         "PiTrac's settings were left changed by a restore that failed"
 
 
@@ -541,7 +535,7 @@ def test_a_rolled_back_identity_takes_the_pairing_manager_with_it(tmp_path):
     original = identity.identity.device_id
     assert pairings.device_id == original
 
-    state = manager._remember(calibration=False, preferences=False,
+    state = manager._remember({}, calibration=False, preferences=False,
                               identity=True, pairings=False)
 
     # Something else takes the enclosure's identity over, as a restore does.
@@ -556,48 +550,86 @@ def test_a_rolled_back_identity_takes_the_pairing_manager_with_it(tmp_path):
     assert pairings.device_id == original, "the pairing manager was left on the abandoned id"
 
 
-@on_posix
-def test_a_rolled_back_calibration_is_left_owned_by_pitrac(tmp_path, monkeypatch):
-    """Easy-Connect runs as root; PiTrac's dashboard does not.
+# --- What PiTrac will not allow ---------------------------------------------
 
-    A rollback that writes calibration as root leaves a file the dashboard can
-    no longer save. Ownership is only settable as root, so what is asserted is
-    that the rollback asks for it -- with the path it actually wrote.
-    """
+
+def test_a_backup_is_refused_rather_than_made_without_calibration(tmp_path):
+    """It would look complete until the day it was needed."""
 
     _identity, _settings, pitrac, _pairings, manager = build(tmp_path)
-    pitrac.calibration_path.write_text('{"before": true}')
-
-    asked = []
-    monkeypatch.setattr(pitrac, "restore_owner_of", lambda path: asked.append(path))
-
-    state = manager._remember(calibration=True, preferences=False,
-                              identity=False, pairings=False)
-    pitrac.calibration_path.write_text('{"during": true}')
-    manager._put_back(state)
-
-    assert json.loads(pitrac.calibration_path.read_text()) == {"before": True}
-    assert pitrac.calibration_path in asked, "calibration was put back without its owner"
+    pitrac.api.reachable = False
+    with pytest.raises(EasyConnectError) as caught:
+        manager.create()
+    assert caught.value.info.code == "PT-CFG-009"
 
 
-@on_posix
-def test_the_owner_is_restored_on_the_file_that_was_named(tmp_path, monkeypatch):
-    """restore_owner_of ignored its argument and always chowned the settings."""
+def test_a_restore_that_cannot_reach_pitrac_changes_nothing(tmp_path):
+    identity, settings, pitrac, _pairings, manager = build(tmp_path)
+    identity.rename("Garage Bay")
+    backup = manager.create_bytes()
+    identity.rename("Something Else")
 
-    import os
+    pitrac.api.reachable = False
+    with pytest.raises(EasyConnectError) as caught:
+        manager.restore(backup)
+    assert caught.value.info.code == "PT-CFG-009"
+    assert identity.identity.display_name == "Something Else"
 
-    from pitrac_easy_connect.pi.pitrac import PitracInstallation
 
-    pitrac = PitracInstallation(tmp_path / "user_settings.json", tmp_path / "calibration.json")
-    pitrac.settings_path.write_text("{}")
-    pitrac.calibration_path.write_text("{}")
+def test_the_paired_computers_can_be_restored_without_pitrac(tmp_path):
+    _identity, _settings, pitrac, pairings, manager = build(tmp_path)
+    pairings.create_pairing("Sim PC")
+    backup = manager.create_bytes(include_pairings=True)
+    pairings.revoke_all()
 
-    chowned = []
-    monkeypatch.setattr(os, "geteuid", lambda: 0, raising=False)
-    monkeypatch.setattr(os, "chown", lambda path, uid, gid: chowned.append(str(path)))
-    monkeypatch.setattr(pitrac, "_intended_owner", lambda: (1000, 1000))
+    pitrac.api.reachable = False
+    result = manager.restore(backup, calibration=False, preferences=False, pairings=True)
+    assert pairings.count == 1
+    assert result.restored == [SECTION_PAIRINGS]
 
-    pitrac.restore_owner_of(pitrac.calibration_path)
 
-    assert str(pitrac.calibration_path) in chowned
-    assert str(pitrac.settings_path) not in chowned, "it chowned a file it was not given"
+def test_calibration_pitrac_partly_refuses_is_put_back_as_it_was(tmp_path):
+    """Part of a calibration is not a calibration."""
+
+    _identity, _settings, pitrac, _pairings, manager = build(tmp_path)
+    backup = manager.create_bytes()
+    pitrac.api.calibration = {"gs_config": {"cameras": {"marker": "newer"}}}
+    real = pitrac.api.import_config
+
+    def refuse_once(document):
+        pitrac.api.import_config = real
+        real(document)
+        return {"gs_config.cameras.kCamera1Angles": "must be an array"}
+
+    pitrac.api.import_config = refuse_once
+    with pytest.raises(EasyConnectError) as caught:
+        manager.restore(backup)
+    assert caught.value.info.code == "PT-CFG-010"
+    assert pitrac.api.calibration == {"gs_config": {"cameras": {"marker": "newer"}}}
+
+
+def test_strobe_calibration_is_never_taken_from_another_enclosure(tmp_path):
+    """It sets how hard that board's strobe is driven. Wrong can mean damage."""
+
+    _i, _s, first_pitrac, _p, first = build(tmp_path, "a")
+    _i, _s, second_pitrac, _p, second = build(tmp_path, "b")
+    first_pitrac.api.calibration["gs_config"]["strobing"] = {"kDAC_setting": 200}
+    backup = first.create_bytes()
+
+    second_pitrac.api.calibration["gs_config"]["strobing"] = {"kDAC_setting": 90}
+    second.restore(backup, confirm_different_device=True)
+    assert second_pitrac.api.calibration["gs_config"]["strobing"] == {"kDAC_setting": 90}
+
+    second_pitrac.api.calibration["gs_config"].pop("strobing")
+    second.restore(backup, confirm_different_device=True)
+    assert "kDAC_setting" not in second_pitrac.api.calibration["gs_config"]["strobing"]
+
+
+def test_strobe_calibration_comes_back_to_the_enclosure_it_came_from(tmp_path):
+    _identity, _settings, pitrac, _pairings, manager = build(tmp_path)
+    pitrac.api.calibration["gs_config"]["strobing"] = {"kDAC_setting": 200}
+    backup = manager.create_bytes()
+    pitrac.api.calibration = {}
+
+    manager.restore(backup)
+    assert pitrac.api.calibration["gs_config"]["strobing"] == {"kDAC_setting": 200}

@@ -94,13 +94,10 @@ def test_the_operator_guide_names_the_real_relay_ports():
         assert str(port) in text, "{} port {} is not documented".format(simulator.value, port)
 
 
-def test_the_operator_guide_names_the_real_config_keys():
-    from pitrac_easy_connect.pi.pitrac import SIMULATOR_KEYS
+def test_the_operator_guide_names_the_simulator_it_adds_to_pitrac():
+    from pitrac_easy_connect.pi.pitrac import RELAY_SIM_NAME
 
-    text = read(DOCS / "operator-guide.md")
-    for address_key, port_key in SIMULATOR_KEYS.values():
-        assert address_key.rsplit(".", 1)[-1] in text
-        assert port_key.rsplit(".", 1)[-1] in text
+    assert RELAY_SIM_NAME in read(DOCS / "operator-guide.md")
 
 
 def test_nothing_public_quotes_a_version_that_is_not_the_current_one():
