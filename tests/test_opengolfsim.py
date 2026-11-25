@@ -584,7 +584,10 @@ def test_a_result_from_before_is_kept_but_proves_nothing_now(rig, pitrac, ogs):
     ogs.on_a_hole = False
     pitrac.send(SHOT)
     assert wait_for(lambda: outcomes(rig) == ["accepted"])
+    before = len(ogs.received)
     rig.companion._session.reconnect()
+    # Until it has been heard from, the stand-in does not know whom to tell.
+    assert wait_for(lambda: len(ogs.received) > before)
     ogs.finish(ogs.shots[0])
     assert wait_for(lambda: outcomes(rig) == ["played"])
     assert rig.companion.simulator_status()["ready"] is False
