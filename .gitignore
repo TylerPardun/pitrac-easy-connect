@@ -23,3 +23,7 @@ docs/licensing/
 .DS_Store
 ._*
 *.tgz
+
+# Virtual environments
+.venv/
+venv/
