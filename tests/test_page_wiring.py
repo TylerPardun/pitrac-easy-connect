@@ -74,9 +74,34 @@ def test_a_rejected_additional_pairing_stays_inside_easy_connect():
     rejected = COMPANION.split("function showAsk(enclosure){", 1)[1].split(
         "function closeAsk()", 1
     )[0]
-    assert 'frame.src=base' in rejected
     assert '$("askBox").classList.remove("hidden")' in rejected
     assert "window.open" not in rejected
+    # Its own panel, not the enclosure's page in a frame: that page's Pair
+    # another computer sends no owner proof, so from a new computer it was a
+    # button that could only ever fail.
+    assert "askFrame" not in COMPANION
+
+
+def test_a_new_computer_can_open_pairing_mode_with_the_owner_card():
+    """Both ways into pairing mode are offered, and the password is sent."""
+
+    panel = COMPANION.split('id="askBox"', 1)[1].split("</div>\n\n", 1)[0]
+    assert 'type="password"' in panel
+    assert 'id="askRetry"' in panel
+    script = COMPANION.split("async function pairAsked(", 1)[1]
+    assert "ownerCardPassword:password" in script
+    assert '"/api/pair"' in script.split("\n}\n", 1)[0]
+    # The password is cleared when the panel goes away.
+    close = COMPANION.split("function closeAsk(){", 1)[1].split("}", 1)[0]
+    assert '$("askCard").value=""' in close
+
+
+def test_another_computer_holding_pitrac_offers_connect_here():
+    view = COMPANION.split("function linkView(data){", 1)[1].split("\nfunction present(", 1)[0]
+    assert 'id:"connectHere"' in view
+    assert 'id:"updateOld"' in view
+    action = COMPANION.split('if(id==="connectHere")', 1)[1].split("\n", 1)[0]
+    assert "takeOver:true" in action
 
 
 def test_changing_wifi_is_offered_without_opening_advanced():

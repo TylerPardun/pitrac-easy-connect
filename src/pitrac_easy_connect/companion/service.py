@@ -31,11 +31,15 @@ from ..common import pairing_exchange as exchange
 from ..common.configstore import ConfigStore
 from ..common.errors import (
     LINK_BUSY,
+    LINK_TAKEN_OVER,
+    LINK_VERSION_MISMATCH,
     LINK_DEVICE_MISMATCH,
     LINK_DEVICE_REPLACED,
     LINK_NOT_FOUND,
+    OWNER_ACTION_NEEDS_AUTHORIZATION,
     PAIR_EXCHANGE_LOST,
     PAIR_NOT_PAIRED,
+    PAIR_OWNER_CARD_WRONG,
     PAIR_RATE_LIMITED,
     PAIR_REVOKED,
     CFG_WRITE_FAILED,
@@ -62,7 +66,7 @@ from ..models import TEST_SHOT, PlayMode, Simulator
 from . import clubs as caddie
 from . import opengolfsim
 from . import self_update
-from .link_client import CompanionLinkClient
+from .link_client import CompanionLinkClient, LegacyUpdateLink
 from . import shotlog
 from .rangeplay import RangeSession
 from .shotlog import ShotLog
@@ -120,7 +124,11 @@ _CODE_STATES: Dict[str, State] = {
     LINK_DEVICE_MISMATCH.code: State.SAVED_PI_RESET,
     LINK_DEVICE_REPLACED.code: State.SAVED_PI_RESET,
     LINK_BUSY.code: State.ANOTHER_COMPUTER_CONNECTED,
+    LINK_TAKEN_OVER.code: State.ANOTHER_COMPUTER_CONNECTED,
     PAIR_RATE_LIMITED.code: State.RATE_LIMITED,
+    # An enclosure too old to talk to. Not "setup required", whose words are
+    # about Wi-Fi: the one thing to do is the update the app offers.
+    LINK_VERSION_MISMATCH.code: State.RECOVERY_REQUIRED,
 }
 
 
@@ -246,6 +254,8 @@ class CompanionService:
         #: What the enclosure was last told, to know when that stops being true.
         self._reported_simulator: Optional[Dict[str, Any]] = None
         self._pending_update_target = str(self.store.get("updateTarget", "") or "")
+        #: Progress of updating an enclosure too old to talk to; None when idle.
+        self._old_update: Optional[Dict[str, Any]] = None
         #: The practice range. In memory only: a session is a bucket of balls.
         self.range = RangeSession()
         self.range.set_target(self.store.get("rangeTarget", self.range.target))
@@ -632,7 +642,9 @@ class CompanionService:
 
     # --- Pairing ----------------------------------------------------------
 
-    def pair(self, device_id: str, portal_port: Optional[int] = None) -> Dict[str, Any]:
+    def pair(
+        self, device_id: str, portal_port: Optional[int] = None, owner_card_password: str = ""
+    ) -> Dict[str, Any]:
         """Ask an enclosure to connect, and store the secret it hands back.
 
         There is no code to type. The enclosure decides whether to accept — it
@@ -640,6 +652,14 @@ class CompanionService:
         owner opened. The secret is derived from a key exchange rather than
         received, so it is never carried over the network. See
         ``common.pairing_exchange``.
+
+        A second computer gets that window from the owner card. Its password is
+        what the enclosure accepts as proof that whoever asks has the card in
+        front of them, not merely the same Wi-Fi, so it opens the window here
+        and the exchange follows at once. Every enclosure this app can meet
+        accepts it -- the oldest ones included, which is what lets a new
+        computer reach an enclosure that is too old to talk to it yet, and
+        update it.
         """
 
         enclosure = self._found_by_id(device_id)
@@ -655,6 +675,14 @@ class CompanionService:
         # default when an older enclosure did not advertise one.
         port = portal_port or enclosure.portal_port or 80
         base = "http://{}:{}".format(enclosure.address, port)
+        password = str(owner_card_password or "").strip()
+        if password:
+            try:
+                _post(base + "/api/pair-open", {"ownerCardPassword": password})
+            except EasyConnectError as exc:
+                if exc.info.code == OWNER_ACTION_NEEDS_AUTHORIZATION.code:
+                    raise EasyConnectError(PAIR_OWNER_CARD_WRONG, "the enclosure refused it") from exc
+                raise
         hello = _post(base + "/api/pair-hello", None)
         private, public = exchange.client_start()
         key = exchange.shared_key(hello["serverPublic"], private)
@@ -689,7 +717,9 @@ class CompanionService:
             }
             self.store.update({"enclosures": enclosures, "activeDeviceId": device_id})
 
-        self.connect(device_id)
+        # Like a Bluetooth device just paired: it is the one connected now,
+        # even if PiTrac was talking to another of its computers a moment ago.
+        self.connect(device_id, take_over=True)
         return {"deviceId": device_id, "displayName": enclosure.display_name}
 
     # --- What the launch monitor actually sent -----------------------------
@@ -923,7 +953,14 @@ class CompanionService:
 
     # --- Connecting -------------------------------------------------------
 
-    def connect(self, device_id: str = "") -> Dict[str, Any]:
+    def connect(self, device_id: str = "", take_over: bool = False) -> Dict[str, Any]:
+        """Connect to a paired enclosure.
+
+        ``take_over`` is someone at this computer choosing it: PiTrac lets go of
+        whichever of its other paired computers it is talking to. Without it,
+        that other computer keeps PiTrac and this one is told so.
+        """
+
         # A fresh attempt supersedes whatever a previous one recorded here.
         # Kept separate from client.last_error because these raise before a
         # CompanionLinkClient exists to hold one.
@@ -999,6 +1036,7 @@ class CompanionService:
             # computer is on, and moving between them is the whole situation.
             more_hosts=discovery.setup_addresses,
             expected_device_id=device_id,
+            take_over=take_over,
         )
         with self._lock:
             self._link = client
@@ -1674,6 +1712,7 @@ class CompanionService:
             "setupComplete": bool(self.store.get("setupComplete")),
             "dashboardUrl": self._dashboard_url(),
             "update": self._update_status(),
+            "oldEnclosure": self._old_enclosure_status(client),
             "shotLog": self.shots.status(),
             "shots": shots,
         }
@@ -2363,6 +2402,107 @@ class CompanionService:
                 "reconnects and reports the same version as this app."
             ).format(target),
         }
+
+    # --- Enclosures too old to talk to ----------------------------------
+
+    #: How long an old enclosure gets to download, check, restart, and answer
+    #: as the new version before this stops waiting for it.
+    OLD_ENCLOSURE_RETURN_SECONDS = 6 * 60.0
+
+    def _old_enclosure_status(self, client) -> Optional[Dict[str, Any]]:
+        with self._lock:
+            progress = dict(self._old_update) if self._old_update else None
+        outdated = client.outdated_enclosure if client is not None else None
+        if outdated is None and progress is None:
+            return None
+        found = dict(outdated or {})
+        return {
+            "version": found.get("version", "") or (progress or {}).get("from", ""),
+            "targetVersion": self.version,
+            "update": progress or {"state": "idle", "detail": ""},
+        }
+
+    def update_old_enclosure(self) -> Dict[str, Any]:
+        """Update an enclosure that is too old to talk to, to this app's version.
+
+        The enclosure downloads the release itself. Only this exact version is
+        asked for, so both halves end up matching. Once it has restarted and
+        answers as that version, this connects to it normally.
+        """
+
+        with self._lock:
+            client = self._link
+            busy = self._old_update and self._old_update.get("state") in ("installing", "restarting")
+        outdated = client.outdated_enclosure if client is not None else None
+        if busy:
+            return self.status()
+        if outdated is None:
+            raise EasyConnectError(LINK_NOT_FOUND, "no outdated PiTrac is connected to update")
+        device_id = str(self.store.get("activeDeviceId") or "")
+        record = (self.store.get("enclosures") or {}).get(device_id)
+        if record is None:
+            raise EasyConnectError(LINK_NOT_FOUND, "this computer is not paired with that PiTrac")
+        with self._lock:
+            self._old_update = {
+                "state": "installing", "from": str(outdated.get("version", "")),
+                "detail": "PiTrac is downloading and checking {}. This takes a few minutes; "
+                          "leave it powered.".format(self.version),
+            }
+        updater = LegacyUpdateLink(
+            client.host, client.port, record["pairingId"], record["secret"], self.version,
+            self.computer_name, expected_device_id=device_id,
+        )
+        threading.Thread(
+            target=self._update_old_enclosure_worker, args=(updater, device_id),
+            name="old-enclosure-update", daemon=True,
+        ).start()
+        return self.status()
+
+    def _set_old_update(self, state: str, detail: str) -> None:
+        with self._lock:
+            current = dict(self._old_update or {})
+            current.update({"state": state, "detail": detail})
+            self._old_update = current
+
+    def _update_old_enclosure_worker(self, updater: "LegacyUpdateLink", device_id: str) -> None:
+        try:
+            result = updater.update_to("v" + self.version)
+        except link.TerminalLinkError as exc:
+            info = exc.info or {}
+            self._set_old_update("failed", str(info.get("failed") or "PiTrac refused the update."))
+            return
+        except Exception as exc:  # reported to the person, never raised from a thread
+            self._set_old_update("failed", "PiTrac could not be asked to update: {}".format(exc))
+            return
+        if not result.get("started"):
+            self._set_old_update("failed", str(result.get("detail") or "PiTrac did not update."))
+            return
+        self._set_old_update(
+            "restarting",
+            "PiTrac is restarting into {}. It reconnects on its own.".format(self.version),
+        )
+        deadline = time.monotonic() + self.OLD_ENCLOSURE_RETURN_SECONDS
+        while time.monotonic() < deadline:
+            time.sleep(3.0)
+            try:
+                self.search(timeout=1.5)
+            except Exception:
+                continue
+            found = self._found_by_id(device_id)
+            if found is not None and compare(str(found.version or ""), self.version) == 0:
+                with self._lock:
+                    self._old_update = None
+                try:
+                    self.connect(device_id)
+                except EasyConnectError:
+                    pass
+                return
+        self._set_old_update(
+            "failed",
+            "PiTrac has not come back as {} yet. Leave it powered for a few more minutes, "
+            "then press Search. If it still reports the old version, the update was "
+            "undone because the new one would not start.".format(self.version),
+        )
 
     def _dashboard_url(self) -> str:
         """PiTrac's own dashboard, for anyone who wants the raw shot data."""

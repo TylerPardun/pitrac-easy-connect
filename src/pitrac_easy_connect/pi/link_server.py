@@ -15,6 +15,7 @@ from ..common import link
 from ..common.link import claim_port
 from ..common.errors import (
     LINK_BUSY,
+    LINK_TAKEN_OVER,
     LINK_VERSION_MISMATCH,
     PAIR_NOT_PAIRED,
     EasyConnectError,
@@ -141,7 +142,19 @@ class CompanionLinkServer:
         with self._lock:
             existing = self._session
             if existing is not None and existing.authenticated and existing.alive:
-                if existing.pairing_id != session.pairing_id:
+                if existing.pairing_id != session.pairing_id and session.take_over:
+                    # Another paired computer was chosen by whoever is at it.
+                    # Tell this one why it is being let go, so it stops rather
+                    # than reconnecting and taking PiTrac straight back.
+                    _try_send(
+                        existing.stream,
+                        link.error(
+                            LINK_TAKEN_OVER.code, LINK_TAKEN_OVER.failed,
+                            LINK_TAKEN_OVER.next_step, LINK_TAKEN_OVER.still_safe,
+                        ),
+                    )
+                    existing.close()
+                elif existing.pairing_id != session.pairing_id:
                     _try_send(
                         stream,
                         link.error(
@@ -215,6 +228,7 @@ class CompanionLinkServer:
         session.pairing_id = pairing_id
         session.companion_version = str(frame.get("version", ""))
         session.computer_name = str(frame.get("computerName", "")) or "This computer"
+        session.take_over = frame.get("takeOver") is True
         return challenge
 
     def _pump(self, session: "CompanionSession") -> None:
@@ -252,6 +266,8 @@ class CompanionSession:
         #: which of its networks the computer came over.
         self.local_address = ""
         self.pairing_id = ""
+        #: Whether the person at this computer asked for PiTrac to move to it.
+        self.take_over = False
         self.computer_name = ""
         self.companion_version = ""
         self.authenticated = False

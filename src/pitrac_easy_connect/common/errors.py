@@ -182,8 +182,8 @@ PAIR_NOT_ACCEPTING = _define(
     "PT-PAIR-001",
     "PiTrac is not letting new computers connect right now.",
     "No computer was given access.",
-    "On the PiTrac setup page, open Advanced and press Pair another computer, "
-    "then try again within five minutes.",
+    "Type the password from PiTrac's owner card, or press Pair another computer "
+    "in Advanced on a computer PiTrac already trusts and try again within five minutes.",
 )
 PAIR_EXCHANGE_LOST = _define(
     "PT-PAIR-002",
@@ -208,6 +208,13 @@ PAIR_REVOKED = _define(
     "This computer's access was removed from that PiTrac.",
     "Nothing was changed on the enclosure.",
     "Ask the owner to press Pair another computer on the PiTrac setup page.",
+)
+PAIR_OWNER_CARD_WRONG = _define(
+    "PT-PAIR-006",
+    "That is not the password on this PiTrac's owner card.",
+    "No computer was given access.",
+    "Check the owner card for this PiTrac, whose name is on it, and type its password again. "
+    "It is the same as the PiTrac setup Wi-Fi password.",
 )
 
 # Enclosure hardware and services ------------------------------------------
@@ -349,7 +356,13 @@ LINK_BUSY = _define(
     "PT-LINK-004",
     "Another computer is already connected to that PiTrac.",
     "Nothing was changed.",
-    "Close Easy-Connect on the other computer, or remove it from the trusted list on the maintenance screen.",
+    "Press Connect here to move PiTrac to this computer. The other one stays paired.",
+)
+LINK_TAKEN_OVER = _define(
+    "PT-LINK-009",
+    "PiTrac moved to another of its paired computers.",
+    "This computer is still paired. Nothing was changed.",
+    "Press Connect here to move it back to this computer.",
 )
 LINK_DEVICE_MISMATCH = _define(
     "PT-LINK-007",

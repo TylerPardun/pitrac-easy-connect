@@ -189,8 +189,13 @@ PAGE = r"""<!doctype html>
   .helpbody li{margin:6px 0}
   .helpbody code{background:var(--line);padding:1px 5px;border-radius:4px;
     font-size:.82rem}
-  .askframe{width:100%;height:420px;border:1px solid var(--line);border-radius:14px;
-    background:var(--bg);display:block}
+  .askway{border:1px solid var(--line);border-radius:12px;padding:14px 16px;margin:10px 0;
+    background:var(--panel)}
+  .askway strong{display:block;font-size:.92rem;margin-bottom:2px}
+  .askway form{display:flex;gap:8px;margin-top:6px}
+  .askway form button{width:auto;flex:none;padding-left:22px;padding-right:22px;margin:0}
+  .askway input{flex:1;min-width:0;padding:11px 12px;border-radius:10px;border:1px solid var(--line);
+    background:var(--bg);color:var(--text);font:inherit}
   .asknote{color:var(--faint);font-size:.82rem;line-height:1.45;margin:2px 0 8px}
   .device{display:flex;justify-content:space-between;align-items:center;gap:12px;
     padding:14px 16px;border:1px solid var(--line);border-radius:11px;background:var(--panel);
@@ -301,8 +306,25 @@ PAGE = r"""<!doctype html>
   <div class="pick hidden" id="knownPis"></div>
 
   <div class="pick hidden" id="askBox">
-    <iframe class="askframe" id="askFrame" title="PiTrac setup page"></iframe>
-    <div class="asknote" id="askNote"></div>
+    <h3 id="askHead">This PiTrac already has a computer</h3>
+    <div class="asknote">PiTrac remembers every computer it has paired with and talks to one at a
+      time. To add this one, put PiTrac in pairing mode in either of these ways.</div>
+    <div class="askway">
+      <strong>With the owner card</strong>
+      <div class="asknote">Type the password printed on PiTrac's owner card. It is the same as the
+        PiTrac setup Wi-Fi password.</div>
+      <form id="askCardForm" autocomplete="off">
+        <input type="password" id="askCard" placeholder="Owner card password" autocomplete="off">
+        <button class="primary" id="askCardPair" type="submit">Pair this computer</button>
+      </form>
+    </div>
+    <div class="askway">
+      <strong>From a computer PiTrac already knows</strong>
+      <div class="asknote">On that computer, open Advanced and press Pair another computer. Then,
+        within five minutes, press Pair this computer here.</div>
+      <button class="quiet" id="askRetry">Pair this computer</button>
+    </div>
+    <div class="asknote">Once paired, this computer is the one connected. The other stays paired.</div>
     <button class="quiet" id="cancelPair">Back</button>
   </div>
 
@@ -911,6 +933,45 @@ function renderWizard(view){
 
 // --- the single line, and the single thing to do about it ----------------
 
+// Two situations come before everything else, because each has exactly one
+// thing to press and the ordinary views would bury it under an error.
+//
+// PiTrac is with another of its computers. Like a remembered Bluetooth device,
+// it talks to one at a time and keeps the others; choosing this one moves it.
+// Nothing moves it on its own, so two computers never fight over it.
+//
+// PiTrac is too old to talk to. It can still be told to update itself, to
+// exactly this app's version, and then it is reconnected normally.
+const ELSEWHERE_CODES=__ELSEWHERE_CODES_JSON__;
+const VERSION_MISMATCH_CODE=__VERSION_MISMATCH_CODE_JSON__;
+function linkView(data){
+  const old=data.oldEnclosure;
+  if(old){
+    const progress=old.update||{};
+    if(progress.state==="installing"||progress.state==="restarting") return {
+      dot:"busy", head:"Updating PiTrac", sub:esc(progress.detail||""),
+      why:"Keep PiTrac powered. This window connects to it again by itself.", actions:[]};
+    return {
+      dot:"bad", head:"PiTrac needs an update",
+      sub:"PiTrac is running Easy-Connect "+esc(old.version||"(an older version)")+
+        ". This app is "+esc(old.targetVersion)+", and the two cannot work together until PiTrac matches.",
+      why:progress.state==="failed" ? progress.detail :
+        "PiTrac downloads the update and checks it before installing anything. "+
+        "Its Wi-Fi, pairings and calibration are kept.",
+      actions:[{label:"Update PiTrac to "+old.targetVersion, id:"updateOld", primary:true}]};
+  }
+  const error=data.link&&data.link.lastError;
+  if(error && ELSEWHERE_CODES.includes(error.code)){
+    const moved=error.code===ELSEWHERE_CODES[1];
+    return {
+      dot:"", head:moved?"PiTrac moved to another computer":"PiTrac is connected to another computer",
+      sub:"PiTrac talks to one computer at a time and remembers the others.",
+      why:"Connect here to move it to this computer. The other computer stays paired and can take it back the same way.",
+      actions:[{label:"Connect here", id:"connectHere", primary:true}]};
+  }
+  return null;
+}
+
 function present(data){
   const linked=data.link && data.link.connected;
   const sim=data.simulatorStatus||{};
@@ -962,14 +1023,18 @@ function present(data){
 function render(data){
   status=data;
   const guiding=!data.setupComplete;
-  const view=guiding ? wizardView(data) : present(data);
-  renderWizard(guiding?view:null);
+  const special=linkView(data);
+  const view=special || (guiding ? wizardView(data) : present(data));
+  renderWizard(guiding && !special ? view : null);
 
   // The link client can stop retrying on its own (a device-id mismatch, a
   // revoked pairing) with nothing else ever telling the user why — no
   // synchronous API call failed, so nothing else would have shown this.
   // Surface it here, from status, rather than only from a caught exception.
-  const linkError=data.link&&data.link.lastError;
+  // What linkView already explains, with its button, is not also an error.
+  const explained=special && data.link && data.link.lastError &&
+    (ELSEWHERE_CODES.includes(data.link.lastError.code) || data.link.lastError.code===VERSION_MISMATCH_CODE);
+  const linkError=!explained && data.link && data.link.lastError;
   if(linkError&&!busy&&!asking()&&!WIFI.stage){
     showError({info:linkError}, data.link.lastErrorDeviceId||data.activeDeviceId, "link");
   }else if(WIFI.stage&&$("err").dataset.from==="link"){
@@ -1108,6 +1173,8 @@ function doAction(id, button){
   if(id==="range") return showPane("range");
   if(id==="wizFinish") return run(button, ()=>api("/api/finish-setup",{done:true}));
   if(id==="find") return run(button, findDevices);
+  if(id==="connectHere") return run(button, ()=>api("/api/connect",{deviceId:status.activeDeviceId, takeOver:true}));
+  if(id==="updateOld") return run(button, ()=>api("/api/update/old-enclosure",{}));
   if(id==="check") return run(button, ()=>api("/api/check",{}));
   if(id==="test") return run(button, async()=>{
     if(!confirm("Send a test shot to "+status.simulatorLabel+"?\n\nThis is a real shot. If a round is open it may be scored.")) return;
@@ -1468,27 +1535,38 @@ function renderKnownPis(data){
 // until its owner says so. Show its own page, so whoever is here can do that
 // without being told to go and find a browser.
 function showAsk(enclosure){
-  const address=enclosure && enclosure.address ? enclosure.address.split(":")[0] : "";
-  const port=(enclosure && enclosure.portalPort) || 80;
-  const base=address ? "http://"+address+(port===80?"":":"+port) : "";
-  const frame=$("askFrame"), fallback=$("askNote");
-  if(base){
-    frame.style.display=""; frame.src=base;
-    fallback.textContent="You can also do this at "+base+" from any device on this Wi-Fi.";
-  }else{
-    frame.style.display="none"; frame.removeAttribute("src");
-    fallback.textContent="";
-  }
+  askingFor=enclosure||null;
+  $("askHead").textContent=((enclosure&&enclosure.displayName)||"This PiTrac")+" already has a computer";
+  $("askCard").value="";
   document.body.classList.add("pairing");
   $("askBox").classList.remove("hidden");
+  $("askCard").focus();
 }
 
 function closeAsk(){
-  $("askFrame").removeAttribute("src");  // stop it polling once it is hidden
+  askingFor=null;
+  $("askCard").value="";  // never left lying in the page
   document.body.classList.remove("pairing");
   $("askBox").classList.add("hidden");
   $("err").innerHTML="";  // the panel is gone, so the reason for it is stale
 }
+
+let askingFor=null;
+async function pairAsked(button, body){
+  if(!askingFor) return;
+  const id=askingFor.deviceId;
+  await run(button, async()=>{
+    await api("/api/pair",{deviceId:id, ...body});
+    closeAsk();
+  });
+}
+$("askCardForm").addEventListener("submit",e=>{
+  e.preventDefault();
+  const password=$("askCard").value;
+  if(!password){ $("askCard").focus(); return; }
+  pairAsked($("askCardPair"), {ownerCardPassword:password});
+});
+$("askRetry").addEventListener("click",e=>pairAsked(e.target, {}));
 
 $("cancelPair").addEventListener("click",()=>{ closeAsk(); refresh(); });
 
@@ -1917,6 +1995,9 @@ def _fill_error_codes(page: str) -> str:
     from ..common.errors import (
         LINK_DEVICE_MISMATCH,
         LINK_DEVICE_REPLACED,
+        LINK_BUSY,
+        LINK_TAKEN_OVER,
+        LINK_VERSION_MISMATCH,
         NET_WRONG_PASSWORD,
         PAIR_NOT_ACCEPTING,
     )
@@ -1930,6 +2011,10 @@ def _fill_error_codes(page: str) -> str:
         "__COUNTRIES_JSON__", json.dumps(COUNTRIES)
     ).replace(
         "__PAIR_NOT_ACCEPTING_CODE_JSON__", json.dumps(PAIR_NOT_ACCEPTING.code)
+    ).replace(
+        "__ELSEWHERE_CODES_JSON__", json.dumps([LINK_BUSY.code, LINK_TAKEN_OVER.code])
+    ).replace(
+        "__VERSION_MISMATCH_CODE_JSON__", json.dumps(LINK_VERSION_MISMATCH.code)
     )
 
 

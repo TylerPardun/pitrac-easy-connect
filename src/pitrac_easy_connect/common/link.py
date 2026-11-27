@@ -307,15 +307,33 @@ def hello(device: Dict[str, Any], version: str, challenge: str) -> Dict[str, Any
     }
 
 
-def auth(pairing_id: str, proof: str, version: str, computer_name: str) -> Dict[str, Any]:
-    return {
+def auth(
+    pairing_id: str, proof: str, version: str, computer_name: str,
+    take_over: bool = False, protocol: int = PROTOCOL_VERSION,
+) -> Dict[str, Any]:
+    """The computer's answer to hello.
+
+    ``take_over`` is the person at this computer choosing it, the way picking a
+    remembered device in a Bluetooth list moves the connection to it: PiTrac
+    lets go of whichever paired computer it is talking to and takes this one.
+    Without it a second paired computer is refused as busy, which is what stops
+    two computers that both remember PiTrac from fighting over it on their own.
+
+    ``protocol`` is only ever lowered to talk to an enclosure too old for this
+    one, and then only to update it -- see ``LegacyUpdateLink``.
+    """
+
+    frame = {
         "type": "auth",
-        "protocol": PROTOCOL_VERSION,
+        "protocol": protocol,
         "pairingId": pairing_id,
         "proof": proof,
         "version": version,
         "computerName": computer_name,
     }
+    if take_over:
+        frame["takeOver"] = True
+    return frame
 
 
 def auth_ok(server_proof: str) -> Dict[str, Any]:

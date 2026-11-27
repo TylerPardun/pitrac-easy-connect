@@ -76,7 +76,7 @@ _DETAILS = {
     State.PAIRING_REVOKED: "The owner removed this computer's access. Ask them to open Pair another computer.",
     State.SAVED_PI_RESET: "A different PiTrac now answers at this computer's saved address. Remove the old "
     "pairing, then pair with the PiTrac that's here now.",
-    State.ANOTHER_COMPUTER_CONNECTED: "Only one computer can be connected at a time. Close Easy-Connect on "
-    "the other computer, or remove it from the trusted list.",
+    State.ANOTHER_COMPUTER_CONNECTED: "PiTrac talks to one computer at a time and remembers the others. "
+    "Press Connect here to move it to this computer.",
     State.RATE_LIMITED: "Too many connection attempts were refused. Wait, then try again.",
 }

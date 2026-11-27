@@ -167,7 +167,10 @@ class CompanionHandler(BaseHTTPRequestHandler):
             # Enclosures and the reason a search failed come from the same
             # operation, so concurrent searches cannot cross their answers.
             "/api/search": lambda body: service.search_payload(),
-            "/api/pair": lambda body: service.pair(str(body.get("deviceId", ""))),
+            "/api/pair": lambda body: service.pair(
+                str(body.get("deviceId", "")),
+                owner_card_password=str(body.get("ownerCardPassword", "") or ""),
+            ),
             "/api/range-clear": lambda body: service.clear_range(),
             "/api/range-conditions": lambda body: service.set_range_conditions(body),
             "/api/range-target": lambda body: service.set_range_target(body.get("yards")),
@@ -179,7 +182,10 @@ class CompanionHandler(BaseHTTPRequestHandler):
             "/api/finish-setup": lambda body: service.finish_setup(
                 bool(body.get("done", True))
             ),
-            "/api/connect": lambda body: service.connect(str(body.get("deviceId", ""))),
+            "/api/connect": lambda body: service.connect(
+                str(body.get("deviceId", "")), take_over=body.get("takeOver") is True
+            ),
+            "/api/update/old-enclosure": lambda body: service.update_old_enclosure(),
             "/api/forget": lambda body: service.forget(str(body.get("deviceId", ""))),
             "/api/forget-local": lambda body: service.remove_local(str(body.get("deviceId", ""))),
             "/api/simulator": lambda body: service.select_simulator(str(body.get("simulator", ""))),

@@ -21,6 +21,7 @@ from ..common import link
 from ..common.errors import (
     LINK_BUSY,
     LINK_DEVICE_MISMATCH,
+    LINK_TAKEN_OVER,
     LINK_LOST,
     LINK_VERSION_MISMATCH,
     PAIR_NOT_PAIRED,
@@ -42,6 +43,7 @@ TERMINAL_CODES = {
     PAIR_REVOKED.code,
     LINK_VERSION_MISMATCH.code,
     LINK_BUSY.code,
+    LINK_TAKEN_OVER.code,
 }
 
 
@@ -61,8 +63,16 @@ class CompanionLinkClient:
         fallback_hosts: Optional[List[str]] = None,
         expected_device_id: str = "",
         more_hosts: Optional[Callable[[], List[str]]] = None,
+        take_over: bool = False,
     ):
         self.host = host
+        #: Asked for once, on the first handshake that gets an answer: the
+        #: person chose this computer. Reconnecting later never asks again, so
+        #: a computer PiTrac moved away from cannot take it straight back.
+        self._take_over = take_over
+        #: What an enclosure too old to talk to said about itself, so the app
+        #: can offer to update it rather than only refuse it.
+        self.outdated_enclosure: Optional[Dict[str, Any]] = None
         self.port = port
         self.pairing_id = pairing_id
         self.secret = secret
@@ -151,6 +161,9 @@ class CompanionLinkClient:
                     # all of their DNS/connect timeouts combined.
                     connected_here = self.connected
                     structured_this_cycle = exc.info
+                    # Down first, then the reason: marking a live link down
+                    # records "connection lost", which would bury why it ended.
+                    self._mark_disconnected()
                     self._set_error(exc.info)
                     terminal = True
                 except Exception as exc:  # every other failure here is a retry, not a crash
@@ -200,6 +213,13 @@ class CompanionLinkClient:
 
         outdated = link.check_protocol(hello)
         if outdated is not None:
+            if outdated == "them":
+                with self._lock:
+                    self.outdated_enclosure = {
+                        "version": str(hello.get("version", "")),
+                        "protocol": hello.get("protocol"),
+                        "device": dict(hello.get("device") or {}),
+                    }
             side = "PiTrac" if outdated == "them" else "this computer"
             info = LINK_VERSION_MISMATCH.as_dict("{} needs to be updated".format(side))
             self._set_error(info)
@@ -222,15 +242,20 @@ class CompanionLinkClient:
         challenge = str(hello.get("challenge", ""))
         from ..pi.pairing import PairingManager  # shared HMAC construction
 
+        with self._lock:
+            take_over = self._take_over
         stream.send(
             link.auth(
                 self.pairing_id,
                 PairingManager.client_proof(self.secret, challenge),
                 self.version,
                 self.computer_name,
+                take_over=take_over,
             )
         )
         reply = stream.receive(timeout=HANDSHAKE_TIMEOUT)
+        with self._lock:
+            self._take_over = False
         if reply.get("type") == "error":
             info = reply.get("error") or {}
             self._set_error(info)
@@ -289,7 +314,12 @@ class CompanionLinkClient:
                         pass
                 self._notify()
             elif kind == "error":
-                self._set_error(frame.get("error") or {})
+                info = frame.get("error") or {}
+                self._set_error(info)
+                if str(info.get("code", "")) == LINK_TAKEN_OVER.code:
+                    # Another paired computer was chosen. Stop here instead of
+                    # reconnecting, which would only be refused as busy.
+                    raise link.TerminalLinkError(info)
 
     def _handle_shot(self, stream: link.FrameStream, frame: Dict[str, Any]) -> None:
         sequence = frame.get("sequence", 0)
@@ -417,3 +447,129 @@ def _as_error(exc: BaseException) -> Dict[str, str]:
 
         return LINK_NOT_FOUND.as_dict(str(exc))
     return LINK_LOST.as_dict(str(exc))
+
+
+#: The link protocol of the oldest enclosures this app can still update.
+LEGACY_PROTOCOL = 1
+
+#: Downloading and checking a release on a Pi takes a while, and an old
+#: enclosure answers a command only once it has finished it.
+LEGACY_UPDATE_SECONDS = 300.0
+
+
+class LegacyUpdateLink:
+    """One conversation with an enclosure too old to talk to: update yourself.
+
+    Enclosures before the link carried per-frame tags speak protocol 1, and this
+    app refuses to play through one -- a shot or a setting sent over it could be
+    altered on the way. Refusing outright left such an enclosure stranded,
+    because asking for an update was also something only the app could do.
+
+    So this proves the pairing exactly as before (both sides show they hold the
+    secret), and then says one thing: install this exact release. It sends no
+    shots and changes no settings, and it reads nothing back but the answer to
+    that request. What arrives is no more trusted than a button press: the
+    enclosure fetches the release from the update service itself, checks it
+    against the checksum published with it, and checks that the new copy starts
+    before it replaces anything.
+    """
+
+    def __init__(
+        self, host: str, port: int, pairing_id: str, secret: str, version: str,
+        computer_name: str, expected_device_id: str = "",
+    ):
+        self.host = host
+        self.port = port
+        self.pairing_id = pairing_id
+        self.secret = secret
+        self.version = version
+        self.computer_name = computer_name
+        self.expected_device_id = expected_device_id
+
+    def update_to(self, tag: str, timeout: float = LEGACY_UPDATE_SECONDS) -> Dict[str, Any]:
+        """Ask for ``tag``. ``started`` means the enclosure is restarting into it."""
+
+        sock = socket.create_connection((self.host, self.port), timeout=CONNECT_TIMEOUT)
+        sock.settimeout(None)
+        stream = link.FrameStream(sock)
+        try:
+            self._handshake(stream)
+            checked = self._command(stream, 1, "checkForUpdates", {"targetTag": tag}, timeout)
+            if checked is None:
+                return {"started": False, "detail": "PiTrac stopped answering."}
+            if not (checked.get("available") and checked.get("canApply")):
+                return {
+                    "started": False,
+                    "detail": str(checked.get("detail") or "PiTrac cannot install that release."),
+                }
+            try:
+                applied = self._command(stream, 2, "applyUpdate", {"targetTag": tag}, timeout)
+            except (link.LinkClosed, OSError):
+                # The enclosure restarts itself as the last step, which ends
+                # this connection before it can answer.
+                applied = {"applied": True}
+            if applied is None:
+                applied = {"applied": True}
+            if not applied.get("applied"):
+                return {
+                    "started": False,
+                    "detail": str(applied.get("detail") or "PiTrac did not install it."),
+                }
+            return {"started": True, "detail": str(applied.get("detail") or "")}
+        finally:
+            stream.close()
+
+    def _handshake(self, stream: link.FrameStream) -> None:
+        hello = stream.receive(timeout=HANDSHAKE_TIMEOUT)
+        if hello.get("type") != "hello":
+            raise link.LinkError("PiTrac did not introduce itself")
+        if hello.get("protocol") != LEGACY_PROTOCOL:
+            raise link.LinkError("PiTrac is not one of the older enclosures this is for")
+        reported = str((hello.get("device") or {}).get("deviceId", ""))
+        if self.expected_device_id and reported != self.expected_device_id:
+            raise link.TerminalLinkError(LINK_DEVICE_MISMATCH.as_dict(
+                "expected {}, found {}".format(self.expected_device_id, reported)
+            ))
+
+        challenge = str(hello.get("challenge", ""))
+        from ..pi.pairing import PairingManager  # shared HMAC construction
+
+        stream.send(link.auth(
+            self.pairing_id, PairingManager.client_proof(self.secret, challenge),
+            self.version, self.computer_name, take_over=True, protocol=LEGACY_PROTOCOL,
+        ))
+        reply = stream.receive(timeout=HANDSHAKE_TIMEOUT)
+        if reply.get("type") == "error":
+            info = reply.get("error") or {}
+            raise link.TerminalLinkError(info)
+        if reply.get("type") != "authOk":
+            raise link.LinkError("PiTrac sent an unexpected reply")
+        expected = PairingManager.expected_server_proof(self.secret, challenge)
+        if str(reply.get("serverProof", "")) != expected:
+            raise link.LinkError("that device could not prove it is your PiTrac")
+
+    @staticmethod
+    def _command(
+        stream: link.FrameStream, request_id: int, name: str, arguments: Dict[str, Any],
+        timeout: float,
+    ) -> Optional[Dict[str, Any]]:
+        stream.send(link.command(request_id, name, arguments))
+        deadline = time.monotonic() + timeout
+        while True:
+            left = deadline - time.monotonic()
+            if left <= 0:
+                return None
+            try:
+                frame = stream.receive(timeout=min(left, 5.0))
+            except TimeoutError:
+                continue
+            kind = frame.get("type")
+            if kind == "ping":
+                stream.send(link.pong(frame.get("at", time.time())))
+            elif kind == "commandResult" and frame.get("id") == request_id:
+                if not frame.get("ok"):
+                    info = frame.get("error") or {}
+                    return {"available": False, "applied": False,
+                            "detail": str(info.get("failed") or "PiTrac refused that.")}
+                return dict(frame.get("data") or {})
+            # Everything else an old enclosure volunteers is ignored.
