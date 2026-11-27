@@ -75,6 +75,37 @@ def _runtime_version(args) -> str:
     return requested
 
 
+def relaunch_arguments_for(args) -> list:
+    """What this app passes to itself when an update restarts it.
+
+    The update's install step accepts only options it knows, and this list and
+    that one are kept in step by a test (test_self_update.py): --ogs-port was
+    added here and not there, and every 0.10.x before 0.10.5 refused to install
+    any update.
+    """
+
+    relaunch_arguments = [
+        "--port", str(args.port),
+        "--gspro-port", str(args.gspro_port),
+        "--ogs-port", str(args.ogs_port),
+        "--e6-port", str(args.e6_port),
+        "--simulator-host", str(args.simulator_host),
+        "--discovery-port", str(args.discovery_port),
+    ]
+    if args.config is not None:
+        relaunch_arguments.extend(["--config", str(args.config)])
+    if args.computer_name:
+        relaunch_arguments.extend(["--computer-name", str(args.computer_name)])
+    if args.headless:
+        # Packaged update/rollback tests deliberately run without a desktop.
+        # A normal user launch never carries this flag, so production restarts
+        # still reopen the native window.
+        relaunch_arguments.append("--headless")
+    if args.smoke_test:
+        relaunch_arguments.append("--smoke-test")
+    return relaunch_arguments
+
+
 def main(argv=None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     args = build_parser().parse_args(argv)
@@ -108,25 +139,7 @@ def main(argv=None) -> int:
         restart_context = self_update.recover_pending_restart(
             version=__version__, executable=Path(sys.executable)
         )
-    relaunch_arguments = [
-        "--port", str(args.port),
-        "--gspro-port", str(args.gspro_port),
-        "--ogs-port", str(args.ogs_port),
-        "--e6-port", str(args.e6_port),
-        "--simulator-host", str(args.simulator_host),
-        "--discovery-port", str(args.discovery_port),
-    ]
-    if args.config is not None:
-        relaunch_arguments.extend(["--config", str(args.config)])
-    if args.computer_name:
-        relaunch_arguments.extend(["--computer-name", str(args.computer_name)])
-    if args.headless:
-        # Packaged update/rollback tests deliberately run without a desktop.
-        # A normal user launch never carries this flag, so production restarts
-        # still reopen the native window.
-        relaunch_arguments.append("--headless")
-    if args.smoke_test:
-        relaunch_arguments.append("--smoke-test")
+    relaunch_arguments = relaunch_arguments_for(args)
     service = CompanionService(
         config_path=args.config,
         simulator_ports={

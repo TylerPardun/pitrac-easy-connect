@@ -811,3 +811,25 @@ def test_every_file_of_an_update_really_is_flushed(tmp_path, monkeypatch):
     monkeypatch.setattr(su.os, "fsync", note)
     su._fsync_tree(root)
     assert len(flushed) == 2
+
+
+def test_the_install_step_accepts_every_option_the_app_relaunches_with(tmp_path, monkeypatch):
+    """The two lists must agree, or no update can ever install.
+
+    The app relaunched itself with --ogs-port, added with OpenGolfSim, and the
+    install step had never been told about it: every 0.10.x before 0.10.5
+    refused to install any update, as "the journal relaunch arguments are
+    invalid". Nothing caught it until a release smoke started from 0.10.4.
+    """
+
+    import json as _json
+    from pitrac_easy_connect.companion import app as app_module
+
+    _state, _current, journal_path = stage_fixture(tmp_path, monkeypatch)
+    for argv in ([], ["--config", str(tmp_path / "c.json"), "--computer-name", "Den PC"],
+                 ["--headless", "--smoke-test"]):
+        arguments = app_module.relaunch_arguments_for(app_module.build_parser().parse_args(argv))
+        journal = _json.loads(Path(journal_path).read_text())
+        journal["relaunchArguments"] = arguments
+        su._write_journal(journal_path, journal)
+        assert su.load_journal(journal_path)["relaunchArguments"] == arguments

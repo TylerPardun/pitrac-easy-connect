@@ -771,10 +771,16 @@ def load_journal(path: Path) -> Dict[str, Any]:
     if journal["expectedReleaseTag"] != "v" + str(journal["targetVersion"]):
         raise SelfUpdateError("the journal tag and target do not match")
     relaunch = journal["relaunchArguments"]
-    valued_flags = {"--port", "--gspro-port", "--e6-port", "--simulator-host",
+    # Every option the app passes when it relaunches itself (see
+    # companion/app.py). --ogs-port was added with OpenGolfSim and not here,
+    # so every 0.10.x before 0.10.5 refused to install any update at all.
+    valued_flags = {"--port", "--gspro-port", "--ogs-port", "--e6-port", "--simulator-host",
                     "--discovery-port", "--config", "--computer-name"}
     boolean_flags = {"--headless", "--smoke-test"}
-    valid_relaunch = isinstance(relaunch, list) and len(relaunch) <= 15
+    # Every option at most once. A fixed 15 was the most before --ogs-port,
+    # and with it a relaunch carrying --config and --computer-name is 16.
+    longest = 2 * len(valued_flags) + len(boolean_flags)
+    valid_relaunch = isinstance(relaunch, list) and len(relaunch) <= longest
     index = 0
     while valid_relaunch and index < len(relaunch):
         flag = relaunch[index]

@@ -19,6 +19,12 @@ from packaging.version import InvalidVersion, Version
 
 NO_BASELINE = 3
 
+#: Published releases whose desktop updater cannot install any update, so an
+#: update smoke that starts from one proves nothing except that bug. Their app
+#: relaunches itself with --ogs-port, which their own install step does not
+#: accept. People on these install the next release by hand once.
+CANNOT_SELF_UPDATE = frozenset({"v0.10.0", "v0.10.1", "v0.10.2", "v0.10.3", "v0.10.4"})
+
 
 def _flatten_pages(value: object) -> Iterable[dict[str, object]]:
     """Accept either one GitHub API page or ``gh api --slurp`` output."""
@@ -45,6 +51,8 @@ def select_update_baseline(releases: object, target_text: str) -> str | None:
         if release.get("draft"):
             continue
         tag = str(release.get("tag_name") or "")
+        if tag in CANNOT_SELF_UPDATE:
+            continue
         try:
             version = Version(tag.removeprefix("v"))
         except InvalidVersion:

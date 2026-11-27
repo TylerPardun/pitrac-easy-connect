@@ -72,3 +72,15 @@ def test_workflow_only_skips_the_missing_baseline_for_non_tag_builds():
     assert 'if [[ "$GITHUB_REF" == refs/tags/v* ]]' in WORKFLOW
     assert "release-tag builds require a published lower-version updater baseline" in WORKFLOW
     assert WORKFLOW.count("env.HAS_UPDATE_BASELINE == 'true'") == 2
+
+
+def test_a_release_that_cannot_update_itself_is_never_the_starting_point():
+    """0.10.x before 0.10.5 cannot install any update (see self_update's
+    relaunch check), so a smoke that started there would test only that bug.
+    The newest release that can is used instead."""
+
+    releases = [release("v0.10.4"), release("v0.9.1"), release("v0.9.0")]
+    assert MODULE.select_update_baseline(releases, "0.10.5") == "v0.9.1"
+    # Releases after the fix are ordinary baselines again.
+    assert MODULE.select_update_baseline(
+        releases + [release("v0.10.5")], "0.10.6") == "v0.10.5"
