@@ -1246,6 +1246,15 @@ class ArchiveUpdater:
                 try:
                     self._restart()
                 except Exception as exc:
+                    if releases and self._arm_guard is not None:
+                        # The guard owns everything after the switch, because
+                        # this process does not survive the restart. Undoing it
+                        # here as well is what turned a restart that was
+                        # already under way into an update undone every time.
+                        return {"applied": True, "version": tag,
+                                "detail": "Updated to {}. PiTrac is restarting; it puts the "
+                                          "previous version back by itself if the new one "
+                                          "does not start ({}).".format(tag, exc)}
                     (self._roll_back_release if releases else self._roll_back)(previous)
                     return {"applied": False,
                             "detail": "The update was undone: it could not be started ({})".format(exc)}

@@ -316,7 +316,10 @@ class PiBackend:
     def service_status(self, name: str) -> ServiceStatus:
         raise NotImplementedError
 
-    def restart_service(self, name: str) -> None:
+    def restart_service(self, name: str, wait: bool = True) -> None:
+        """Restart a systemd unit. ``wait=False`` queues it and returns at once,
+        which is the only safe way for a service to restart itself."""
+
         raise NotImplementedError
 
     def process_running(self, pattern: str) -> bool:

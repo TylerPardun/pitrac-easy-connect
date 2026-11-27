@@ -722,8 +722,13 @@ class NmcliBackend(PiBackend):
         state = _run(["systemctl", "is-active", name], timeout=10, check=False).stdout.strip()
         return ServiceStatus(name=name, present=present, active=state == "active", detail=state)
 
-    def restart_service(self, name: str) -> None:
-        command = ["systemctl", "restart", name]
+    def restart_service(self, name: str, wait: bool = True) -> None:
+        # --no-block when a service restarts itself: waiting means waiting for
+        # its own shutdown, which ends the systemctl it is waiting on too, and
+        # that looked like a failed restart -- the updater then undid every
+        # update on a real enclosure the moment it restarted into it.
+        command = ["systemctl", "restart", name] if wait else [
+            "systemctl", "restart", "--no-block", name]
         if self._sudo:
             command = ["sudo", "-n", *command]
         _run(command, timeout=60)

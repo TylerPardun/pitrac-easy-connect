@@ -937,7 +937,8 @@ class PiService:
         anyway, so the caller is told the files are in place either way.
         """
 
-        self.backend.restart_service("pitrac-easy-connect")
+        # Queued, not waited for: see NmcliBackend.restart_service.
+        self.backend.restart_service("pitrac-easy-connect", wait=False)
 
     def _restart_pitrac(self) -> Dict[str, Any]:
         from .pitrac import PITRAC_WEB_SERVICE

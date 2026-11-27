@@ -794,6 +794,71 @@ def test_the_guard_is_armed_before_the_link_moves_never_after(released, upstream
     assert len(details["asset_sha256"]) == 64
 
 
+def test_a_restart_that_ends_the_updater_does_not_undo_a_guarded_update(released, upstream):
+    """What a real enclosure did: switch to the new version, restart itself,
+    take the end of its own restart for a failed one, and switch back.
+
+    Restarting the service stops this process, and the systemctl it waits on
+    with it. Once the guard is armed and the link has moved, the guard -- which
+    survives the restart -- decides whether the new version stays.
+    """
+
+    _root, link, _releases, current = released
+    swapped = []
+
+    def arm_guard(**details):
+        return lambda: swapped.append(link.resolve())
+
+    def restart_that_ends_us():
+        raise RuntimeError("systemctl restart pitrac-easy-connect was terminated")
+
+    up = release_updater(released, upstream, restart=restart_that_ends_us, arm_guard=arm_guard)
+    up._verify = lambda staged: True
+
+    result = up.apply()
+    assert result["applied"] is True, result
+    assert link.resolve() != current, "the update was switched back by the process it ended"
+    assert swapped == [link.resolve()]
+
+
+def test_without_a_guard_a_failed_restart_is_still_undone(released, upstream):
+    """No guard means nobody else will, so the updater keeps that job."""
+
+    _root, link, _releases, current = released
+
+    def restart_fails():
+        raise RuntimeError("could not restart")
+
+    up = release_updater(released, upstream, restart=restart_fails)
+    up._verify = lambda staged: True
+    result = up.apply()
+    assert result["applied"] is False and "undone" in result["detail"]
+    assert link.resolve() == current
+
+
+def test_the_enclosure_restarts_itself_without_waiting(monkeypatch):
+    """Waiting for its own restart is waiting for its own end."""
+
+    from pitrac_easy_connect.pi import nmcli_backend
+
+    ran = []
+    monkeypatch.setattr(nmcli_backend, "_run", lambda command, **kwargs: ran.append(command))
+    backend = nmcli_backend.NmcliBackend.__new__(nmcli_backend.NmcliBackend)
+    backend._sudo = False
+    backend.restart_service("pitrac-easy-connect", wait=False)
+    backend.restart_service("pitrac-web")
+    assert ran == [["systemctl", "restart", "--no-block", "pitrac-easy-connect"],
+                   ["systemctl", "restart", "pitrac-web"]]
+
+    from pitrac_easy_connect.pi.service import PiService
+
+    asked = []
+    fake = type("S", (), {"backend": type("B", (), {
+        "restart_service": lambda self, name, wait=True: asked.append((name, wait))})()})()
+    PiService._restart_service(fake)
+    assert asked == [("pitrac-easy-connect", False)]
+
+
 @on_posix
 def test_a_guard_that_cannot_be_armed_stops_the_update(released, upstream):
     """No guard means no way back, so the swap must not happen at all."""

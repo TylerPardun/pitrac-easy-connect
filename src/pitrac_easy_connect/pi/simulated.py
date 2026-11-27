@@ -407,7 +407,7 @@ class SimulatedPi(PiBackend):
             detail="active" if active else "inactive",
         )
 
-    def restart_service(self, name: str) -> None:
+    def restart_service(self, name: str, wait: bool = True) -> None:
         self.restarted_services.append(name)
         self.services[name] = True
 
