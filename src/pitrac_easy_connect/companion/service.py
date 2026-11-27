@@ -271,6 +271,8 @@ class CompanionService:
         #: When the autopilot last tried each (half, version), so a failure is
         #: retried later rather than on every step.
         self._auto_attempts: Dict[Any, float] = {}
+        #: Set by "Update now": install as soon as the update is ready.
+        self._install_when_ready = False
         #: The practice range. In memory only: a session is a bucket of balls.
         self.range = RangeSession()
         self.range.set_target(self.store.get("rangeTarget", self.range.target))
@@ -1876,6 +1878,7 @@ class CompanionService:
             )
             return {
                 "state": self._desktop_update_state.value,
+                "installWhenReady": self._install_when_ready,
                 "installedVersion": self.version,
                 "availableVersion": self._desktop_update_available_version,
                 "detail": self._desktop_update_detail,
@@ -2445,8 +2448,8 @@ class CompanionService:
     AUTO_UPDATE_SECONDS = 20.0
     #: How long to leave a version alone after an attempt at it failed.
     AUTO_RETRY_SECONDS = 30 * 60.0
-    #: How long without a shot before the app may restart itself to install.
-    QUIET_BEFORE_RESTART_SECONDS = 10 * 60.0
+    #: How long a click on "Update now" waits for its download to be ready.
+    UPDATE_NOW_WAIT_SECONDS = 15 * 60.0
 
     def _auto_update_loop(self) -> None:
         while not self._update_check_stop.wait(self.AUTO_UPDATE_SECONDS):
@@ -2464,10 +2467,53 @@ class CompanionService:
         self._auto_attempts[key] = now
         return True
 
-    def _quiet_enough_to_restart(self, now: float) -> bool:
+    def update_now(self) -> Dict[str, Any]:
+        """The person pressed "Update now": install this desktop's update.
+
+        Usually it is already downloaded and verified, because the autopilot
+        fetches it as soon as it is found, so this installs and restarts at
+        once. If it is not ready yet, it is fetched now and installed the
+        moment it is. Either way PiTrac follows by itself once the new copy is
+        running -- see auto_update_step.
+        """
+
+        if self.desktop_updates is None:
+            return {"started": False,
+                    "detail": "This copy runs from source; update it with git pull."}
         with self._lock:
-            last_shot = self._last_shot_at
-        return not last_shot or now - float(last_shot) >= self.QUIET_BEFORE_RESTART_SECONDS
+            state = self._desktop_update_state
+            self._install_when_ready = True
+        if state is DesktopUpdateState.READY_TO_RESTART:
+            return self.install_and_restart()
+        plan = self._update_status().get("coordination") or {}
+        target = str(plan.get("targetVersion") or "")
+        if state not in _BUSY_DESKTOP_UPDATE_STATES and target:
+            if self.prepare_update(target).get("prepared"):
+                self.download_desktop_update()
+        threading.Thread(target=self._install_once_ready, daemon=True).start()
+        return {"started": True,
+                "detail": "Getting {} ready. Easy-Connect restarts by itself when it is.".format(
+                    target or "the update")}
+
+    def _install_once_ready(self) -> None:
+        deadline = time.monotonic() + self.UPDATE_NOW_WAIT_SECONDS
+        while time.monotonic() < deadline and not self._update_check_stop.wait(1.0):
+            with self._lock:
+                state = self._desktop_update_state
+                wanted = self._install_when_ready
+            if not wanted:
+                return
+            if state is DesktopUpdateState.READY_TO_RESTART:
+                self.install_and_restart()
+                return
+            if state not in _BUSY_DESKTOP_UPDATE_STATES and state not in (
+                DesktopUpdateState.AVAILABLE, DesktopUpdateState.IDLE,
+                DesktopUpdateState.CHECKING, DesktopUpdateState.UP_TO_DATE,
+            ):
+                # It failed. Leave the reason showing; the click can be repeated.
+                with self._lock:
+                    self._install_when_ready = False
+                return
 
     def auto_update_step(self, now: Optional[float] = None) -> str:
         """Take the next step of an update, if one is due. Returns what it did.
@@ -2489,16 +2535,19 @@ class CompanionService:
         if phase == "desktop-update-required" and self.desktop_updates is not None and target:
             with self._lock:
                 state = self._desktop_update_state
+                wanted = self._install_when_ready
             if state is DesktopUpdateState.READY_TO_RESTART:
-                # Never in the middle of play: wait until shots have stopped.
-                if self._quiet_enough_to_restart(now):
+                # Installing restarts the app, so it waits for the person to
+                # press "Update now" on the startup page.
+                if wanted:
                     self.install_and_restart()
                     return "installing"
-                return "waiting-for-a-break"
+                return "ready-waiting-for-click"
             if state in _BUSY_DESKTOP_UPDATE_STATES:
                 return "busy"
             if not self._may_attempt("desktop", target, now):
                 return "waiting-to-retry"
+            # Fetched and verified ahead of the click, so the click is quick.
             if self.prepare_update(target).get("prepared"):
                 self.download_desktop_update()
                 return "downloading"

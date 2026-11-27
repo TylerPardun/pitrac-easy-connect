@@ -197,6 +197,7 @@ class CompanionHandler(BaseHTTPRequestHandler):
             "/api/club": lambda body: service.set_club(str(body.get("club", ""))),
             "/api/shots/clear": lambda body: service.clear_shots(),
             "/api/cameras": lambda body: service.cameras(),
+            "/api/update/now": lambda body: service.update_now(),
             "/api/update/reveal": lambda body: service.reveal_downloaded_update(),
             "/api/update/check": lambda body: service.check_for_updates(),
             "/api/update/download": lambda body: service.download_desktop_update(),

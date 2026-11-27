@@ -571,11 +571,12 @@ except where it says so.
 
 
 Updates
-   They install themselves: the app checks for a newer version, installs it on
-   this computer while you are not hitting balls, then brings the Pi to the
-   same version. Pairing, Wi-Fi, calibration, settings, and shot history are
-   all kept. If the app ever says the Pi needs a one-time reinstall, run the
-   install command from step 1 again with this kit.
+   When a newer version is out, the app says so at the top of its first page.
+   Press Update now: it installs on this computer, restarts, and then brings
+   the Pi to the same version by itself. Pairing, Wi-Fi, calibration,
+   settings, and shot history are all kept. If the app ever says the Pi needs
+   a one-time reinstall, run the install command from step 1 again with this
+   kit.
 
 Checking these files
    SHA256SUMS.txt lists what each one should be.

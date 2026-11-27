@@ -148,15 +148,17 @@ PAGE = r"""<!doctype html>
   .err .code{margin-top:8px;color:var(--faint);font-size:.74rem;letter-spacing:.07em;
     font-family:ui-monospace,Menlo,Consolas,monospace}
 
-  /* An update is worth mentioning, never worth interrupting for. */
-  .update{margin-top:22px;padding:13px 15px;border-radius:11px;border:1px solid var(--line);
+  /* A newer version, at the top of the startup page until it is installed. */
+  .update{margin:0 0 22px;padding:13px 15px;border-radius:11px;border:1px solid var(--line);
     background:var(--panel);display:flex;gap:12px;align-items:center;justify-content:space-between}
+  .update.offer{border-color:var(--accent)}
+  .update.offer strong{display:block;color:var(--text);font-size:.95rem;margin-bottom:2px}
   .update span{color:var(--muted);font-size:.87rem}
   .update button{width:auto;padding:8px 14px;font-size:.84rem;flex:none}
   .update-actions{display:flex;gap:8px;flex:none}
 
   /* An update in progress, said quietly. Nothing to press. */
-  .update-pill{margin-top:10px;padding:7px 12px;border-radius:20px;border:1px solid var(--line);
+  .update-pill{margin:0 0 18px;padding:7px 12px;border-radius:20px;border:1px solid var(--line);
     background:var(--panel);display:flex;gap:8px;align-items:center;font-size:.8rem;
     color:var(--muted);width:fit-content}
 
@@ -259,6 +261,12 @@ PAGE = r"""<!doctype html>
 <main>
   <div class="brand">PiTrac Easy-Connect</div>
 
+  <!-- A newer version, offered first and kept until it is installed: nobody
+       should play on outdated code without knowing. PiTrac follows by itself
+       once this computer is updated. See renderUpdate(). -->
+  <div id="update"></div>
+  <div class="update-pill hidden" id="updateIndicator"></div>
+
   <div class="wiz hidden" id="wiz">
     <div class="wizrail" id="wizRail"></div>
     <div class="wizstep" id="wizStep"></div>
@@ -289,10 +297,6 @@ PAGE = r"""<!doctype html>
        place attached, which is what tells you which one you wanted. -->
   <div class="board hidden" id="board"></div>
 
-  <!-- Updates install themselves. This only says one is happening; see
-       renderUpdate(). -->
-  <div class="update-pill hidden" id="updateIndicator"></div>
-  <div id="update"></div>
 
   <div class="pick hidden" id="pick"></div>
 
@@ -1188,8 +1192,9 @@ function updateActivity(state, desktop, plan){
   const version=desktop.stagedTargetVersion||desktop.availableVersion||plan.targetVersion||"";
   switch(state){
     case "downloading": case "verifying": case "staging":
-      return "Downloading update "+version+"…";
-    case "ready-to-restart": return "Update "+version+" installs when you take a break";
+      // Fetched ahead of the click; only worth saying once it was asked for.
+      return desktop.installWhenReady ? "Getting update "+version+" ready…" : "";
+    case "ready-to-restart": return "";
     case "installing": case "awaiting-restart-verification": return "Installing update "+version+"…";
     case "rollback": return "Putting the previous version back…";
     case "restart-required": return "Update installed. Start PiTrac Easy-Connect again to finish.";
@@ -1207,15 +1212,35 @@ function renderUpdate(update){
   const line=update?updateActivity(state, desktop, plan):"";
   indicator.classList.toggle("hidden", !line);
   indicator.textContent=line;
-  // The one thing left to a person: an update this computer could not install
-  // by itself -- typically an app run from where it cannot replace itself.
-  // The verified package is kept; this shows where.
+  // An update this computer could not install by itself -- typically an app
+  // run from where it cannot replace itself. The verified package is kept;
+  // this shows where.
   if(update && DESKTOP_UPDATE_STUCK_STATES.has(state) && desktop.savedPackagePath){
     host.innerHTML='<div class="update"><span>'+esc(desktop.detail||
       "Easy-Connect could not update itself.")+'</span><span class="update-actions">'+
       '<button class="quiet" id="getUpdate">'+esc(desktop.revealAction||"Show downloaded file")+
       '</button></span></div>';
     wireDesktopDownload(host, desktop.savedPackagePath);
+    return;
+  }
+  // A newer version: offered at the top of the startup page, with one button,
+  // until it is installed. There is no "later" -- playing on outdated code
+  // should be a choice made knowingly, not a dismissed card. PiTrac is
+  // brought to the same version by itself once this computer restarts.
+  if(update && plan.phase==="desktop-update-required" && plan.targetVersion &&
+     !["installing","awaiting-restart-verification","rollback","restart-required"].includes(state)){
+    const asked=!!desktop.installWhenReady;
+    host.innerHTML='<div class="update offer"><span><strong>PiTrac Easy-Connect '+
+      esc(plan.targetVersion)+' is available</strong>This computer has '+
+      esc(desktop.installedVersion||plan.installedVersion||"")+
+      '. Updating restarts Easy-Connect, then updates PiTrac by itself.</span>'+
+      '<button class="primary" id="updateNow"'+(asked?" disabled":"")+'>'+
+      (asked?"Getting it ready…":"Update now")+'</button></div>';
+    if(!asked) $("updateNow").addEventListener("click",e=>run(e.target, async()=>{
+      const result=await api("/api/update/now",{});
+      if(result && result.started===false && result.detail)
+        throw Object.assign(new Error(result.detail),{info:{failed:result.detail}});
+    }));
     return;
   }
   host.innerHTML="";

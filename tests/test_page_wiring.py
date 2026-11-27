@@ -224,24 +224,29 @@ def test_discovery_problem_is_shown_in_the_desktop_ui():
     assert "No PiTrac was found" in search
 
 
-def test_the_window_asks_nobody_to_update_anything():
-    """Updates install themselves; the window only says one is happening.
+def test_a_newer_version_is_offered_at_the_top_of_the_startup_page():
+    """One prompt, one button, kept until it is installed.
 
-    The order -- this desktop first, then PiTrac to exactly its version -- is
-    the autopilot's job now, and is tested there (test_auto_update.py).
+    Nobody should play on outdated code without knowing, so it sits above
+    everything else on the startup page and has no "later". Installing, and
+    then bringing PiTrac to the same version, is the app's job from there; the
+    order is tested with the autopilot (test_auto_update.py).
     """
 
+    play = COMPANION.split('id="pane-play"', 1)[1]
+    assert play.index('id="update"') < play.index('id="head"')
+    render = COMPANION.split("function renderUpdate(update){", 1)[1].split("\nfunction ", 1)[0]
+    assert 'plan.phase==="desktop-update-required"' in render
+    assert 'id="updateNow"' in render and '"/api/update/now"' in render
+    assert "remindLater" not in COMPANION and "Remind me later" not in COMPANION
+    # The only update action left in the window, besides showing a package an
+    # install could not use.
     for action in ('"/api/update/download"', '"/api/update/apply"', '"/api/update/pi"',
                    '"/api/update/prepare"', '"/api/update/check"', 'command:"applyUpdate"'):
         assert action not in COMPANION, action
-    for gone in ("checkPiUpdate", "updateNow", "remindLater", "restartNow", "retryUpdate",
-                 "syncPi", "doPiUpdate"):
+    for gone in ("checkPiUpdate", "restartNow", "retryUpdate", "syncPi", "doPiUpdate"):
         assert gone not in COMPANION, gone
-    # The single exception: an update this computer could not install itself,
-    # where the verified package is kept and can be shown.
-    render = COMPANION.split("function renderUpdate(update){", 1)[1].split("\nfunction ", 1)[0]
     assert "DESKTOP_UPDATE_STUCK_STATES.has(state)" in render
-    assert "savedPackagePath" in render
 
 
 @pytest.mark.parametrize("name,page", PAGES, ids=[case[0] for case in PAGES])

@@ -1,9 +1,11 @@
-"""Updates install themselves, in the one safe order.
+"""Updates, in the one safe order.
 
-This desktop goes first, to the latest release; PiTrac follows, to exactly the
-version this desktop runs. The app restarts itself to install only when shots
-have stopped, and a failed attempt is left alone for a while rather than
-retried on every step. Nothing here asks anybody anything.
+This desktop goes first, to the latest release: it is fetched and verified as
+soon as it is found, offered at the top of the startup page, and installed
+when the person presses "Update now" -- installing restarts the app, so that
+is their call. PiTrac then follows by itself, to exactly the version this
+desktop runs; nobody has to touch the Pi. A failed attempt is left alone for
+a while rather than retried on every step.
 """
 
 import pytest
@@ -68,14 +70,31 @@ def test_pitrac_is_never_sent_ahead_of_the_desktop(app):
     assert not any(call[0] == "pi" for call in app.calls)
 
 
-def test_the_app_restarts_to_install_only_once_shots_have_stopped(app):
+def test_a_ready_update_waits_for_update_now(app):
     latest(app, NEWER, enclosure=INSTALLED)
     app._desktop_update_state = DesktopUpdateState.READY_TO_RESTART
-    app._last_shot_at = 1000.0 - 60
-    assert app.auto_update_step(now=1000.0) == "waiting-for-a-break"
+    assert app.auto_update_step(now=1000.0) == "ready-waiting-for-click"
     assert ("install",) not in app.calls
-    app._last_shot_at = 1000.0 - app.QUIET_BEFORE_RESTART_SECONDS - 1
-    assert app.auto_update_step(now=1000.0) == "installing"
+
+
+def test_update_now_installs_at_once_when_it_is_ready(app):
+    latest(app, NEWER, enclosure=INSTALLED)
+    app._desktop_update_state = DesktopUpdateState.READY_TO_RESTART
+    app.update_now()
+    assert app.calls == [("install",)]
+
+
+def test_update_now_before_it_is_ready_fetches_it_and_installs_when_it_is(app):
+    latest(app, NEWER, enclosure=INSTALLED)
+    app.update_now()
+    assert app.calls == [("prepare", NEWER), ("download",)]
+    assert app._desktop_update_payload()["installWhenReady"] is True
+    # The download finishing is what the next step sees.
+    app._desktop_update_state = DesktopUpdateState.READY_TO_RESTART
+    import time
+    deadline = time.monotonic() + 5
+    while ("install",) not in app.calls and time.monotonic() < deadline:
+        time.sleep(0.05)
     assert ("install",) in app.calls
 
 
