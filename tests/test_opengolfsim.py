@@ -363,7 +363,7 @@ def test_gspro_dying_in_the_middle_is_not_silence(tmp_path):
 
 def test_it_is_offered_wherever_the_others_are():
     assert [mode.value for mode in PlayMode] == ["local", "ogs", "gspro"]
-    assert PAGE.count('data-sim="ogs"') == PAGE.count('data-sim="gspro"') == 2
+    assert PAGE.count('data-sim="ogs"') == PAGE.count('data-sim="gspro"') == 1
     assert '"wizOgs"' in PAGE
 
 

@@ -35,6 +35,9 @@ pitrac-easy-connect = "pitrac_easy_connect.companion.app:main"
 pitrac-easy-connect-pi = "pitrac_easy_connect.pi.app:main"
 pitrac-ball-machine = "pitrac_easy_connect.ballmachine:main"
 
+[tool.setuptools.package-data]
+"pitrac_easy_connect.companion" = ["links-course.jpg"]
+
 [tool.setuptools.packages.find]
 where = ["src"]
 

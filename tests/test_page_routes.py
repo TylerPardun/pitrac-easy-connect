@@ -23,7 +23,8 @@ def calls_in(page_source: str):
 
     calls = set()
     for match in re.finditer(r'(?:api|rangeAction)\(\s*"([^"]+)"\s*(,)?', page_source):
-        path, has_body = match.group(1), bool(match.group(2))
+        path = match.group(1)
+        has_body = bool(match.group(2)) and not page_source[match.end():].lstrip().startswith("undefined")
         calls.add((path, "POST" if has_body else "GET"))
     return calls
 

@@ -52,18 +52,27 @@ def run_native(
         native_window = webview.create_window(
             # The minimum is the width the wide layout needs; below it the
             # panes fall back to the single column they use today.
-            title, url, width=width, height=height, min_size=(900, 600)
+            title, url, width=width, height=height, min_size=(900, 600),
+            background_color="#0b0f0d", hidden=True,
         )
 
         def shown() -> None:
+            # Both desktop backends fire shown when the native handle is ready,
+            # including for hidden windows. Wait off the GUI thread for the
+            # first document so a blank window never precedes the home screen.
+            # A slow or failed load must still leave a window the owner can close.
+            native_window.events.loaded.wait(3)
+            if native_window.events.closed.is_set():
+                return
+            native_window.show()
+            if on_activation_ready is not None:
+                on_activation_ready(lambda: _bring_to_front(native_window))
             if on_created is not None:
                 on_created()
 
         native_window.events.shown += shown
 
         def started() -> None:
-            if on_activation_ready is not None:
-                on_activation_ready(lambda: _bring_to_front(native_window))
             if on_close_ready is not None:
                 on_close_ready(lambda: _close_native(native_window))
             if on_fullscreen_ready is not None:

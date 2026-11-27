@@ -8,6 +8,7 @@ keeping unrelated websites from reading or changing Easy-Connect state.
 import json
 import re
 import secrets
+from importlib import resources
 import threading
 from collections import Counter
 from http import HTTPStatus
@@ -115,6 +116,11 @@ class CompanionHandler(BaseHTTPRequestHandler):
         if not self._host_allowed():
             return
         path = urlparse(self.path).path
+        if path == "/links-course.jpg":
+            body = resources.files(__package__).joinpath("links-course.jpg").read_bytes()
+            self._headers("image/jpeg", len(body), HTTPStatus.OK)
+            self.wfile.write(body)
+            return
         if path in ("/", "/index.html"):
             self._html(PAGE)
             return
@@ -132,7 +138,7 @@ class CompanionHandler(BaseHTTPRequestHandler):
             self._guarded(self.server.service.raw_shots)
             return
         if path == "/api/range":
-            self._guarded(self.server.service.range_status)
+            self._guarded(lambda: self.server.service.poll_range(self.headers.get("X-PiTrac-Range", "")))
             return
         if path == "/api/backup":
             self._download_backup()

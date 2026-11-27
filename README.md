@@ -156,7 +156,12 @@ the same at `http://10.42.0.1` if there is no computer to hand.
 
 Open the app, find the enclosure, choose how to play, and play. A simulator adds
 two steps: opening it, and one shot to make sure. The guide does not appear again after
-the first-time setup, but you can reopen it with **Advanced → Run setup again**.
+the first-time setup, but you can reopen it with **Home → Device settings → Run setup again**.
+
+Home shows connection status and offers the next action. Use **Practice range** to play,
+**Shot history** to review a session, and **Play mode** to choose a simulator. The
+**›_** button in the upper right opens the developer console. **Alt+Shift+D** (Option+Shift+D
+on Mac) also opens it. Connection details, recent errors, camera checks and raw shots are there.
 
 ---
 

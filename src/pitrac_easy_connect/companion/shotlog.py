@@ -168,11 +168,17 @@ class Shot:
 class ShotLog:
     def __init__(self, path: Path, limit: int = MAX_SHOTS):
         self._lock = threading.RLock()
+        self._revision = 0
         self._limit = limit
         self._store = ConfigStore(path, defaults={"shots": [], "club": ""})
         self._club = str(self._store.get("club") or "")
 
     # --- Recording --------------------------------------------------------
+
+    @property
+    def revision(self) -> int:
+        with self._lock:
+            return self._revision
 
     @property
     def club(self) -> str:
@@ -238,6 +244,7 @@ class ShotLog:
             shots.append(kept)
             del shots[: max(0, len(shots) - self._limit)]
             self._store.set("shots", shots)
+            self._revision += 1
         return shot
 
     # --- Reading ----------------------------------------------------------
@@ -253,6 +260,7 @@ class ShotLog:
                 if shots[index].get("id") == shot_id:
                     shots[index] = dict(shots[index], **found)
                     self._store.set("shots", shots)
+                    self._revision += 1
                     return True
         return False
 
@@ -306,6 +314,7 @@ class ShotLog:
     def clear(self) -> None:
         with self._lock:
             self._store.set("shots", [])
+            self._revision += 1
 
     def status(self, limit: int = 25) -> Dict[str, Any]:
         return {

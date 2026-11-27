@@ -70,6 +70,8 @@ analysis = Analysis(
         # Actions tool cache. Put a stable Mozilla CA bundle beside certifi in
         # the frozen app; app_entry.py selects it before any application import.
         (certifi.where(), "certifi"),
+        (os.path.join(SOURCE_ROOT, "pitrac_easy_connect", "companion", "links-course.jpg"),
+         "pitrac_easy_connect/companion"),
     ],
     # PyInstaller cannot see these through the runtime lookups in the service,
     # so they are named explicitly.

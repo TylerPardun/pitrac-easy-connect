@@ -39,20 +39,20 @@ def test_gspro_is_described_with_the_screen_that_starts_listening():
 
 
 def test_the_local_range_is_offered_wherever_gspro_is():
-    assert PAGE.count('data-sim="local"') == PAGE.count('data-sim="gspro"') == 2
+    assert PAGE.count('data-sim="local"') == PAGE.count('data-sim="gspro"') == 1
 
 
 def test_gspros_connection_buttons_are_not_shown_for_the_local_range():
     assert '$("simButtons").classList.toggle("hidden", local)' in render_source()
 
 
-def test_the_address_it_dials_is_shown():
-    """When nothing answers, this is the fact that says which side is wrong."""
-
-    assert "127.0.0.1:" in render_source()
-    assert "this computer" in render_source(), (
-        "it does not say the simulator must be on this machine"
-    )
+def test_connection_addresses_are_in_the_developer_console():
+    assert "127.0.0.1:" not in render_source()
+    details = PAGE.split("function renderDetails(data){")[1].split("\nfunction ")[0]
+    assert "sim.endpoint" in details
+    console = PAGE.split('<dialog id="devConsole"')[1].split("</dialog>")[0]
+    assert 'id="kv"' in console and 'id="rawShots"' in console
+    assert 'id="cameras"' in console
 
 
 def test_the_steps_tick_off_rather_than_being_a_wall_of_text():

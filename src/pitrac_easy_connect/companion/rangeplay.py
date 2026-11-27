@@ -54,6 +54,7 @@ class RangeSession:
 
     def __init__(self, limit: int = MAX_SHOTS):
         self._lock = threading.RLock()
+        self._revision = 0
         self._limit = limit
         self._shots: List[Dict[str, Any]] = []
         self._next_id = 1
@@ -66,6 +67,11 @@ class RangeSession:
         }
 
     # --- Conditions -------------------------------------------------------
+
+    @property
+    def revision(self) -> int:
+        with self._lock:
+            return self._revision
 
     @property
     def density(self) -> float:
@@ -85,6 +91,7 @@ class RangeSession:
         """Set the air the ball flies through. Affects every later shot."""
 
         with self._lock:
+            self._revision += 1
             if pressure_pa is not None:
                 self.conditions["pressurePa"] = max(10000.0, min(110000.0, _finite(
                     pressure_pa, flight.STANDARD_PRESSURE_PA)))
@@ -108,6 +115,7 @@ class RangeSession:
 
         wanted = int(round(_finite(yards, DEFAULT_TARGET)))
         with self._lock:
+            self._revision += 1
             self._target = max(NEAREST_TARGET, min(FARTHEST_TARGET, wanted))
             return self._target
 
@@ -137,10 +145,12 @@ class RangeSession:
         )
         if not result["points"]:
             with self._lock:
+                self._revision += 1
                 self._unflown = {"at": time.time(), "club": club or "", "ball": measured}
             return None
 
         with self._lock:
+            self._revision += 1
             shot = {
                 "id": self._next_id,
                 "at": time.time(),
@@ -167,6 +177,7 @@ class RangeSession:
 
     def clear(self) -> Dict[str, Any]:
         with self._lock:
+            self._revision += 1
             self._shots = []
             self._unflown = None
         return self.status()

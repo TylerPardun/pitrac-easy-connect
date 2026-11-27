@@ -251,7 +251,7 @@ const RANGE = (function(){
   };
   // Where the player stands, over the ball. That is what a simulator is.
   let view="first", orbit=Object.assign({}, VIEWS.first), drag=null;
-  let animation=null, lastFrame=0, clock=0, lastIdle=0;
+  let animation=null, lastFrame=0, clock=0, idleTimer=null;
   // Where the camera is and what it is looking at, eased towards where it
   // should be, so following a ball is a head turning rather than a cut.
   let rig=null;
@@ -952,17 +952,16 @@ const RANGE = (function(){
 
   function frame(now){
     raf=null;
+    if(document.hidden || pane!=="range" || lost || !gl) return;
     const dt=lastFrame ? Math.min((now-lastFrame)/1000, 0.1) : 0.016;
     if(animation) step(dt);
-    else if(settled()){
-      // Nothing is moving but the sky. A few frames a second is plenty, and
-      // a laptop running on its battery will thank us.
-      if(now-lastIdle < 110){ schedule(); return; }
-      lastIdle=now;
-    }
     lastFrame=now; clock+=dt;
     draw(dt);
-    if(!reduced || animation) schedule();
+    if(reduced && !animation) return;
+    // The idle sky moves slowly. Sleep between draws and let input or a
+    // new shot wake the renderer immediately.
+    if(settled()) idleTimer=setTimeout(schedule, 100);
+    else schedule();
   }
 
   function step(dt){
@@ -994,6 +993,9 @@ const RANGE = (function(){
   }
 
   function schedule(){
+    clearTimeout(idleTimer);
+    idleTimer=null;
+    if(!gl || lost) return;
     if(raf===null && !document.hidden && pane==="range") raf=requestAnimationFrame(frame);
   }
 
@@ -1035,7 +1037,8 @@ const RANGE = (function(){
     host.classList.remove("hidden");
     host.innerHTML="<div><strong>The 3D range cannot run on this computer.</strong><br>"+
       "Your shots are still measured, and their numbers are still shown here and "+
-      "under Stats.<br><small>"+esc(reason||"no WebGL")+"</small></div>";
+      "under Stats.</div>";
+    logDiagnostic("Range graphics", reason||"no WebGL");
     if(canvas) canvas.style.display="none";
   }
 
@@ -1286,14 +1289,22 @@ function showRange(data){
   renderSheet(data); renderTarget(data); renderStats(data);
 }
 
+let rangePollPending=false, rangeActionVersion=0;
 async function refreshRange(){
-  if(pane !== "range") return;
-  try{ showRange(await api("/api/range")); }catch(e){}
+  if(pane !== "range" || rangePollPending) return;
+  rangePollPending=true;
+  const before=rangeActionVersion;
+  try{
+    const headers={"X-PiTrac-Range": (rangeData && rangeData.revision) || ""};
+    const data=await api("/api/range", undefined, headers);
+    if(before===rangeActionVersion && !data.unchanged && pane==="range") showRange(data);
+  }catch(error){ logDiagnostic("Range", error.message); }
+  finally{ rangePollPending=false; }
 }
 async function rangeAction(path, body){
   // Not run(): these answer at once, and greying a button out and rewording it
   // for a tenth of a second is worse than nothing.
-  try{ showRange(await api(path, body)); }catch(error){ showError(error); }
+  try{ const data=await api(path, body); rangeActionVersion++; showRange(data); }catch(error){ showError(error); }
 }
 
 // --- the target ---
@@ -1408,6 +1419,7 @@ document.addEventListener("click", function(event){
      && document.contains(event.target)) openSheet(false);
 });
 document.addEventListener("keydown", function(event){
+  if($("devConsole").open) return;
   if(event.key==="Escape"){
     if(SHEET.open) openSheet(false);
     else if(document.body.classList.contains("immersive")) setImmersive(false);

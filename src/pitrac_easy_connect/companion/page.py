@@ -1,11 +1,4 @@
-"""The Companion window.
-
-One line saying where things stand, and at most one thing to do about it.
-
-Everything that is not "can I play right now" lives behind Advanced. Shot data
-is not here at all — PiTrac's own dashboard already does that well, so this
-links to it rather than growing a second version.
-"""
+"""The desktop interface for connection, setup, practice and shot history."""
 
 PAGE = r"""<!doctype html>
 <html lang="en">
@@ -43,8 +36,8 @@ PAGE = r"""<!doctype html>
      settled width, not a phone column that happens to be centred. The
      cap keeps a line of text short enough to read; the guide below
      stays narrow because one question at a time reads better that way. */
-  main{width:min(820px,calc(100% - 64px));padding:40px 0}
-  body.guiding main{width:min(440px,calc(100% - 40px))}
+  main{width:min(1080px,calc(100% - 64px));padding:40px 0}
+  body.guiding main{width:min(920px,calc(100% - 40px))}
   .framehint{padding:14px 18px;color:var(--faint);font-size:.85rem;text-align:center}
 
   /* Shots: a table you can actually read, not a dashboard. */
@@ -125,8 +118,7 @@ PAGE = r"""<!doctype html>
     border-color:var(--line);border-radius:14px;font-weight:400}
   .board button:hover:not(:disabled){border-color:var(--accent)}
   .board button:disabled{cursor:default;opacity:.55}
-  /* An odd number of cards would leave the last one alone on half a row. */
-  .board button:last-child:nth-child(odd){grid-column:1/-1}
+
   .board .t{font-weight:700;font-size:1rem;color:var(--text);display:block}
   .board .d{font-size:.85rem;color:var(--muted);margin-top:4px;display:block;
     line-height:1.4}
@@ -145,8 +137,6 @@ PAGE = r"""<!doctype html>
     border:1px solid rgba(255,125,115,.35);background:rgba(255,125,115,.06)}
   .err h2{margin:0 0 6px;font-size:.95rem;font-weight:650;color:var(--red)}
   .err p{margin:0;color:var(--muted);font-size:.88rem}
-  .err .code{margin-top:8px;color:var(--faint);font-size:.74rem;letter-spacing:.07em;
-    font-family:ui-monospace,Menlo,Consolas,monospace}
 
   /* A newer version, at the top of the startup page until it is installed. */
   .update{margin:0 0 22px;padding:13px 15px;border-radius:11px;border:1px solid var(--line);
@@ -244,22 +234,87 @@ PAGE = r"""<!doctype html>
     color:var(--muted);font-size:.85rem}
   .note.good{border-color:rgba(93,220,147,.35);color:var(--green)}
   .note pre{margin:0;white-space:pre-wrap;font:inherit}
+  .masthead{flex:none;display:flex;align-items:center;gap:26px;min-height:58px;padding:0 3.2%;
+    background:#101813;border-bottom:1px solid var(--line);color:var(--text)}
+  .wordmark{display:flex;align-items:center;gap:10px;color:#f6f9ec;font-weight:800;font-size:1.24rem;
+    letter-spacing:-.05em;white-space:nowrap}
+  .wordmark i{display:inline-block;width:25px;height:25px;border-radius:50%;background:var(--accent);
+    position:relative;overflow:hidden}
+  .wordmark i::before{content:"";position:absolute;left:7px;top:4px;width:12px;height:17px;
+    background:#213121;clip-path:polygon(0 0,100% 14%,20% 48%,20% 100%,0 100%)}
+  .masthead .tabs{padding:0;background:none;border:0;align-self:stretch;align-items:stretch;gap:6px}
+  .tabs button{border-radius:0;color:#b3c1b6}
+  .masthead .tool{margin-left:auto;width:auto;padding:6px 10px;border-radius:6px;
+    background:transparent;color:#bac9bd;border:1px solid var(--line);font:600 15px ui-monospace,monospace}
+  body.immersive .masthead{display:none}
+  .centre{align-items:flex-start}
+  main{padding:24px 0 36px}
+  .hero{padding:26px 32px;border:1px solid #415242;border-radius:14px;overflow:hidden;
+    background:linear-gradient(90deg,rgba(12,23,16,.96),rgba(12,23,16,.79) 44%,rgba(12,23,16,.05) 83%),
+      url('/links-course.jpg') center 55%/cover,#192c1e}
+  .hero .status{align-items:center;gap:12px}
+  .hero .dot{margin:0}
+  .hero h1{font-size:clamp(28px,3.6vw,44px);font-weight:650;line-height:1.08;letter-spacing:-.045em}
+  .hero .sub,.hero .why{color:#d3ded4;max-width:56ch}
+  .hero .why:empty,.hero .sub:empty,.do:empty{display:none}
+  .hero .do{margin-top:20px;max-width:390px;flex-direction:row;flex-wrap:wrap}
+  .hero .do button{width:auto;padding:10px 19px;font-size:.92rem}
+  .hero .quiet{background:#15221b;border-color:#526156}
+  .hero .wiz{max-width:240px;margin-bottom:17px}
+  .hero .wizstep{color:#c6d7c8}
+  body.guiding .centre{align-items:center}
+  body.guiding .hero{padding:clamp(32px,5vw,64px) 5%;min-height:255px;display:flex;
+    flex-direction:column;justify-content:center}
+  body.guiding .help,body.guiding .wifibox,body.guiding .pick{max-width:680px;margin-inline:auto}
+  .board{margin:16px 0 0;grid-template-columns:repeat(6,minmax(0,1fr));gap:10px}
+  .board button{grid-column:span 2;border-radius:10px;
+    background:#17231b;position:relative;padding:18px 33px 18px 16px}
+  .board button::after{content:"›";position:absolute;right:14px;top:15px;color:#b5ce9c}
+  .board button:nth-child(n+4){grid-column:span 3;background:#111a15}
+  .board .d{font-size:.81rem;color:#b1c1b4}
+  .advbody{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));align-items:start;gap:18px}
+  .advbody section{display:grid;gap:7px}
+  .advbody #note,.advbody #knownPis{grid-column:1/-1}
+  .shots h1{font-size:2rem;letter-spacing:-.04em;margin:2px 0 20px}
+  .shots .clubrow{padding:15px 18px;background:var(--panel);border-radius:12px}
+  .shots select{flex:0 1 210px}
+  .shots .clubnote{flex:1;min-width:180px}
+  dialog{width:min(700px,92vw);max-height:82vh;overflow:auto;padding:22px;
+    color:var(--text);background:#111b15;border:1px solid #405347;border-radius:14px}
+  dialog::backdrop{background:rgba(3,8,5,.74)}
+  .dialoghead{display:flex;align-items:center;justify-content:space-between;gap:16px}
+  .dialoghead h2{margin:0;font-size:1.35rem}
+  .dialoghead button,dialog .quiet{width:auto;padding:7px 14px}
+  dialog .raw{white-space:pre-wrap;overflow-wrap:anywhere}
+  .panealert{margin:0 3%;flex:none}
+  .panealert .err{margin:8px 0}
+  @media(max-width:740px){
+    .masthead{gap:8px;padding:0 10px}.tabs button{padding:8px;font-size:.78rem}
+    .board{grid-template-columns:1fr 1fr}.board button,.board button:nth-child(n+4),
+    .board button:last-child:nth-child(odd){grid-column:auto}
+    .advbody{grid-template-columns:1fr}.hero{padding:24px 18px}
+  }
+  body.starting #pane-play{visibility:hidden}
   .hidden{display:none}
 </style>
 </head>
-<body>
-<nav class="tabs hidden" id="tabs">
-  <button data-pane="play" class="on">Play</button>
-  <button data-pane="simulator">Play mode</button>
-  <button data-pane="range">Range</button>
-  <button data-pane="shots">Shots</button>
-  <button data-pane="pitrac">PiTrac</button>
-  <button data-pane="setup">Setup</button>
-</nav>
+<body class="starting">
+<header class="masthead">
+  <div class="wordmark" aria-label="PiTrac"><i aria-hidden="true"></i>PiTrac</div>
+  <nav class="tabs hidden" id="tabs" aria-label="Main navigation">
+    <button data-pane="play" class="on" aria-current="page">Home</button>
+    <button data-pane="range">Practice range</button>
+    <button data-pane="shots">Shot history</button>
+    <button data-pane="simulator">Play mode</button>
+  </nav>
+  <button class="tool" id="openConsole" title="Developer console (Alt+Shift+D)"
+    aria-label="Open developer console" aria-haspopup="dialog">›_</button>
+</header>
+<div class="panealert" id="paneAlert"></div>
 
 <div class="pane on" id="pane-play"><div class="centre">
 <main>
-  <div class="brand">PiTrac Easy-Connect</div>
+
 
   <!-- A newer version, offered first and kept until it is installed: nobody
        should play on outdated code without knowing. PiTrac follows by itself
@@ -267,6 +322,7 @@ PAGE = r"""<!doctype html>
   <div id="update"></div>
   <div class="update-pill hidden" id="updateIndicator"></div>
 
+  <div class="hero" id="playHero">
   <div class="wiz hidden" id="wiz">
     <div class="wizrail" id="wizRail"></div>
     <div class="wizstep" id="wizStep"></div>
@@ -281,7 +337,9 @@ PAGE = r"""<!doctype html>
     </div>
   </div>
 
-  <div id="err"></div>
+    <div class="do" id="do"></div>
+  </div>
+  <div id="homeAlert"><div id="err" role="alert"></div></div>
 
   <details class="help hidden" id="help">
     <summary id="helpTitle"></summary>
@@ -289,8 +347,8 @@ PAGE = r"""<!doctype html>
   </details>
 
   <div class="wifibox hidden" id="wifiBox"></div>
+  <div id="wifiActions"></div>
 
-  <div class="do" id="do"></div>
 
   <!-- Where to go next, shown once setup is done. The tab bar says the
        same thing in five words; this says it with the state of each
@@ -321,7 +379,7 @@ PAGE = r"""<!doctype html>
     </div>
     <div class="askway">
       <strong>From a computer PiTrac already knows</strong>
-      <div class="asknote">On that computer, open Advanced and press Pair another computer. Then,
+      <div class="asknote">On that computer, open Device settings and press Add another computer. Then,
         within five minutes, press Pair this computer here.</div>
       <button class="quiet" id="askRetry">Pair this computer</button>
     </div>
@@ -330,16 +388,9 @@ PAGE = r"""<!doctype html>
   </div>
 
   <details class="adv" id="adv">
-    <summary>Advanced</summary>
+    <summary>Device settings</summary>
     <div class="advbody">
-      <h3>Play mode</h3>
-      <div class="row2 three">
-        <button class="quiet" data-sim="local">Local Range</button>
-        <button class="quiet" data-sim="ogs">OpenGolfSim</button>
-        <button class="quiet" data-sim="gspro">GSPro</button>
-      </div>
-
-      <h3>PiTrac</h3>
+      <section><h3>PiTrac</h3>
       <button class="quiet" id="changeWifi">Change PiTrac's Wi-Fi</button>
       <button class="quiet" id="setupLink">Open the PiTrac setup page</button>
       <button class="quiet" id="testShot">Send a test shot</button>
@@ -347,24 +398,19 @@ PAGE = r"""<!doctype html>
       <button class="quiet" id="restart">Restart PiTrac</button>
       <button class="quiet danger" id="shutdown">Shut down PiTrac safely</button>
 
-      <h3>Backup</h3>
+      </section><section><h3>Backup</h3>
       <button class="quiet" id="makeBackup">Save a backup</button>
       <button class="quiet" id="fullBackup">Save a complete recovery backup</button>
       <label class="linkbtn quiet" for="bkFile" style="cursor:pointer">Restore from a file</label>
       <input type="file" id="bkFile" accept=".pitracbackup,.json,application/json" class="hidden">
       <div id="bkPreview"></div>
 
-      <h3>What PiTrac sent</h3>
-      <button class="quiet" id="showRaw">Show the last shots as received</button>
-      <div id="rawShots"></div>
-
-      <h3>This computer</h3>
+      </section><section><h3>This computer</h3>
       <button class="quiet danger" id="forget">Unpair this computer</button>
       <button class="quiet" id="setupAgain">Run setup again</button>
       <button class="quiet" id="quit">Stop Easy-Connect</button>
 
-      <h3>Details</h3>
-      <dl class="kv" id="kv"></dl>
+      </section>
       <div id="note"></div>
     </div>
   </details>
@@ -374,7 +420,7 @@ PAGE = r"""<!doctype html>
 <!--__RANGE_MARKUP__-->
 
 <div class="pane" id="pane-simulator"><div class="shots">
-  <h3 class="sech">How do you want to play?</h3>
+  <h1>Play mode</h1>
   <div class="row2 three">
     <button class="quiet" data-sim="local">Local Range</button>
     <button class="quiet" data-sim="ogs">OpenGolfSim</button>
@@ -402,6 +448,7 @@ PAGE = r"""<!doctype html>
 </div></div>
 
 <div class="pane" id="pane-shots"><div class="shots">
+  <h1>Shot history</h1>
   <div class="clubrow">
     <label class="clublabel" for="club">Club</label>
     <select id="club"></select>
@@ -417,8 +464,7 @@ PAGE = r"""<!doctype html>
   <h3 class="sech">Shot images</h3>
   <div id="images" class="empty">PiTrac saves an image of each shot it measures.</div>
 
-  <h3 class="sech">Cameras</h3>
-  <div id="cameras" class="empty">Checking…</div>
+
 
   <div class="shotactions">
     <button class="quiet" id="clearShots">Clear shot history</button>
@@ -435,10 +481,24 @@ PAGE = r"""<!doctype html>
   <iframe id="setupFrame" title="PiTrac setup"></iframe>
 </div>
 
+<dialog id="devConsole" aria-labelledby="consoleTitle">
+  <div class="dialoghead"><h2 id="consoleTitle">Developer console</h2>
+    <button class="quiet" id="closeConsole" autofocus>Close</button></div>
+  <h3 class="sech">Connection</h3><dl class="kv" id="kv"></dl>
+  <h3 class="sech">Recent events</h3><pre class="raw" id="eventLog">No events yet.</pre>
+  <h3 class="sech">Cameras</h3>
+  <div id="cameras" class="empty">Checking…</div>
+      <h3>What PiTrac sent</h3>
+      <button class="quiet" id="showRaw">Show the last shots as received</button>
+      <div id="rawShots"></div>
+
+</dialog>
+
 <script>
 "use strict";
 const $=id=>document.getElementById(id);
 let status=null, busy=false;
+let refreshSequence=0, statusReads=0;
 //: Discovery is a real network broadcast, not a cheap lookup. These stop the
 //: 3-second status-poll render loop from launching a fresh search on every
 //: single render while unlinked, which is what made a few minutes of sitting
@@ -465,11 +525,21 @@ function apiOptions(body){
   return options;
 }
 
-async function api(path, body){
+async function api(path, body, headers){
   const options=apiOptions(body);
+  Object.assign(options.headers, headers);
   const response=await fetch(path, options);
   const data=await response.json().catch(()=>({}));
-  if(!response.ok){const e=new Error((data.error&&data.error.failed)||"That did not work");e.info=data.error;throw e;}
+  if(!response.ok){
+    const info=data.error || {};
+    if(response.status>=500){
+      info.detail=info.detail || info.failed;
+      info.failed="Easy-Connect couldn’t complete that request.";
+    }
+    const error=new Error(info.failed || "That did not work");
+    error.info=info;
+    throw error;
+  }
   return data;
 }
 
@@ -509,6 +579,7 @@ function showError(error, deviceId, source){
   // explanation of why it appeared.
   if(!error){ if(!asking()){ $("err").innerHTML=""; $("err").dataset.from=""; } return; }
   const info=error.info||{};
+  logDiagnostic(source || "Action", [info.code, info.failed || error.message, info.detail].filter(Boolean).join(" · "));
   // A saved pairing that can never succeed again (the enclosure was reset or
   // replaced) needs its own way out, distinct from every other recovery
   // flow: removing it is a local, no-confirmation-from-the-Pi action, so it
@@ -516,7 +587,6 @@ function showError(error, deviceId, source){
   const stale=deviceId && info.code && STALE_PI_CODES.has(info.code);
   $("err").innerHTML=`<div class="err"><h2>${esc(info.failed||error.message)}</h2>
     ${info.nextStep?`<p>${esc(info.nextStep)}</p>`:""}
-    ${info.code?`<div class="code">${esc(info.code)}</div>`:""}
     ${stale?'<button class="quiet danger" id="removeStalePairing">Remove old pairing from this computer</button>':""}</div>`;
   $("err").dataset.from = source || "action";
   if(stale){
@@ -587,10 +657,10 @@ function wizardView(data){
   const sim=data.simulatorStatus||{};
   const steps={}; (data.chain||[]).forEach(s=>steps[s.key]=s);
 
-  if(!wizard.started) return {step:null,
-    dot:"", head:"Let's get you playing", sub:"",
-    why:"Connect to your PiTrac, choose how you want to play, and you're there.",
-    actions:[{label:"Get started", id:"wizStart", primary:true}]};
+  if(!wizard.started && !data.pairedEnclosures.length) return {step:null,
+    dot:"", head:"Connect your PiTrac", sub:"",
+    why:"Power on your launch monitor to pair it with this computer.",
+    actions:[{label:"Find my PiTrac", id:"wizStart", primary:true}]};
 
   const network=wifiView(data);
   if(network) return network;
@@ -604,7 +674,7 @@ function wizardView(data){
   const name=(data.link.device&&data.link.device.displayName)||"PiTrac";
 
   if(steps.pitrac && !steps.pitrac.ok) return {step:"find",
-    dot:"bad", head:"PiTrac needs attention", sub:esc(steps.pitrac.detail),
+    dot:"bad", head:"PiTrac needs attention", sub:steps.pitrac.detail,
     why:steps.pitrac.next || "Connected, but the launch monitor cannot measure a shot yet.",
     actions:[{label:"Open the PiTrac setup page", id:"setup", primary:true}]};
 
@@ -623,12 +693,12 @@ function wizardView(data){
     why:"Hit a ball and it appears on the range. You will not see these steps "+
         "again — next time you open this it goes straight to playing.",
     actions:[{label:"Go to the range", id:"wizRange", primary:true}]}
-  : {step:"sim", dot:"bad", head:"Shots cannot be saved", sub:name, why:sim.message,
+  : {step:"sim", dot:"bad", head:"Shots cannot be saved", sub:name, why:"Check the available storage on this computer and try again.",
     actions:[{label:"Check again", id:"check", primary:true},
              {label:"Finish later", id:"wizFinish", primary:false}]};
 
   if(!sim.connected) return {step:"open",
-    dot:"bad", head:"Open "+esc(data.simulatorLabel), sub:name,
+    dot:"bad", head:"Open "+data.simulatorLabel, sub:name,
     why:howToOpen(data),
     // Finish later, because these last steps need a simulator running and
     // the rest of the app does not. Without it, anyone who opened this
@@ -638,14 +708,14 @@ function wizardView(data){
              {label:"Finish later", id:"wizFinish", primary:false}]};
 
   if(!sim.ready) return {step:"test",
-    dot:"busy", head:"One shot to make sure", sub:esc(data.simulatorLabel)+" · "+name,
+    dot:"busy", head:"One shot to make sure", sub:data.simulatorLabel+" · "+name,
     why:"Hit a ball, or send a test shot from here. Either is a real shot to "+
         data.simulatorLabel+", so close any open round first.",
     actions:[{label:"Send a test shot", id:"test", primary:true},
              {label:"Finish later", id:"wizFinish", primary:false}]};
 
   return {step:"done",
-    dot:"good", head:"You're ready to play", sub:esc(data.simulatorLabel)+" · "+name,
+    dot:"good", head:"You're ready to play", sub:data.simulatorLabel+" · "+name,
     why:"That's setup done. You will not see these steps again — next time you "+
         "open this it goes straight to playing.",
     actions:[{label:"Finish", id:"wizFinish", primary:true}]};
@@ -684,7 +754,7 @@ function wifiView(data){
     // Until the connection has gone and come back, what is known about where
     // PiTrac is was true before it moved.
     const since=WIFI.dropped || left<110;
-    if(linked && !setup && net.connection && !net.awaitingConfirmation){ closeWifi(); }
+    if(linked && !setup && net.connection && net.connection.ssid===WIFI.ssid && !net.awaitingConfirmation){ closeWifi(); }
     else if(linked && setup && since){
       // It is back on its own signal, which only happens when it did not work.
       WIFI.error=net.lastError||{failed:name+" could not be reached on "+WIFI.ssid+"."};
@@ -695,9 +765,7 @@ function wifiView(data){
       closeWifiKeeping();
     }else return {step:"wifi", wifi:"wait", left:left, dot:"busy", find:!linked,
       head:"Put this computer on "+WIFI.ssid, sub:name,
-      why:"PiTrac's own Wi-Fi has gone away, which is meant to happen. In this computer's "+
-          "Wi-Fi menu, choose "+WIFI.ssid+". If "+(net.setupSsid||"PiTrac's own Wi-Fi")+
-          " shows up there again instead, join that: PiTrac could not get on, and will say why.",
+      why:"Choose "+WIFI.ssid+" in this computer's Wi-Fi menu. Easy-Connect will reconnect automatically.",
       actions:[{label:"Search again", id:"find", primary:true}]};
   }
 
@@ -823,24 +891,12 @@ async function joinWifi(ssid, password, hidden){
 function boardCards(data){
   const linked=!!(data.link && data.link.connected);
   const shots=(data.shotLog&&data.shotLog.total)||0;
-  const sim=data.simulatorStatus||{};
   return [
-    {pane:"simulator", title:"Play mode",
-     detail:isLocal(data) ? "Local Range. A simulator can be used instead."
-            : sim.ready ? "Ready to play through " + esc(data.simulatorLabel || "your simulator")
-            : sim.connected ? "Connected. One shot makes sure."
-            : "Connect " + esc(data.simulatorLabel || "your simulator") + " on this computer."},
-    {pane:"range", title:"Practice range",
-     detail:"Ball flight, distances and shot patterns. No simulator needed."},
-    {pane:"shots", title:"Shot history",
-     detail:shots ? shots+(shots===1?" shot recorded":" shots recorded")
-                  : "Every shot, with the club it was hit with."},
-    {pane:"pitrac", title:"PiTrac dashboard", needsLink:true,
-     detail:linked ? "Cameras, calibration and shot images."
-                   : "Connect to PiTrac to open this."},
-    {pane:"setup", title:"Enclosure setup", needsLink:true,
-     detail:linked ? "Wi-Fi, backups, updates and ownership."
-                   : "Connect to PiTrac to open this."},
+    {pane:"range", title:"Practice range", detail:"Aim at a target and track your ball flight."},
+    {pane:"shots", title:"Shot history", detail:shots ? shots+(shots===1?" shot recorded":" shots recorded") : "Distances and dispersion by club."},
+    {pane:"simulator", title:"Play mode", detail:isLocal(data) ? "Local Range" : data.simulatorLabel || "Choose a simulator"},
+    {pane:"setup", title:"Wi-Fi & setup", needsLink:true, detail:linked ? "Manage the enclosure and its network." : "Connect to PiTrac to open settings."},
+    {pane:"pitrac", title:"Launch monitor", needsLink:true, detail:linked ? "Camera alignment and calibration." : "Connect to PiTrac to open the dashboard."},
   ].map(card=>Object.assign(card, {disabled: !!card.needsLink && !linked}));
 }
 
@@ -872,7 +928,7 @@ function renderSimulator(data){
     $("simHead").textContent = sim.ready ? "Recording on this computer" : "Shots cannot be saved";
     $("simWhy").textContent = sim.ready
       ? "Every measured shot is saved here and drawn on the Range tab. Nothing else has to be open."
-      : sim.message;
+      : "Check the available storage on this computer and try again.";
     $("simSteps").innerHTML = "";
     $("simWhere").textContent = linked ? ""
       : "PiTrac is not connected, so there are no shots to record yet.";
@@ -882,9 +938,8 @@ function renderSimulator(data){
 
   $("simDot").className = "dot " + (sim.ready ? "good" : sim.connected ? "busy" : "bad");
   $("simHead").textContent = sim.ready ? "Ready to play"
-    : sim.connected ? "Connected, not proved yet" : "Not connected";
-  $("simWhy").textContent = sim.message
-    || (sim.ready ? label + " has accepted a shot from PiTrac."
+    : sim.connected ? "Waiting for the first shot" : "Not connected";
+  $("simWhy").textContent = (sim.ready ? label + " has accepted a shot from PiTrac."
         : sim.connected ? "Connected to " + label + ". Hit a ball, or send a test shot, to make sure."
         : label + " is not answering on this computer yet.");
 
@@ -898,19 +953,17 @@ function renderSimulator(data){
   $("simSteps").innerHTML = "<ol class='simsteps'>" + steps.map(s=>
     `<li class="${s.done?"done":""}">${s.text}</li>`).join("") + "</ol>";
 
-  $("simWhere").innerHTML =
-    "Easy-Connect looks for " + esc(label) + " on <strong>this computer</strong> at "
-    + "<strong>127.0.0.1:" + where.port + "</strong>. "
-    + (linked ? "" : "PiTrac is not connected, so a test shot is not available yet — "
-                     + "but the connection above can still be checked.");
+  $("simWhere").textContent = linked ? "" : "Connect PiTrac to send a test shot.";
   $("simTest").disabled = !linked || !sim.connected;
 }
 
 function renderBoard(data, guiding){
   const board=$("board");
   board.classList.toggle("hidden", guiding);
-  if(guiding){ board.innerHTML=""; return; }
-  board.innerHTML=boardCards(data).map(card=>
+  if(guiding){ board.innerHTML=""; delete board.dataset.sig; return; }
+  const cards=boardCards(data);
+  if(!changed(board, JSON.stringify(cards))) return;
+  board.innerHTML=cards.map(card=>
     `<button data-pane="${esc(card.pane)}"${card.disabled?" disabled":""}>
        <span class="t">${esc(card.title)}</span>
        <span class="d">${esc(card.detail)}</span>
@@ -947,8 +1000,8 @@ function linkView(data){
   // that can only ever fail.
   if(old) return {
     dot:"bad", head:"PiTrac needs a one-time reinstall",
-    sub:"PiTrac is running Easy-Connect "+esc(old.version||"(an older version)")+
-      ". This app is "+esc(old.targetVersion)+", and that version is too old to work with it or to update itself.",
+    sub:"PiTrac is running Easy-Connect "+(old.version||"(an older version)")+
+      ". This app is "+old.targetVersion+", and that version is too old to work with it or to update itself.",
     why:"Reinstall it once from the Easy-Connect kit, as READ ME FIRST describes. Its Wi-Fi, "+
       "pairings and calibration are kept, and from then on it updates itself.",
     actions:[]};
@@ -986,7 +1039,7 @@ function present(data){
   const name=(data.link.device&&data.link.device.displayName)||"PiTrac";
 
   if(steps.pitrac && !steps.pitrac.ok) return {
-    dot:"bad", head:"PiTrac needs attention", sub:esc(steps.pitrac.detail),
+    dot:"bad", head:"PiTrac needs attention", sub:steps.pitrac.detail,
     why:steps.pitrac.next || "Easy-Connect is connected, but the launch monitor cannot measure a shot yet.",
     actions:[{label:"Open the PiTrac setup page", id:"setup", primary:true}]};
 
@@ -994,25 +1047,26 @@ function present(data){
     dot:"good", head:"Ready to play", sub:"Local Range · "+name,
     why:"", actions:[{label:"Go to the range", id:"range", primary:true}]}
   : {
-    dot:"bad", head:"Shots cannot be saved", sub:name, why:sim.message,
+    dot:"bad", head:"Shots cannot be saved", sub:name, why:"Check the available storage on this computer and try again.",
     actions:[{label:"Check again", id:"check", primary:true}]};
 
   if(!sim.connected) return {
-    dot:"bad", head:"Open "+esc(data.simulatorLabel), sub:name,
+    dot:"bad", head:"Open "+data.simulatorLabel, sub:name,
     why:howToOpen(data),
     actions:[{label:"Check again", id:"check", primary:true}]};
 
   if(!sim.ready) return {
-    dot:"busy", head:"Almost ready", sub:esc(data.simulatorLabel)+" · "+name,
+    dot:"busy", head:"Almost ready", sub:data.simulatorLabel+" · "+name,
     why:"Hit a ball, or send a test shot from here. Either is a real shot, so close any open round first.",
     actions:[{label:"Send a test shot", id:"test", primary:true}]};
 
   return {
-    dot:"good", head:"Ready to play", sub:esc(data.simulatorLabel)+" · "+name,
+    dot:"good", head:"Ready to play", sub:data.simulatorLabel+" · "+name,
     why:"", actions:[{label:"View shot data", id:"dash", primary:false}]};
 }
 
 function render(data){
+  document.body.classList.remove("starting");
   status=data;
   const guiding=!data.setupComplete;
   const special=linkView(data);
@@ -1039,6 +1093,9 @@ function render(data){
     // is what removes them.
     showError(null);
   }
+  const pairingHost=guiding || !(data.link && data.link.connected) ? $("askBox").parentElement : $("adv").querySelector(".advbody");
+  if($("knownPis").parentElement!==pairingHost) pairingHost.appendChild($("knownPis"));
+  if(!data.link || !data.link.connected) cameraDevice=null;
   renderKnownPis(data);
 
   const help=view.help;
@@ -1047,21 +1104,25 @@ function render(data){
 
   $("dot").className="dot "+view.dot;
   $("head").textContent=view.head;
-  $("sub").innerHTML=view.sub||"";
+  $("sub").textContent=view.sub||"";
   $("why").textContent=view.why||"";
 
   renderWifi(view);
+  const actionHost=view.wifi ? $("wifiActions") : $("playHero");
+  if($("do").parentElement!==actionHost) actionHost.appendChild($("do"));
   const setupName=$("setupName");
   if(setupName && data.activeDeviceId) setupName.textContent="PiTrac-"+data.activeDeviceId;
   if(!busy){
-    $("do").innerHTML="";
-    view.actions.forEach(action=>{
-      const button=document.createElement("button");
-      button.className=action.primary?"primary":"quiet";
-      button.textContent=action.label;
-      button.addEventListener("click",()=>doAction(action.id,button));
-      $("do").appendChild(button);
-    });
+    if(changed($("do"), JSON.stringify(view.actions))){
+      $("do").innerHTML="";
+      view.actions.forEach(action=>{
+        const button=document.createElement("button");
+        button.className=action.primary?"primary":"quiet";
+        button.textContent=action.label;
+        button.addEventListener("click",()=>doAction(action.id,button));
+        $("do").appendChild(button);
+      });
+    }
     if(view.find){
       // Rendering must stay free of state-changing side effects: only start
       // a fresh broadcast when nothing recent is cached and none is already
@@ -1072,8 +1133,7 @@ function render(data){
   }
 
   renderUpdate(data.update);
-  renderShots(data.shotLog);
-  renderImages(data.enclosure);
+  if(pane==="shots"){ renderShots(data.shotLog); renderImages(data.enclosure); }
   // Nothing else is offered while the wizard is running. Somewhere to wander
   // off to is the thing that makes a first run confusing.
   $("adv").classList.toggle("hidden", guiding || !data.pairedEnclosures.length);
@@ -1112,7 +1172,7 @@ function render(data){
   // put a shot in the history that nobody hit.
   const measuring=(data.chain||[]).find(s=>s.key==="pitrac");
   $("rangeDemo").classList.toggle("hidden", !!(measuring && measuring.ok));
-  if(rangeData) renderState(rangeData);
+  if(pane==="range" && rangeData) renderState(rangeData);
   // The tabs go away when the link does, so anyone left on a pane that frames
   // the enclosure would be looking at an empty window with nothing to press.
   // The range and the shot history are not that: they are this session's own
@@ -1126,7 +1186,7 @@ function render(data){
     b.classList.toggle("primary", b.dataset.sim===data.simulator);
     b.classList.toggle("quiet", b.dataset.sim!==data.simulator);
   });
-  renderDetails(data);
+  if($("devConsole").open) renderConsole();
 }
 
 function doAction(id, button){
@@ -1276,14 +1336,49 @@ async function copyText(value){
   }catch(_error){ return false; }
 }
 
+const diagnosticEvents=[];
+function logDiagnostic(source, message){
+  if(!message) return;
+  const line=source+" · "+message;
+  if(diagnosticEvents.length && diagnosticEvents[diagnosticEvents.length-1].line===line) return;
+  diagnosticEvents.push({line, at:new Date().toLocaleTimeString()});
+  if(diagnosticEvents.length>50) diagnosticEvents.shift();
+  if($("devConsole").open) renderEvents();
+}
+function renderEvents(){
+  $("eventLog").textContent=diagnosticEvents.map(e=>e.at+"  "+e.line).join("\n") || "No events yet.";
+}
+function renderConsole(){
+  renderEvents();
+  if(status){ renderDetails(status); loadCameras(); }
+}
+function openConsole(){
+  if(!$("devConsole").open) $("devConsole").showModal();
+  renderConsole();
+}
+$("openConsole").addEventListener("click", openConsole);
+$("closeConsole").addEventListener("click", ()=>$("devConsole").close());
+document.addEventListener("keydown", event=>{
+  if(event.altKey && event.shiftKey && event.code==="KeyD"){
+    event.preventDefault();
+    if($("devConsole").open) $("devConsole").close(); else openConsole();
+  }
+});
+window.addEventListener("error", event=>logDiagnostic("Interface", event.message));
+window.addEventListener("unhandledrejection", event=>
+  logDiagnostic("Interface", event.reason && event.reason.message));
+
 function renderDetails(data){
   const device=(data.link&&data.link.device)||{};
   const enclosure=data.enclosure||{};
   const network=enclosure.network||{};
   const shots=data.shots||{};
+  const sim=data.simulatorStatus||{};
   const update=data.update||{};
   const rows=[["Enclosure",device.displayName||"-"],["Device",device.deviceId||"-"],
     ["Address",(data.link&&data.link.address)||"-"],
+    ["Simulator",sim.endpoint || data.simulatorLabel || "-"],
+    ["Simulator status",[sim.errorCode,sim.message].filter(Boolean).join(" · ")],
     ["Wi-Fi",(network.connection&&network.connection.ssid)||"-"],
     [isLocal(data)?"Shots recorded":"Shots sent",shots.delivered!=null?shots.delivered:"-"],
     [isLocal(data)?"Not recorded":"Not delivered",shots.lost!=null?shots.lost:"-"],
@@ -1312,6 +1407,7 @@ async function findDevices(){
   const host=$("pick");
   try{
     const data=await api("/api/search",{});
+    for(const e of data.enclosures || []) logDiagnostic("Discovery", e.displayName+" · "+e.address);
     lastSearchAt=Date.now();
     const known=status?status.pairedEnclosures.map(e=>e.deviceId):[];
     if(data.problem){
@@ -1343,12 +1439,12 @@ async function findDevices(){
     host.classList.remove("hidden");
     host.innerHTML=data.enclosures.map(e=>`
       <button class="device" data-id="${esc(e.deviceId)}" data-paired="${e.paired?"1":""}">
-        <span><strong>${esc(e.displayName)}</strong><small>${esc(e.address)}</small></span>
-        <span class="tag ${e.paired?"on":""}">${e.paired?"PAIRED":"NEW"}</span>
+        <span><strong>${esc(e.displayName)}</strong></span>
+        <span class="tag ${e.paired?"on":""}">${e.paired?"Saved":"Pair"}</span>
       </button>`).join("");
     host.querySelectorAll(".device").forEach(button=>button.addEventListener("click",()=>{
       const id=button.dataset.id;
-      if(button.dataset.paired) return run(button, ()=>api("/api/connect",{deviceId:id}));
+      if(button.dataset.paired==="1") return run(button, ()=>api("/api/connect",{deviceId:id}));
       // There is nothing to type. Ask, and let the enclosure decide.
       run(button, async()=>{
         try{ await api("/api/pair",{deviceId:id}); }
@@ -1374,6 +1470,7 @@ async function findDevices(){
 function renderKnownPis(data){
   const host=$("knownPis");
   const list=data.pairedEnclosures||[];
+  if(!changed(host, JSON.stringify([list, data.activeDeviceId, !!(data.link && data.link.connected)]))) return;
   if(!list.length){ host.classList.add("hidden"); host.innerHTML=""; return; }
   host.classList.remove("hidden");
   host.innerHTML='<h3>Known PiTracs</h3>'+list.map(e=>`
@@ -1553,7 +1650,7 @@ $("bkFile").addEventListener("change",async event=>{
           $("note").innerHTML='<div class="note good">Restored and PiTrac restarted.</div>';
         }catch(err){
           $("note").innerHTML='<div class="note bad">Restored, but PiTrac could '+
-            'not be restarted. Restart it from Advanced before playing.</div>';
+            'not be restarted. Restart it from Device settings before playing.</div>';
         }
       }else{
         $("note").innerHTML='<div class="note good">Restored: '+
@@ -1568,12 +1665,18 @@ $("bkFile").addEventListener("change",async event=>{
 
 function showPane(name){
   pane=name;
+  (name==="play" ? $("homeAlert") : $("paneAlert")).appendChild($("err"));
+  if(name==="shots" && status){ renderShots(status.shotLog); renderImages(status.enclosure); }
   document.querySelectorAll(".pane").forEach(p=>p.classList.toggle("on", p.id==="pane-"+name));
-  document.querySelectorAll("#tabs button").forEach(b=>b.classList.toggle("on", b.dataset.pane===name));
+  document.querySelectorAll("#tabs button").forEach(b=>{
+    b.classList.toggle("on", b.dataset.pane===name);
+    if(b.dataset.pane===name) b.setAttribute("aria-current","page"); else b.removeAttribute("aria-current");
+  });
   if(name==="range"){
     // The canvas has no size until its pane is shown, so the context is
     // created on first open rather than at load.
-    if(RANGE.start()){ RANGE.resize(); refreshRange(); }
+    if(RANGE.start()) RANGE.resize();
+    refreshRange();
   }
   loadFrames();
 }
@@ -1592,7 +1695,7 @@ document.addEventListener("click",function(event){
 const CLUBS=["Driver","3 wood","5 wood","3 hybrid","4 hybrid","3 iron","4 iron","5 iron",
   "6 iron","7 iron","8 iron","9 iron","Pitching wedge","Gap wedge","Sand wedge","Lob wedge",
   "Putter"];
-let clubReady=false, camerasAsked=false;
+let clubReady=false, cameraDevice=null;
 
 function fillClubs(current){
   const select=$("club");
@@ -1691,9 +1794,7 @@ function renderImages(enclosure){
     return;
   }
   // The pictures are served by PiTrac itself; nothing is copied to this computer.
-  // Deliberately not lazy: these tiles are built while the tab is still hidden,
-  // and a lazy image in a display:none subtree is deferred and never retried
-  // once the tab is shown. There are at most a dozen, and they are small.
+  // Build tiles only while the shot history is visible.
   host.className="shotgrid";
   host.innerHTML=images.map(image=>{
     const url=base+image.url;
@@ -1704,10 +1805,14 @@ function renderImages(enclosure){
 }
 
 async function loadCameras(){
-  if(camerasAsked) return;
-  camerasAsked=true;
+  const id=status.link && status.link.connected && status.activeDeviceId;
+  if(!id){ cameraDevice=null; $("cameras").textContent="Connect PiTrac to inspect the cameras."; return; }
+  if(cameraDevice===id) return;
+  cameraDevice=id;
+  $("cameras").textContent="Checking…";
   try{
     const data=await api("/api/cameras",{});
+    if(cameraDevice!==id) return;
     if(!data.available){ $("cameras").className="empty";
       $("cameras").textContent=data.message||"Not available."; return; }
     const found=(data.cameras||[]).length;
@@ -1719,8 +1824,8 @@ async function loadCameras(){
     $("cameras").innerHTML=rows.map(([k,v])=>
       `<div class="camrow"><span>${esc(k)}</span><span>${esc(v)}</span></div>`).join("")+
       `<div class="clubnote" style="margin-top:12px">Shot images and calibration are on the
-       PiTrac tab. PiTrac measures the ball with still images and does not record swing video.</div>`;
-  }catch(error){ $("cameras").className="empty"; $("cameras").textContent="Could not ask PiTrac."; }
+       Launch monitor dashboard. PiTrac measures the ball with still images and does not record swing video.</div>`;
+  }catch(error){ if(cameraDevice!==id) return; $("cameras").className="empty"; $("cameras").textContent="Could not ask PiTrac."; }
 }
 
 $("clearShots").addEventListener("click",e=>run(e.target, async()=>{
@@ -1768,7 +1873,7 @@ function loadFrames(){
   if(!status) return;
   // Load a frame the first time its tab is opened, so the enclosure is not
   // serving two extra pages to a window nobody has looked at.
-  if(pane==="shots") loadCameras();
+
   if(pane==="pitrac"){
     const url=status.dashboardUrl;
     frameInto("pitracFrame","pitracHint",url,
@@ -1785,13 +1890,18 @@ function frameInto(frameId, hintId, url, emptyText){
 }
 
 async function refresh(){
-  try{ render(await api("/api/status")); }
+  const sequence=++refreshSequence;
+  statusReads++;
+  try{ const data=await api("/api/status"); if(sequence===refreshSequence) render(data); }
   catch(error){
+    if(sequence!==refreshSequence) return;
+    document.body.classList.remove("starting");
+    logDiagnostic("Desktop status", error.message);
     $("dot").className="dot bad";
-    $("head").textContent="Easy-Connect has stopped";
-    $("sub").textContent="You can close this window.";
+    $("head").textContent="Reconnecting to Easy-Connect";
+    $("sub").textContent="If this persists, reopen the app.";
     $("why").textContent="";
-  }
+  }finally{ statusReads--; }
 }
 // Release smoke tests add this query parameter to the exact packaged app.
 // These are ordinary product routes called through the same helper and
@@ -1809,7 +1919,7 @@ async function runPageSmoke(){
 }
 runPageSmoke();
 refresh();
-setInterval(()=>{ if(!busy && !asking()) refresh(); }, 3000);
+setInterval(()=>{ if(!statusReads && !busy && !asking() && !document.hidden) refresh(); }, 3000);
 // The range polls faster than the rest of the app, because a shot landing
 // three seconds after it was hit does not feel like it belongs to the swing.
 setInterval(()=>{ if(!busy && pane==="range" && !document.hidden) refreshRange(); }, 400);

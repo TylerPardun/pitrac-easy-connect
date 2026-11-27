@@ -13,6 +13,8 @@ Everything the Companion stores about an enclosure is scoped to that enclosure's
 device ID, so a second PiTrac is a second entry rather than a conflict.
 """
 
+import hashlib
+import json
 import os
 import platform
 import secrets
@@ -274,6 +276,7 @@ class CompanionService:
         #: Set by "Update now": install as soon as the update is ready.
         self._install_when_ready = False
         #: The practice range. In memory only: a session is a bucket of balls.
+        self._range_session_id = uuid.uuid4().hex
         self.range = RangeSession()
         self.range.set_target(self.store.get("rangeTarget", self.range.target))
         #: Whether PiTrac can see a ball. None until it has said.
@@ -778,24 +781,36 @@ class CompanionService:
 
     # --- The practice range ------------------------------------------------
 
-    def range_status(self) -> Dict[str, Any]:
+    def poll_range(self, previous: str) -> Dict[str, Any]:
+        # The counters belong to the shot collections. Read them before the
+        # snapshot so a concurrent shot invalidates the response on the next poll.
+        bag = self.bag
+        local = self.mode is PlayMode.LOCAL
+        auto = local and bool(self.store.get("autoClub", True))
+        club = self.shots.club
+        ball = self._ball_detected
+        state = (self._range_session_id, self.range.revision, self.shots.revision,
+                 club, local, auto, bag, ball)
+        revision = hashlib.sha256(json.dumps(state).encode()).hexdigest()
+        if previous == revision:
+            return {"unchanged": True}
+
+        snapshot = self.range.status()
         known = caddie.known_carries(self.shots.everything())
         distances = caddie.carries(known)
-        bag = self.bag
         return dict(
-            self.range.status(),
-            club=self.shots.club,
-            autoClub=self.auto_club,
-            suggested=caddie.suggest(self.range.target, bag, distances),
-            # A simulator says which club is in hand while it is being played.
-            clubIsOurs=self.mode is PlayMode.LOCAL,
-            ballDetected=self._ball_detected,
+            snapshot, revision=revision, club=club, autoClub=auto,
+            suggested=caddie.suggest(snapshot["target"], bag, distances),
+            clubIsOurs=local, ballDetected=ball,
             clubs=[
                 {"club": club, "carry": round(distances[club]), "measured": club in known,
                  "inBag": club in bag}
                 for club in caddie.CLUBS
             ],
         )
+
+    def range_status(self) -> Dict[str, Any]:
+        return self.poll_range("")
 
     def clear_range(self) -> Dict[str, Any]:
         self.range.clear()
@@ -1477,11 +1492,12 @@ class CompanionService:
     # --- Reporting --------------------------------------------------------
 
     def simulator_status(self) -> Dict[str, Any]:
-        if self.mode is PlayMode.LOCAL:
+        mode = self.mode
+        if mode is PlayMode.LOCAL:
             error = self._capture_error
             return {
-                "simulator": self.mode.value,
-                "simulatorLabel": self.mode.label,
+                "simulator": mode.value,
+                "simulatorLabel": mode.label,
                 # Nothing has to be opened or connected to, so the only way
                 # this is not ready is if shots cannot be saved.
                 "connected": True,
@@ -1500,9 +1516,10 @@ class CompanionService:
             error = dict(self._last_simulator_error) if self._last_simulator_error else None
         connected = bool(session and session.connected)
         return {
-            "simulator": self.mode.value,
-            "simulatorLabel": self.mode.label,
+            "simulator": mode.value,
+            "simulatorLabel": mode.label,
             "connected": connected,
+            "endpoint": "{}:{}".format(self.simulator_host, self.simulator_ports[mode.simulator]),
             "ready": connected and accepted,
             "testShotAccepted": accepted,
             "message": (error or {}).get("failed", "")

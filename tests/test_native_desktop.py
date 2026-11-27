@@ -199,9 +199,10 @@ def _geometry_used(**overrides):
         settings = {}
 
         @staticmethod
-        def create_window(title, url, width, height, min_size):
+        def create_window(title, url, width, height, min_size, background_color, hidden):
             captured.update(title=title, url=url, width=width, height=height,
-                            min_size=min_size)
+                            min_size=min_size,
+                            background_color=background_color, hidden=hidden)
             return FakeWindow()
 
         @staticmethod
@@ -253,3 +254,11 @@ def test_the_minimum_size_does_not_trap_a_small_screen():
     minimum = _geometry_used()["min_size"]
     screen_w, screen_h = SMALLEST_SCREEN
     assert minimum[0] <= screen_w and minimum[1] <= screen_h
+
+
+def test_native_window_opens_in_the_same_colour_as_the_page():
+    from pitrac_easy_connect.companion.page import PAGE
+
+    used = _geometry_used()
+    assert used["hidden"] is True
+    assert "--bg:" + used["background_color"] in PAGE

@@ -387,3 +387,28 @@ def test_no_shader_uses_a_backwards_smoothstep():
 
     for low, high in re.findall(r"smoothstep\(\s*(-?[\d.]+)\s*,\s*(-?[\d.]+)\s*,", SCRIPT):
         assert float(low) < float(high), "smoothstep({}, {})".format(low, high)
+
+
+def test_idle_poll_skips_trajectories_and_each_change_reaches_the_page(rig):
+    app = rig.companion
+    current = app.poll_range("")
+    for change in (
+        lambda: app.range.record(SEVEN_IRON, "7 iron"),
+        lambda: app.range.record({}, "Putter"),
+        lambda: app.set_range_target(125),
+        lambda: app.set_range_conditions({"temperatureC": 9}),
+        lambda: app.select_simulator("local"),
+        lambda: app.choose_range_club("Driver"),
+        lambda: app.set_bag(["Driver", "Putter"]),
+        lambda: app.set_auto_club(True),
+        lambda: app.shots.record({}, "local"),
+        lambda: app.shots.amend(app.shots.recent()[0]["id"], carry=122),
+        app.shots.clear,
+        app.clear_range,
+    ):
+        previous = current["revision"]
+        assert app.poll_range(previous) == {"unchanged": True}
+        change()
+        current = app.poll_range(previous)
+        assert current == app.range_status()
+        assert current["revision"] != previous
