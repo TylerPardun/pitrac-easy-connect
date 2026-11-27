@@ -605,23 +605,27 @@ def _await_health(journal, health_path: Path, version: str, release: Path,
     return _alive(int(health.get("pid") or 0))
 
 
-def _prune_releases(journal, keep: int = 2) -> None:
-    """Keep the live release and the one to go back to; drop older ones.
+def _prune_releases(journal) -> None:
+    """Keep the live release and the one it replaced; drop the rest.
 
     This runs here because on the enclosure it can run nowhere else: the
     updater's own pruning is after a restart that ends its process.
+
+    The one kept is the journal's previous release, by name. It used to be the
+    newest other folder by date, and an update that had been rolled back
+    leaves a newer folder behind: on a real enclosure that kept a deliberately
+    broken release as the way back and deleted the working one.
     """
 
     releases = Path(journal["releasesDir"])
     live = Path(os.path.realpath(str(journal["linkPath"])))
+    previous = Path(os.path.realpath(str(journal["previousReleasePath"])))
     try:
         found = [path for path in releases.iterdir() if path.is_dir() and not path.is_symlink()]
     except OSError:
         return
-    found.sort(key=lambda path: path.stat().st_mtime, reverse=True)
-    keeping = [path for path in found if path != live][: max(keep - 1, 0)]
     for path in found:
-        if path == live or path in keeping:
+        if Path(os.path.realpath(str(path))) in (live, previous):
             continue
         if path.parent != releases:            # pragma: no cover - defensive
             continue

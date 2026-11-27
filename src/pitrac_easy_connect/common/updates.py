@@ -1278,7 +1278,7 @@ class ArchiveUpdater:
             else:
                 # The previous release is deliberately kept -- it is the thing
                 # to go back to -- but only the previous one.
-                self._prune_releases()
+                self._prune_releases(previous=previous)
             return {"applied": True, "version": tag,
                     "detail": "Updated to {}. PiTrac is restarting.".format(tag)}
 
@@ -1448,13 +1448,28 @@ class ArchiveUpdater:
         os.chmod(destination, 0o755)
         return destination
 
-    def _prune_releases(self, keep: int = 2) -> None:
+    def _prune_releases(self, keep: int = 2, previous: Optional[Path] = None) -> None:
         """Keep the running release and the one to go back to; drop the rest.
 
         Installing by hand has always kept two. Updating over the air kept
         every release ever installed, so an enclosure that updated regularly
         filled its card with copies of software it would never run again.
+
+        Given the release that was replaced, that is the one kept, by name: the
+        newest other folder by date is not always it, because an update that
+        was rolled back leaves a newer folder behind.
         """
+
+        if previous is not None:
+            try:
+                keep_these = {self.link_path.resolve(), Path(previous).resolve()}
+                found = [path for path in self.releases_dir.iterdir() if path.is_dir()]
+            except OSError:
+                return
+            for path in found:
+                if path.resolve() not in keep_these:
+                    shutil.rmtree(path, ignore_errors=True)
+            return
 
         try:
             current = self.link_path.resolve()

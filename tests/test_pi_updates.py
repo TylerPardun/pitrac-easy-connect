@@ -1006,3 +1006,39 @@ def test_a_check_that_may_not_switch_user_says_so_instead_of_would_not_start(tmp
     assert service_module._can_run(tmp_path / "pitrac_easy_connect") is False
     assert "nobody" in service_module._can_run.last_failure
     assert "User=root" in service_module._can_run.last_failure
+
+
+@on_posix
+def test_the_release_kept_to_go_back_to_is_the_one_replaced_not_the_newest(released, tmp_path):
+    """Found by a rehearsal on the real enclosure: after a rolled-back update
+    left a newer (broken) folder behind, the next update kept that one as the
+    way back and deleted the working release it had replaced."""
+
+    import json as _json
+    import os
+    import time as _time
+
+    from pitrac_easy_connect.pi import update_guard
+
+    updater = _bare_updater(released)
+    working = updater._new_release_dir("0.2.0")
+    broken = updater._new_release_dir("0.3.0")      # newer, left by a rollback
+    current = updater._new_release_dir("0.4.0")
+    for age, path in enumerate((working, broken, current)):
+        os.utime(path, (_time.time() + age, _time.time() + age))
+    link = updater.link_path
+    if link.is_symlink() or link.exists():
+        link.unlink()
+    link.symlink_to(current)
+
+    updater._prune_releases(previous=working)
+    assert working.exists() and current.exists() and not broken.exists()
+
+    # The guard, which does this on a real enclosure, keeps the same pair.
+    broken = updater._new_release_dir("0.3.0")
+    os.utime(broken, (_time.time() + 9, _time.time() + 9))
+    update_guard._prune_releases({
+        "releasesDir": str(updater.releases_dir), "linkPath": str(link),
+        "previousReleasePath": str(working),
+    })
+    assert working.exists() and current.exists() and not broken.exists()
