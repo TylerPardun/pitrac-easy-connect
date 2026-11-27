@@ -570,9 +570,12 @@ except where it says so.
    it needs to, and opens the range.
 
 
-Moving up to a later kit
-   Install it over the top, on the Pi and on each computer. Pairing, Wi-Fi,
-   calibration, settings, and shot history are all kept.
+Updates
+   They install themselves: the app checks for a newer version, installs it on
+   this computer while you are not hitting balls, then brings the Pi to the
+   same version. Pairing, Wi-Fi, calibration, settings, and shot history are
+   all kept. If the app ever says the Pi needs a one-time reinstall, run the
+   install command from step 1 again with this kit.
 
 Checking these files
    SHA256SUMS.txt lists what each one should be.

@@ -473,6 +473,23 @@ def test_not_being_able_to_check_stops_play(tmp_path, monkeypatch, name):
 def test_every_check_has_a_name_for_when_it_cannot_give_its_own(tmp_path):
     from pitrac_easy_connect.pi.selftest import WHAT_CHECKS_ARE
 
-    _backend, _pitrac, selftest = build(tmp_path)
+    # The update check runs only on an installed enclosure, so give it one.
+    _backend, _pitrac, selftest = build(tmp_path, update_problems=lambda: [])
     assert {check.key for check in selftest.run().checks} == {
         key for key, _title, _critical in WHAT_CHECKS_ARE.values()}
+
+
+def test_updates_that_could_not_be_installed_are_said_before_one_is_tried(tmp_path):
+    _backend, _pitrac, selftest = build(
+        tmp_path, update_problems=lambda: ["This service is not allowed to switch to 'nobody'."]
+    )
+    report = selftest.run()
+    check = find(report, "updates")
+    assert check.status == "warn" and "nobody" in check.detail
+    # Worth fixing, but not a reason to stop play.
+    assert check not in report.blocking
+
+
+def test_the_update_check_is_absent_where_updates_do_not_replace_anything(tmp_path):
+    _backend, _pitrac, selftest = build(tmp_path)
+    assert "updates" not in {check.key for check in selftest.run().checks}

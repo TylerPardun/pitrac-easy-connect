@@ -55,11 +55,21 @@ from .versions import compare, is_newer, parse
 #: exercised against a stand-in rather than against GitHub.
 REPOSITORY = os.environ.get("PITRAC_UPDATE_REPOSITORY", "TylerPardun/pitrac-easy-connect")
 
-#: Whether there is anywhere to look for a newer version. There is not: the
-#: repository is private, so asking would fail every time and put a warning in
-#: front of somebody who can do nothing about it. New versions come as an
-#: installer. Naming a repository turns the whole update path back on.
-PUBLISHED = "PITRAC_UPDATE_REPOSITORY" in os.environ or "PITRAC_UPDATE_API" in os.environ
+def published(environ=os.environ) -> bool:
+    """Whether to look for, and install, newer versions.
+
+    Yes: the repository is public and its releases are signed, so the app
+    checks for them itself and installs both halves without being asked.
+    ``PITRAC_UPDATES=off`` turns that off -- for the test suite, which must
+    never reach the network, and for anyone who wants to stay put.
+    """
+
+    return str(environ.get("PITRAC_UPDATES", "")).strip().lower() not in (
+        "off", "0", "no", "false",
+    )
+
+
+PUBLISHED = published()
 
 #: The base of the release API. Overridable for the same reason.
 API_BASE = os.environ.get("PITRAC_UPDATE_API", "https://api.github.com")
@@ -1205,10 +1215,17 @@ class ArchiveUpdater:
 
             if self._verify is not None and not self._verify(staged):
                 shutil.rmtree(staged.parent.parent, ignore_errors=True)
+                # Which step failed, when the check can say. "Would not start"
+                # alone hid that on a real enclosure the copy started fine and
+                # the check itself was never allowed to run.
+                why = str(getattr(self._verify, "last_failure", "") or "")
                 return {
                     "applied": False,
-                    "detail": "That version would not start on this machine, so "
-                              "nothing was changed.",
+                    "detail": (
+                        "The downloaded version could not be checked before installing ({}), "
+                        "so nothing was changed.".format(why) if why else
+                        "That version would not start on this machine, so nothing was changed."
+                    ),
                 }
 
             releases = self._uses_releases()

@@ -21,7 +21,7 @@ ExecStart=/usr/bin/python3 -m pitrac_easy_connect.pi.app \
     --state-dir /var/lib/pitrac-easy-connect \
     --pitrac-config-dir __PITRAC_CONFIG_DIR__ \
     --portal-port 80 __HOSTNAME_FLAG__
-Environment=PYTHONPATH=/usr/lib/pitrac-easy-connect
+Environment=PYTHONPATH=/usr/lib/pitrac-easy-connect-releases/current
 Environment=PYTHONUNBUFFERED=1
 Environment=PYTHONDONTWRITEBYTECODE=1
 WorkingDirectory=/var/lib/pitrac-easy-connect
@@ -29,17 +29,21 @@ WorkingDirectory=/var/lib/pitrac-easy-connect
 # This service reconfigures Wi-Fi, sets the hostname, and halts the machine, so
 # it runs as root. Everything below narrows what that root can reach. The
 # browser-facing code has no route that executes a command; see pi/portal.py.
-User=root
+#
+# Root because a system service runs as root by default -- deliberately not by
+# saying User=root. On current systemd, naming root here takes CAP_SETUID away
+# from the process, and an update checks the downloaded copy by running it as
+# "nobody", which needs exactly that. With the line present every update on a
+# real enclosure was refused as "would not start".
 NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectSystem=true
 # ProtectSystem makes /usr read-only, which is what we want everywhere except
-# the one directory this service replaces when it updates itself. Without this
-# the update fails at the moment it tries to swap the new copy in, and only on
-# a real Pi -- a test that writes to a temporary directory never sees it.
-ReadWritePaths=/usr/lib/pitrac-easy-connect
-# Versioned releases live here and the symlink above points into them,
-# so a self-update writes here rather than into the symlink itself.
+# the one directory this service replaces when it updates itself. The versioned
+# releases and the "current" symlink that selects one both live in it, so an
+# update writes only here -- the new release, then the symlink's replacement
+# beside it, then one atomic rename. /usr/lib/pitrac-easy-connect is a fixed
+# pointer to "current" and never changes.
 ReadWritePaths=/usr/lib/pitrac-easy-connect-releases
 # The update guard, which has to survive the release it is guarding against.
 # Restarting this service ends the process performing the update, so the

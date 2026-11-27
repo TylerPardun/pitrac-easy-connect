@@ -866,3 +866,76 @@ class _GuardClock:
 
     def sleep(self, seconds):
         self.value += seconds
+
+
+# --- What stops an update on a real enclosure, found before one is tried ----
+
+
+def test_update_problems_names_a_missing_switch_user_right(tmp_path, monkeypatch):
+    from pitrac_easy_connect.pi import service as service_module
+
+    link = tmp_path / "current"
+    (tmp_path / "releases" / "1").mkdir(parents=True)
+    link.symlink_to(tmp_path / "releases" / "1")
+    real_read = Path.read_text
+
+    def status(self, *a, **k):
+        if str(self) == "/proc/self/status":
+            # What systemd gave the service while its unit said User=root.
+            return "Name:\tpython3\nCapEff:\t000001fffffeff7f\n"
+        return real_read(self, *a, **k)
+
+    monkeypatch.setattr(Path, "read_text", status)
+    problems = service_module.update_problems(link)
+    assert len(problems) == 1 and "User=root" in problems[0]
+
+    monkeypatch.setattr(Path, "read_text", lambda self, *a, **k: (
+        "CapEff:\t000001fffffeffff\n" if str(self) == "/proc/self/status" else real_read(self, *a, **k)))
+    assert service_module.update_problems(link) == []
+
+
+def test_update_problems_names_the_old_layout(tmp_path):
+    from pitrac_easy_connect.pi import service as service_module
+
+    problems = service_module.update_problems(tmp_path / "current")
+    assert any("older layout" in problem for problem in problems)
+
+
+def test_the_live_link_is_beside_the_releases_in_the_writable_directory():
+    """The swap creates the link's replacement beside it, so that must be writable.
+
+    It used to be /usr/lib/pitrac-easy-connect, whose neighbour is /usr/lib:
+    read-only to the service, so every real update failed at the swap.
+    """
+
+    from pitrac_easy_connect.pi import service as service_module
+
+    root = service_module.ENCLOSURE_ROOT
+    assert service_module.ENCLOSURE_LINK_PATH.parent == root
+    assert service_module.ENCLOSURE_RELEASES_DIR.parent == root
+    unit = (Path(__file__).resolve().parent.parent / "packaging" / "pi"
+            / "pitrac-easy-connect.service").read_text()
+    writable = [line.split("=", 1)[1].lstrip("-") for line in unit.splitlines()
+                if line.startswith("ReadWritePaths=")]
+    assert str(root) in writable
+    assert "PYTHONPATH={}".format(service_module.ENCLOSURE_LINK_PATH) in unit
+    # Naming root takes CAP_SETUID away on current systemd; see the unit.
+    assert not any(line.strip().startswith("User=") for line in unit.splitlines())
+
+
+def test_a_check_that_may_not_switch_user_says_so_instead_of_would_not_start(tmp_path, monkeypatch):
+    """What the real enclosure hit: the copy was fine, the check could not run."""
+
+    import subprocess
+    from pitrac_easy_connect.pi import service as service_module
+
+    monkeypatch.setattr(service_module, "_unprivileged",
+                        lambda: {"user": 65534, "group": 65534, "extra_groups": []})
+
+    def refused(*args, **kwargs):
+        raise PermissionError(1, "Operation not permitted")
+
+    monkeypatch.setattr(subprocess, "run", refused)
+    assert service_module._can_run(tmp_path / "pitrac_easy_connect") is False
+    assert "nobody" in service_module._can_run.last_failure
+    assert "User=root" in service_module._can_run.last_failure

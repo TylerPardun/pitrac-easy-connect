@@ -140,6 +140,13 @@ def main(argv=None) -> int:
         desktop_relaunch_arguments=relaunch_arguments,
         version=runtime_version,
         updates_published=updates.PUBLISHED,
+        # Updates install themselves; there is no button for them. Except in
+        # the packaged update smoke, which drives every step by hand to prove
+        # the machinery and must not be raced by it.
+        auto_update=(
+            updates.PUBLISHED and not args.smoke_test
+            and not os.environ.get("PITRAC_PACKAGED_UPDATE_SMOKE")
+        ),
     )
     try:
         server = CompanionHTTPServer(("127.0.0.1", args.port), service)

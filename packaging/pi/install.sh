@@ -17,6 +17,11 @@
 set -euo pipefail
 
 APP_ROOT=/usr/lib/pitrac-easy-connect-releases
+# The live symlink, inside APP_ROOT because that is the only part of /usr the
+# service may write: an update swaps it by creating its replacement beside it.
+CURRENT=$APP_ROOT/current
+# A fixed pointer to CURRENT, kept so older paths still resolve. It used to be
+# the live symlink itself, and beside it is /usr/lib, so no update could swap it.
 APP_DIR=/usr/lib/pitrac-easy-connect
 # The update guard lives outside both of those on purpose: it is what puts the
 # previous release back when a new one will not run, and restarting the
@@ -185,7 +190,10 @@ install -d -m 0755 "$RELEASES"
 mv "$STAGING" "$THIS_RELEASE"
 
 PREVIOUS_TARGET=""
-if [ -L "$APP_DIR" ]; then
+if [ -L "$CURRENT" ]; then
+    PREVIOUS_TARGET="$(readlink -f "$CURRENT")"
+elif [ -L "$APP_DIR" ]; then
+    # The layout before CURRENT existed: the live link was APP_DIR itself.
     PREVIOUS_TARGET="$(readlink -f "$APP_DIR")"
 elif [ -d "$APP_DIR" ]; then
     # Migrating from the old layout, which had a real directory here. Copy it
@@ -198,13 +206,18 @@ elif [ -d "$APP_DIR" ]; then
     MIGRATING_FROM_DIRECTORY=yes
 fi
 
-ln -sfn "$THIS_RELEASE" "${APP_DIR}.new"
-# One atomic replacement, whether $APP_DIR is currently a symlink or the old
-# real directory. There is no moment where nothing is there.
+# The live link first, then the fixed pointer to it. Each is one atomic
+# replacement, and the running service still resolves to the old release until
+# it restarts below, so there is no moment where nothing is there.
+ln -sfn "$THIS_RELEASE" "${CURRENT}.new"
+mv -Tf "${CURRENT}.new" "$CURRENT"
 if [ "${MIGRATING_FROM_DIRECTORY:-no}" = yes ]; then
     rm -rf "$APP_DIR"
 fi
-mv -Tf "${APP_DIR}.new" "$APP_DIR"
+if [ "$(readlink "$APP_DIR" 2>/dev/null)" != "$CURRENT" ]; then
+    ln -sfn "$CURRENT" "${APP_DIR}.new"
+    mv -Tf "${APP_DIR}.new" "$APP_DIR"
+fi
 say "Installed to $THIS_RELEASE"
 
 # Settings, pairings, and the device identity live here and survive upgrades.
@@ -290,14 +303,23 @@ else
 fi
 
 if [ "$HEALTHY" = yes ]; then
-    # Keep the previous release. Disk is cheap; a Pi with no way back is not.
-    ls -1dt "${RELEASES}"/* 2>/dev/null | tail -n +3 | xargs -r rm -rf
+    # Keep exactly this release and the one it replaced. Disk is cheap; a Pi
+    # with no way back is not. Chosen by name, not by date: the two newest
+    # folders are not always these two -- an abandoned update leaves a newer
+    # folder behind, and sorting by date then deleted the real way back.
+    for old in "${RELEASES}"/*; do
+        [ -d "$old" ] || continue
+        case "$(readlink -f "$old")" in
+            "$(readlink -f "$THIS_RELEASE")"|"${PREVIOUS_TARGET:-/nonexistent}") ;;
+            *) rm -rf "$old" ;;
+        esac
+    done
 else
     journalctl -u "$SERVICE" -n 30 --no-pager || true
     if [ -n "$PREVIOUS_TARGET" ] && [ -d "$PREVIOUS_TARGET" ]; then
         say "Putting the previous version back"
-        ln -sfn "$PREVIOUS_TARGET" "${APP_DIR}.new"
-        mv -Tf "${APP_DIR}.new" "$APP_DIR"
+        ln -sfn "$PREVIOUS_TARGET" "${CURRENT}.new"
+        mv -Tf "${CURRENT}.new" "$CURRENT"
         systemctl restart "$SERVICE" 2>/dev/null || true
     fi
     die "The service did not start. The log above says why; the previous version was restored."
@@ -305,9 +327,9 @@ fi
 
 sleep 3
 printf '\n'
-if PYTHONPATH="$APP_DIR" python3 - <<'PYEOF'
+if PYTHONPATH="$CURRENT" python3 - <<'PYEOF'
 import sys
-sys.path.insert(0, "/usr/lib/pitrac-easy-connect")
+sys.path.insert(0, "/usr/lib/pitrac-easy-connect-releases/current")
 from pathlib import Path
 from pitrac_easy_connect.common.identity import IdentityStore
 

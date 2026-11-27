@@ -99,7 +99,10 @@ def test_a_new_computer_can_open_pairing_mode_with_the_owner_card():
 def test_another_computer_holding_pitrac_offers_connect_here():
     view = COMPANION.split("function linkView(data){", 1)[1].split("\nfunction present(", 1)[0]
     assert 'id:"connectHere"' in view
-    assert 'id:"updateOld"' in view
+    # An enclosure too old to update itself is told to be reinstalled, with no
+    # button that could only ever fail.
+    assert "one-time reinstall" in view
+    assert "updateOld" not in COMPANION
     action = COMPANION.split('if(id==="connectHere")', 1)[1].split("\n", 1)[0]
     assert "takeOver:true" in action
 
@@ -213,52 +216,6 @@ def test_the_portal_page_sends_its_owner_token_on_every_post():
     assert "ownerToken:OWNER_TOKEN" in api
 
 
-def test_the_update_notice_is_gated_by_the_available_version_not_every_render():
-    """A v0.4.4 app left open must not have every 3-second poll pop the
-    "update available" card back up after the owner dismissed it -- only a
-    genuinely newer available version should reopen it."""
-
-    card = COMPANION.split('function renderDesktopUpdateCard(host, desktop, plan){')[1].split(
-        '\n  if(state==="downloading"'
-    )[0]
-    assert "updateNoticeShownFor" in card
-    assert "updateNoticeDismissed" in card
-    # Dismissal only clears the card's own contents.
-    remind = card.split('$("remindLater").addEventListener')[1].split("});", 1)[0]
-    assert "updateNoticeDismissed=true" in remind
-    assert 'host.innerHTML=""' in remind
-    assert "updateIndicator" not in remind
-
-
-def test_the_persistent_indicator_does_not_depend_on_dismissal():
-    """The indicator must stay visible purely based on desktop.state -- a
-    dismissed card must not make the update undiscoverable."""
-
-    indicator_fn = COMPANION.split("function renderUpdateIndicator(desktop){")[1].split(
-        "\nfunction renderDesktopUpdateCard", 1
-    )[0]
-    # The visibility decision itself is based only on desktop.state.
-    visibility_check = indicator_fn.split("indicator.classList.add(\"hidden\")")[0]
-    assert "updateNoticeDismissed" not in visibility_check
-    assert "DESKTOP_UPDATE_VISIBLE_STATES" in indicator_fn
-    # Clicking it only un-dismisses the card; it never hides itself.
-    assert "updateNoticeDismissed=false" in indicator_fn
-
-
-def test_clicking_the_indicator_never_hides_it_and_never_calls_apply():
-    indicator_fn = COMPANION.split("function renderUpdateIndicator(desktop){")[1].split(
-        "\nfunction renderDesktopUpdateCard", 1
-    )[0]
-    onclick = indicator_fn.split("indicator.onclick=()=>{", 1)[1].split("};", 1)[0]
-    assert '"/api/update/apply"' not in onclick
-    assert "classList.add" not in onclick
-
-
-def test_checking_desktop_and_pi_button_is_relabelled():
-    label = COMPANION.split('id="checkPiUpdate">')[1].split("</button>")[0]
-    assert label == "Check desktop and PiTrac for updates"
-
-
 def test_discovery_problem_is_shown_in_the_desktop_ui():
     search = COMPANION.split("async function findDevices()")[1].split("\n}")[0]
     assert "data.problem" in search
@@ -267,18 +224,24 @@ def test_discovery_problem_is_shown_in_the_desktop_ui():
     assert "No PiTrac was found" in search
 
 
-def test_update_ui_never_updates_pi_before_the_desktop():
-    render = COMPANION.split("function renderUpdate(update)")[1].split(
-        "async function copyText", 1
-    )[0]
-    assert 'phase==="desktop-update-required"' in render
-    assert 'phase==="pi-update-required"' in render
-    assert render.index('phase==="desktop-update-required"') < render.index(
-        'phase==="pi-update-required"'
-    )
-    assert '"/api/update/pi"' in render
-    assert '"/api/update/prepare"' in render
-    assert 'command:"applyUpdate"' not in render
+def test_the_window_asks_nobody_to_update_anything():
+    """Updates install themselves; the window only says one is happening.
+
+    The order -- this desktop first, then PiTrac to exactly its version -- is
+    the autopilot's job now, and is tested there (test_auto_update.py).
+    """
+
+    for action in ('"/api/update/download"', '"/api/update/apply"', '"/api/update/pi"',
+                   '"/api/update/prepare"', '"/api/update/check"', 'command:"applyUpdate"'):
+        assert action not in COMPANION, action
+    for gone in ("checkPiUpdate", "updateNow", "remindLater", "restartNow", "retryUpdate",
+                 "syncPi", "doPiUpdate"):
+        assert gone not in COMPANION, gone
+    # The single exception: an update this computer could not install itself,
+    # where the verified package is kept and can be shown.
+    render = COMPANION.split("function renderUpdate(update){", 1)[1].split("\nfunction ", 1)[0]
+    assert "DESKTOP_UPDATE_STUCK_STATES.has(state)" in render
+    assert "savedPackagePath" in render
 
 
 @pytest.mark.parametrize("name,page", PAGES, ids=[case[0] for case in PAGES])

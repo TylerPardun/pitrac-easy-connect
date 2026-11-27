@@ -222,14 +222,23 @@ def test_the_setup_program_is_told_where_everything_is(monkeypatch, tmp_path):
 # --- A private build --------------------------------------------------------
 
 
-def test_a_private_build_never_goes_looking_for_updates(tmp_path, monkeypatch):
-    """It would fail every time, and put a warning in front of somebody who can
-    do nothing about it."""
+def test_updates_are_on_unless_turned_off():
+    """The repository is public and its releases signed, so the app updates
+    itself; PITRAC_UPDATES=off is the one way to stop it."""
 
     from pitrac_easy_connect.common import updates
-    from pitrac_easy_connect.companion.service import CompanionService
 
+    assert updates.published({}) is True
+    for off in ("off", "0", "no", "false", " OFF "):
+        assert updates.published({"PITRAC_UPDATES": off}) is False
+    # The test suite runs with it off, so nothing here reaches the network.
     assert updates.PUBLISHED is False
+
+
+def test_a_build_with_updates_off_never_goes_looking_for_them(tmp_path, monkeypatch):
+    """Off means off: no check, and nothing in front of the person about it."""
+
+    from pitrac_easy_connect.companion.service import CompanionService
 
     def asked(*_args, **_kwargs):
         raise AssertionError("looked for an update")

@@ -10,6 +10,7 @@ nobody can reach cannot be told about any other problem it has.
 """
 
 import os
+import re
 import threading
 import time
 from dataclasses import dataclass
@@ -40,8 +41,16 @@ DEFAULT_STATE_DIR = Path("/var/lib/pitrac-easy-connect")
 #: The live symlink the service is imported through, and the versioned
 #: releases it selects between. Named here rather than written twice, because
 #: the update guard has to agree with the updater about both exactly.
-ENCLOSURE_LINK_PATH = Path("/usr/lib/pitrac-easy-connect")
-ENCLOSURE_RELEASES_DIR = Path("/usr/lib/pitrac-easy-connect-releases/releases")
+#:
+#: Both live inside the one directory the service may write. Swapping a
+#: symlink means creating its replacement beside it, and the link used to be
+#: /usr/lib/pitrac-easy-connect -- beside it is /usr/lib, read-only to the
+#: service, so every update on a real enclosure failed at the swap. Nothing in
+#: a test that writes to a temporary directory could notice.
+#: /usr/lib/pitrac-easy-connect is now a fixed pointer to this link.
+ENCLOSURE_ROOT = Path("/usr/lib/pitrac-easy-connect-releases")
+ENCLOSURE_LINK_PATH = ENCLOSURE_ROOT / "current"
+ENCLOSURE_RELEASES_DIR = ENCLOSURE_ROOT / "releases"
 POLL_SECONDS = 2.0
 #: Requests that wait on a radio.
 SLOW_COMMANDS = {"scanNetworks", "joinNetwork", "setDirectMode", "resetNetwork", "restartPitrac"}
@@ -183,6 +192,14 @@ class PiService:
             config_problems=self._config_problems,
             relay_listening=lambda: self.relay.listening,
             models_dir=models_dir,
+            # Only where updates really replace the installed software: as root,
+            # through the releases symlink. Anywhere else there is nothing to check.
+            update_problems=(
+                update_problems
+                if hasattr(os, "geteuid") and os.geteuid() == 0
+                and Path(__file__).resolve().is_relative_to(ENCLOSURE_ROOT)
+                else None
+            ),
         )
 
     # --- Boot -------------------------------------------------------------
@@ -1017,25 +1034,115 @@ def _can_run(package: "Path") -> bool:
         "assert p.__version__;"
         "print('ok')"
     ).format(str(package.parent))
+    _can_run.last_failure = ""
+
+    def refuse(why: str) -> bool:
+        # Kept for the updater to quote, and logged: a refusal that says only
+        # "would not start" cost an afternoon on a real enclosure, where the
+        # copy started fine and the check was the thing that could not run.
+        _can_run.last_failure = why
+        print("Update check refused: " + why, file=sys.stderr)
+        return False
+
     sandbox = _unprivileged()
     if sandbox is None:
         # Refusing the update is the safe answer. Running freshly downloaded
         # code as root to decide whether it is safe to install is not.
-        print(
-            "Refusing to check the downloaded update: this Pi has no unprivileged "
-            "account to run it as, and the check must not run as root.",
-            file=sys.stderr,
+        return refuse(
+            "this Pi has no unprivileged account to run it as, and the check must not run as root"
         )
-        return False
     try:
         done = subprocess.run(
             [sys.executable, "-c", probe],
             capture_output=True, text=True, timeout=60,
             **sandbox
         )
-    except (OSError, subprocess.SubprocessError):
-        return False
-    return done.returncode == 0 and "ok" in done.stdout
+    except PermissionError as exc:
+        return refuse(
+            "this service is not allowed to switch to the 'nobody' account ({}); its systemd "
+            "unit probably still says User=root".format(exc)
+        )
+    except subprocess.TimeoutExpired:
+        return refuse("the new version took longer than a minute to load")
+    except (OSError, subprocess.SubprocessError) as exc:
+        return refuse("the check could not be started ({})".format(exc))
+    if done.returncode == 0 and "ok" in done.stdout:
+        return True
+    lines = [line for line in (done.stderr or "").strip().splitlines() if line.strip()]
+    return refuse("the new version failed to load: {}".format(
+        lines[-1] if lines else "exit status {}".format(done.returncode)
+    ))
+
+
+_can_run.last_failure = ""
+
+
+#: CAP_SETUID, which running the downloaded copy as "nobody" needs.
+_CAP_SETUID = 7
+
+
+def update_problems(link: Path = None) -> List[str]:
+    """What would stop an update being installed here, in words a person can act on."""
+
+    link = Path(link or ENCLOSURE_LINK_PATH)
+    problems: List[str] = []
+    try:
+        status = Path("/proc/self/status").read_text()
+        found = re.search(r"^CapEff:\s*([0-9a-fA-F]+)", status, re.MULTILINE)
+        if found and not int(found.group(1), 16) & (1 << _CAP_SETUID):
+            problems.append(
+                "This service is not allowed to switch to the 'nobody' account, which every "
+                "update needs to check the new version. Remove User=root from "
+                "/etc/systemd/system/pitrac-easy-connect.service and restart it."
+            )
+    except OSError:
+        pass
+    if not link.is_symlink():
+        problems.append(
+            "{} does not exist, so this enclosure was installed with an older layout. "
+            "Reinstall it once with packaging/pi/install.sh.".format(link)
+        )
+    elif not os.access(str(link.parent), os.W_OK):
+        problems.append(
+            "{} is read-only to this service, so a new version cannot be switched in.".format(
+                link.parent
+            )
+        )
+    return problems
+
+
+#: CAP_SETUID, which running the downloaded copy as "nobody" needs.
+_CAP_SETUID = 7
+
+
+def update_problems(link: Path = None) -> List[str]:
+    """What would stop an update being installed here, in words a person can act on."""
+
+    link = Path(link or ENCLOSURE_LINK_PATH)
+    problems: List[str] = []
+    try:
+        status = Path("/proc/self/status").read_text()
+        found = re.search(r"^CapEff:\s*([0-9a-fA-F]+)", status, re.MULTILINE)
+        if found and not int(found.group(1), 16) & (1 << _CAP_SETUID):
+            problems.append(
+                "This service is not allowed to switch to the 'nobody' account, which every "
+                "update needs to check the new version. Remove User=root from "
+                "/etc/systemd/system/pitrac-easy-connect.service and restart it."
+            )
+    except OSError:
+        pass
+    if not link.is_symlink():
+        problems.append(
+            "{} does not exist, so this enclosure was installed with an older layout. "
+            "Reinstall it once with packaging/pi/install.sh.".format(link)
+        )
+    elif not os.access(str(link.parent), os.W_OK):
+        problems.append(
+            "{} is read-only to this service, so a new version cannot be switched in.".format(
+                link.parent
+            )
+        )
+    return problems
 
 
 #: Accounts the probe may be dropped to, most preferred first. Named

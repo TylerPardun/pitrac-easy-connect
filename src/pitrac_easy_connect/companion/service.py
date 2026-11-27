@@ -66,7 +66,7 @@ from ..models import TEST_SHOT, PlayMode, Simulator
 from . import clubs as caddie
 from . import opengolfsim
 from . import self_update
-from .link_client import CompanionLinkClient, LegacyUpdateLink
+from .link_client import CompanionLinkClient
 from . import shotlog
 from .rangeplay import RangeSession
 from .shotlog import ShotLog
@@ -86,6 +86,19 @@ from .simulator_session import (
 #: or not), only that operation's own code may change the state -- a stale
 #: background check landing mid-download must not overwrite "downloading"
 #: back to "available."
+#: Desktop update states in which the autopilot must leave it alone.
+_BUSY_DESKTOP_UPDATE_STATES = frozenset(
+    {
+        DesktopUpdateState.DOWNLOADING,
+        DesktopUpdateState.VERIFYING,
+        DesktopUpdateState.STAGING,
+        DesktopUpdateState.INSTALLING,
+        DesktopUpdateState.AWAITING_RESTART_VERIFICATION,
+        DesktopUpdateState.ROLLBACK,
+        DesktopUpdateState.RESTART_REQUIRED,
+    }
+)
+
 _PASSIVE_DESKTOP_UPDATE_STATES = frozenset(
     {
         DesktopUpdateState.IDLE,
@@ -166,6 +179,7 @@ class CompanionService:
         startup_update_check: bool = True,
         updates_published: bool = True,
         desktop_relaunch_arguments: Optional[List[str]] = None,
+        auto_update: bool = False,
     ):
         self.version = version
         #: False when there is nowhere to look for a newer one; see
@@ -254,8 +268,9 @@ class CompanionService:
         #: What the enclosure was last told, to know when that stops being true.
         self._reported_simulator: Optional[Dict[str, Any]] = None
         self._pending_update_target = str(self.store.get("updateTarget", "") or "")
-        #: Progress of updating an enclosure too old to talk to; None when idle.
-        self._old_update: Optional[Dict[str, Any]] = None
+        #: When the autopilot last tried each (half, version), so a failure is
+        #: retried later rather than on every step.
+        self._auto_attempts: Dict[Any, float] = {}
         #: The practice range. In memory only: a session is a bucket of balls.
         self.range = RangeSession()
         self.range.set_target(self.store.get("rangeTarget", self.range.target))
@@ -339,6 +354,10 @@ class CompanionService:
                     args=(periodic_update_check_seconds,),
                     daemon=True,
                 ).start()
+        # Updates install themselves; see auto_update_step. Off unless asked
+        # for, so nothing constructed in a test ever starts installing.
+        if auto_update and updates_published:
+            threading.Thread(target=self._auto_update_loop, daemon=True).start()
 
     # --- Simulator selection ---------------------------------------------
 
@@ -2405,104 +2424,94 @@ class CompanionService:
 
     # --- Enclosures too old to talk to ----------------------------------
 
-    #: How long an old enclosure gets to download, check, restart, and answer
-    #: as the new version before this stops waiting for it.
-    OLD_ENCLOSURE_RETURN_SECONDS = 6 * 60.0
-
     def _old_enclosure_status(self, client) -> Optional[Dict[str, Any]]:
-        with self._lock:
-            progress = dict(self._old_update) if self._old_update else None
-        outdated = client.outdated_enclosure if client is not None else None
-        if outdated is None and progress is None:
-            return None
-        found = dict(outdated or {})
-        return {
-            "version": found.get("version", "") or (progress or {}).get("from", ""),
-            "targetVersion": self.version,
-            "update": progress or {"state": "idle", "detail": ""},
-        }
+        """An enclosure on link protocol 1 (0.4.x and before), if one answered.
 
-    def update_old_enclosure(self) -> Dict[str, Any]:
-        """Update an enclosure that is too old to talk to, to this app's version.
-
-        The enclosure downloads the release itself. Only this exact version is
-        asked for, so both halves end up matching. Once it has restarted and
-        answers as that version, this connects to it normally.
+        Such an enclosure cannot be updated from here: its updater swaps
+        versions by creating a symlink in /usr/lib, which its own service
+        protections make read-only, so every attempt fails at the last step.
+        What is left is to say so and point at the one-time reinstall.
         """
 
-        with self._lock:
-            client = self._link
-            busy = self._old_update and self._old_update.get("state") in ("installing", "restarting")
         outdated = client.outdated_enclosure if client is not None else None
-        if busy:
-            return self.status()
         if outdated is None:
-            raise EasyConnectError(LINK_NOT_FOUND, "no outdated PiTrac is connected to update")
-        device_id = str(self.store.get("activeDeviceId") or "")
-        record = (self.store.get("enclosures") or {}).get(device_id)
-        if record is None:
-            raise EasyConnectError(LINK_NOT_FOUND, "this computer is not paired with that PiTrac")
-        with self._lock:
-            self._old_update = {
-                "state": "installing", "from": str(outdated.get("version", "")),
-                "detail": "PiTrac is downloading and checking {}. This takes a few minutes; "
-                          "leave it powered.".format(self.version),
-            }
-        updater = LegacyUpdateLink(
-            client.host, client.port, record["pairingId"], record["secret"], self.version,
-            self.computer_name, expected_device_id=device_id,
-        )
-        threading.Thread(
-            target=self._update_old_enclosure_worker, args=(updater, device_id),
-            name="old-enclosure-update", daemon=True,
-        ).start()
-        return self.status()
+            return None
+        return {"version": str(outdated.get("version", "")), "targetVersion": self.version}
 
-    def _set_old_update(self, state: str, detail: str) -> None:
-        with self._lock:
-            current = dict(self._old_update or {})
-            current.update({"state": state, "detail": detail})
-            self._old_update = current
+    # --- Updating both halves without being asked ----------------------
 
-    def _update_old_enclosure_worker(self, updater: "LegacyUpdateLink", device_id: str) -> None:
-        try:
-            result = updater.update_to("v" + self.version)
-        except link.TerminalLinkError as exc:
-            info = exc.info or {}
-            self._set_old_update("failed", str(info.get("failed") or "PiTrac refused the update."))
-            return
-        except Exception as exc:  # reported to the person, never raised from a thread
-            self._set_old_update("failed", "PiTrac could not be asked to update: {}".format(exc))
-            return
-        if not result.get("started"):
-            self._set_old_update("failed", str(result.get("detail") or "PiTrac did not update."))
-            return
-        self._set_old_update(
-            "restarting",
-            "PiTrac is restarting into {}. It reconnects on its own.".format(self.version),
-        )
-        deadline = time.monotonic() + self.OLD_ENCLOSURE_RETURN_SECONDS
-        while time.monotonic() < deadline:
-            time.sleep(3.0)
+    #: How often the autopilot looks at the plan. It only reads state; the
+    #: network checks run on their own, slower timer.
+    AUTO_UPDATE_SECONDS = 20.0
+    #: How long to leave a version alone after an attempt at it failed.
+    AUTO_RETRY_SECONDS = 30 * 60.0
+    #: How long without a shot before the app may restart itself to install.
+    QUIET_BEFORE_RESTART_SECONDS = 10 * 60.0
+
+    def _auto_update_loop(self) -> None:
+        while not self._update_check_stop.wait(self.AUTO_UPDATE_SECONDS):
             try:
-                self.search(timeout=1.5)
+                self.auto_update_step()
             except Exception:
-                continue
-            found = self._found_by_id(device_id)
-            if found is not None and compare(str(found.version or ""), self.version) == 0:
-                with self._lock:
-                    self._old_update = None
-                try:
-                    self.connect(device_id)
-                except EasyConnectError:
-                    pass
-                return
-        self._set_old_update(
-            "failed",
-            "PiTrac has not come back as {} yet. Leave it powered for a few more minutes, "
-            "then press Search. If it still reports the old version, the update was "
-            "undone because the new one would not start.".format(self.version),
-        )
+                # Never let updating stop the app. The next step tries again.
+                pass
+
+    def _may_attempt(self, what: str, target: str, now: float) -> bool:
+        key = (what, target)
+        last = self._auto_attempts.get(key)
+        if last is not None and now - last < self.AUTO_RETRY_SECONDS:
+            return False
+        self._auto_attempts[key] = now
+        return True
+
+    def _quiet_enough_to_restart(self, now: float) -> bool:
+        with self._lock:
+            last_shot = self._last_shot_at
+        return not last_shot or now - float(last_shot) >= self.QUIET_BEFORE_RESTART_SECONDS
+
+    def auto_update_step(self, now: Optional[float] = None) -> str:
+        """Take the next step of an update, if one is due. Returns what it did.
+
+        The order is the one the plan already enforces: this desktop first, to
+        the latest release, and only then PiTrac, to exactly the version this
+        desktop runs. PiTrac is never sent ahead of the desktop, and nothing
+        moves backwards.
+        """
+
+        if not self.updates_published:
+            return "off"
+        now = time.time() if now is None else now
+        status = self._update_status()
+        plan = status.get("coordination") or {}
+        phase = plan.get("phase")
+        target = str(plan.get("targetVersion") or "")
+
+        if phase == "desktop-update-required" and self.desktop_updates is not None and target:
+            with self._lock:
+                state = self._desktop_update_state
+            if state is DesktopUpdateState.READY_TO_RESTART:
+                # Never in the middle of play: wait until shots have stopped.
+                if self._quiet_enough_to_restart(now):
+                    self.install_and_restart()
+                    return "installing"
+                return "waiting-for-a-break"
+            if state in _BUSY_DESKTOP_UPDATE_STATES:
+                return "busy"
+            if not self._may_attempt("desktop", target, now):
+                return "waiting-to-retry"
+            if self.prepare_update(target).get("prepared"):
+                self.download_desktop_update()
+                return "downloading"
+            return "not-prepared"
+
+        if phase == "pi-update-required" and target:
+            if not (self._link and self._link.connected):
+                return "waiting-for-pitrac"
+            if not self._may_attempt("pi", target, now):
+                return "waiting-to-retry"
+            result = self.apply_pi_update(target)
+            return "updating-pitrac" if result.get("started") else "pitrac-refused"
+        return "nothing-to-do"
 
     def _dashboard_url(self) -> str:
         """PiTrac's own dashboard, for anyone who wants the raw shot data."""

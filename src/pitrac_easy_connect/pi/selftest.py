@@ -73,6 +73,7 @@ WHAT_CHECKS_ARE = {
     "_network": ("network", "Network", True),
     "_companion": ("companion", "Your computer", True),
     "_simulator": ("simulator", "Golf simulator", True),
+    "_updates": ("updates", "Automatic updates", False),
 }
 
 
@@ -166,6 +167,7 @@ class SelfTest:
         config_problems: Callable[[], List[str]],
         relay_listening: Optional[Callable[[], bool]] = None,
         models_dir=None,
+        update_problems: Optional[Callable[[], List[str]]] = None,
     ):
         self.backend = backend
         self.pitrac = pitrac
@@ -176,10 +178,12 @@ class SelfTest:
         self.simulator_status = simulator_status
         self.config_problems = config_problems
         self.relay_listening = relay_listening
+        #: Only on an installed enclosure, where updates replace the software.
+        self.update_problems = update_problems
 
     def run(self) -> SelfTestReport:
         report = SelfTestReport()
-        for check in (
+        checks = (
             self._hardware,
             self._storage,
             self._temperature,
@@ -196,7 +200,10 @@ class SelfTest:
             self._network,
             self._companion,
             self._simulator,
-        ):
+        )
+        if self.update_problems is not None:
+            checks += (self._updates,)
+        for check in checks:
             try:
                 report.checks.append(check())
             except Exception as exc:
@@ -296,6 +303,19 @@ class SelfTest:
         )
 
     # --- PiTrac itself ----------------------------------------------------
+
+    def _updates(self) -> CheckResult:
+        """Whether an update could actually be installed here, before one is tried.
+
+        Every update on a real enclosure used to fail at the last moment, for
+        reasons that were true from the moment the service started: a missing
+        permission and a read-only directory. Both are visible up front.
+        """
+
+        problems = self.update_problems() if self.update_problems else []
+        if problems:
+            return CheckResult("updates", "Automatic updates", WARN, " ".join(problems))
+        return CheckResult("updates", "Automatic updates", PASS, "Ready to install updates")
 
     def _cameras(self) -> CheckResult:
         cameras = self.backend.cameras()

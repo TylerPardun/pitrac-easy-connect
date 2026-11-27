@@ -1,24 +1,18 @@
-"""An enclosure too old to talk to can still be told to update itself.
+"""An enclosure too old to talk to is recognised and named, not just refused.
 
 Enclosures before 0.9 speak link protocol 1, which this app will not play
-through. Their only way to a newer release is the update command over that
-link, so the app keeps exactly that one conversation: prove the pairing, ask
-for this app's own version, and say nothing else.
-
-The whole path was also run against the real 0.4.6 enclosure code from history,
-updating itself from a stand-in release service and coming back as the new
-version with its pairings; this keeps the app's half of it from regressing.
+through. They cannot be updated from here either: their updater swaps versions
+with a symlink in /usr/lib, which their own service protections make read-only,
+so on a real enclosure it always failed at the last step. What the app can do
+is say which version answered, so the window can ask for the one-time
+reinstall instead of showing a connection error.
 """
 
 import socket
 import threading
 
 from pitrac_easy_connect.common import link
-from pitrac_easy_connect.companion.link_client import (
-    LEGACY_PROTOCOL,
-    CompanionLinkClient,
-    LegacyUpdateLink,
-)
+from pitrac_easy_connect.companion.link_client import CompanionLinkClient
 from pitrac_easy_connect.pi.pairing import PairingManager
 
 SECRET = "s3cret-for-the-test"
@@ -87,36 +81,6 @@ class OldEnclosure:
 
     def close(self):
         self._server.close()
-
-
-def updater(enclosure):
-    return LegacyUpdateLink("127.0.0.1", enclosure.port, PAIRING, SECRET, "0.10.3",
-                            "Den PC", expected_device_id=DEVICE["deviceId"])
-
-
-def test_it_asks_an_old_enclosure_for_exactly_this_version_and_nothing_else():
-    enclosure = OldEnclosure()
-    try:
-        result = updater(enclosure).update_to("v0.10.3", timeout=5)
-    finally:
-        enclosure.close()
-    assert result["started"] is True
-    assert enclosure.auth["protocol"] == LEGACY_PROTOCOL
-    assert enclosure.commands == [
-        ("checkForUpdates", {"targetTag": "v0.10.3"}),
-        ("applyUpdate", {"targetTag": "v0.10.3"}),
-    ]
-
-
-def test_nothing_is_installed_when_the_enclosure_cannot_find_that_release():
-    enclosure = OldEnclosure(available=False)
-    try:
-        result = updater(enclosure).update_to("v0.10.3", timeout=5)
-    finally:
-        enclosure.close()
-    assert result["started"] is False
-    assert "no matching archive" in result["detail"]
-    assert [name for name, _ in enclosure.commands] == ["checkForUpdates"]
 
 
 def test_the_ordinary_link_names_the_old_version_instead_of_only_refusing():

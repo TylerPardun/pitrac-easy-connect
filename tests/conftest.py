@@ -11,6 +11,11 @@ import pytest
 # one, the one with the project installed, however the tests were started.
 os.environ["PATH"] = os.pathsep.join([str(pathlib.Path(sys.executable).parent), os.environ.get("PATH", "")])
 
+# The app checks GitHub for updates and installs them itself. Nothing in the
+# test suite may do either; a test that wants the update path names its own
+# stand-in release service.
+os.environ.setdefault("PITRAC_UPDATES", "off")
+
 #: Parts of this project only ever run on the enclosure, which is Linux. File
 #: ownership, the accounts a privilege drop needs, permission bits and the
 #: NetworkManager backend have no meaning on Windows, and a test for them there

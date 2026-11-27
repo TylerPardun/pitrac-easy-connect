@@ -457,8 +457,8 @@ Type=oneshot
 ExecStart=/usr/bin/python3 {script} --journal {journal}
 RemainAfterExit=no
 TimeoutStartSec=900
-# The one thing this exists to do is move the live symlink back.
-ReadWritePaths=/usr/lib/pitrac-easy-connect
+# The one thing this exists to do is move the live symlink back. It lives
+# beside the releases, which is the only place in /usr it may write.
 ReadWritePaths=/usr/lib/pitrac-easy-connect-releases
 ReadWritePaths=/var/lib/pitrac-easy-connect
 
