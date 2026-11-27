@@ -196,6 +196,8 @@ class PitracInstallation:
         self.config_dir = Path(config_dir)
         self.images_dir = Path(images_dir)
         self._lock = threading.Lock()
+        #: Held by whichever caller is asking PiTrac, so the others need not.
+        self._asking = threading.Lock()
         self._snapshot = PitracSnapshot()
 
     # --- Reading ----------------------------------------------------------
@@ -207,8 +209,23 @@ class PitracInstallation:
             last = self._snapshot
             if last.at and time.monotonic() - last.at < max_age:
                 return last
-            self._snapshot = self._look()
-            return self._snapshot
+        # Asking PiTrac is two HTTP calls that can take seconds each, and the
+        # lock used to be held across them, so every reader queued behind a
+        # slow PiTrac. One caller asks; the rest get the last answer, unless
+        # there is none yet, in which case they wait for this one.
+        if not self._asking.acquire(blocking=not last.at):
+            return last
+        try:
+            with self._lock:
+                current = self._snapshot
+                if current.at and time.monotonic() - current.at < max_age:
+                    return current
+            fresh = self._look()
+            with self._lock:
+                self._snapshot = fresh
+            return fresh
+        finally:
+            self._asking.release()
 
     def _look(self) -> PitracSnapshot:
         try:

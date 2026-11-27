@@ -180,8 +180,18 @@ class SelfTest:
         self.relay_listening = relay_listening
         #: Only on an installed enclosure, where updates replace the software.
         self.update_problems = update_problems
+        self._run_facts = None
+
+    def _facts(self):
+        """The system's facts, read once per run: five checks used to read them
+        five times, each a vcgencmd and a timedatectl."""
+
+        if self._run_facts is None:
+            self._run_facts = self.backend.system_facts()
+        return self._run_facts
 
     def run(self) -> SelfTestReport:
+        self._run_facts = None
         report = SelfTestReport()
         checks = (
             self._hardware,
@@ -226,7 +236,7 @@ class SelfTest:
     # --- The machine ------------------------------------------------------
 
     def _hardware(self) -> CheckResult:
-        facts = self.backend.system_facts()
+        facts = self._facts()
         if facts.is_supported_hardware:
             return CheckResult(
                 "hardware", "Raspberry Pi model", PASS, "{} · {}".format(facts.model, facts.os_name)
@@ -241,7 +251,7 @@ class SelfTest:
         )
 
     def _storage(self) -> CheckResult:
-        facts = self.backend.system_facts()
+        facts = self._facts()
         gigabytes = facts.free_bytes / 1024**3
         if facts.free_bytes < LOW_STORAGE_BYTES or facts.free_percent < LOW_STORAGE_PERCENT:
             return CheckResult(
@@ -255,7 +265,7 @@ class SelfTest:
         return CheckResult("storage", "Memory card space", PASS, "{:.1f} GB free".format(gigabytes))
 
     def _temperature(self) -> CheckResult:
-        facts = self.backend.system_facts()
+        facts = self._facts()
         if facts.temperature_c is None:
             return CheckResult(
                 "temperature", "Temperature", UNAVAILABLE, "No temperature sensor was found"
@@ -268,7 +278,7 @@ class SelfTest:
         return CheckResult("temperature", "Temperature", PASS, reading)
 
     def _power(self) -> CheckResult:
-        facts = self.backend.system_facts()
+        facts = self._facts()
         if facts.throttled_flags is None:
             return CheckResult("power", "Power supply", UNAVAILABLE, "Power reporting is not available")
         if facts.under_voltage_now:
@@ -282,7 +292,7 @@ class SelfTest:
         return CheckResult("power", "Power supply", PASS, "Steady")
 
     def _clock(self) -> CheckResult:
-        facts = self.backend.system_facts()
+        facts = self._facts()
         if facts.clock_synchronized:
             return CheckResult("clock", "Clock", PASS, "Set correctly")
         # Play does not need the clock. Verifying a signed download does.

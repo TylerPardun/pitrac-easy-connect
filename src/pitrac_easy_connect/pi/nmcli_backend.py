@@ -19,6 +19,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import threading
 import time
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence
@@ -146,6 +147,26 @@ class NmcliBackend(PiBackend):
     def __init__(self, device: str = WIFI_DEVICE, sudo: bool = False):
         self.device = device
         self._sudo = sudo
+        #: Short-lived answers to questions the service asks many times a
+        #: second; see _remember and the wrappers at the end of this module.
+        self._cache: Dict[str, tuple] = {}
+        self._cache_lock = threading.Lock()
+
+    def _remember(self, key: str, seconds: float, compute):
+        now = time.monotonic()
+        with self._cache_lock:
+            hit = self._cache.get(key)
+            if hit is not None and now - hit[0] < seconds:
+                return hit[1]
+        value = compute()
+        with self._cache_lock:
+            self._cache[key] = (time.monotonic(), value)
+        return value
+
+    def _forget(self, *keys: str) -> None:
+        with self._cache_lock:
+            for key in keys or list(self._cache):
+                self._cache.pop(key, None)
 
     def _nmcli(self, *args: str, timeout: float = 30.0, check: bool = True):
         command = ["nmcli", *args]
@@ -806,3 +827,85 @@ def _xml(value: str) -> str:
         .replace(">", "&gt;")
         .replace('"', "&quot;")
     )
+
+
+# --- Asking the system less often ------------------------------------------
+#
+# The service refreshes every few seconds, and a refresh asked NetworkManager
+# about the active connection around fifteen times, ran vcgencmd and
+# timedatectl five times each, and opened the camera stack with rpicam-hello
+# -- which can contend with PiTrac for the cameras it is measuring with.
+# Answers that cannot change without this service changing them, or that do
+# not change in seconds, are now kept briefly; anything that changes the
+# network forgets them at once.
+
+#: Network answers: long enough to cover one refresh, short enough that a
+#: change made by somebody else is seen within a poll.
+NETWORK_SECONDS = 3.0
+#: Throttling, voltage and clock sync.
+FACTS_SECONDS = 5.0
+#: Camera detection, by what was found last time.
+CAMERAS_MISSING_SECONDS = 20.0
+CAMERAS_FOUND_SECONDS = 60.0
+#: While PiTrac is measuring, asking would mean opening cameras it is using.
+CAMERAS_IN_USE_SECONDS = 300.0
+PITRAC_PROCESS = "pitrac_lm"
+
+
+def _remembered(name: str, seconds: float):
+    compute = getattr(NmcliBackend, name)
+
+    def remembered(self, *args, **kwargs):
+        if args or kwargs:
+            return compute(self, *args, **kwargs)
+        value = self._remember(name, seconds, lambda: compute(self))
+        return list(value) if isinstance(value, list) else value
+
+    remembered.__name__ = name
+    remembered.__doc__ = compute.__doc__
+    return remembered
+
+
+def _forgetting(name: str):
+    change = getattr(NmcliBackend, name)
+
+    def forgetting(self, *args, **kwargs):
+        self._forget()
+        try:
+            return change(self, *args, **kwargs)
+        finally:
+            self._forget()
+
+    forgetting.__name__ = name
+    forgetting.__doc__ = change.__doc__
+    return forgetting
+
+
+_cameras_uncached = NmcliBackend.cameras
+
+
+def _cameras(self):
+    now = time.monotonic()
+    with self._cache_lock:
+        hit = self._cache.get("cameras")
+    if hit is not None:
+        age, found = now - hit[0], hit[1]
+        fresh = CAMERAS_FOUND_SECONDS if len(found) >= 2 else CAMERAS_MISSING_SECONDS
+        if age < fresh:
+            return list(found)
+        if found and age < CAMERAS_IN_USE_SECONDS and self.process_running(PITRAC_PROCESS):
+            return list(found)
+    found = _cameras_uncached(self)
+    with self._cache_lock:
+        self._cache["cameras"] = (time.monotonic(), found)
+    return list(found)
+
+
+for _name in ("active_connection", "saved_profiles", "all_wifi_profiles", "known_ssids"):
+    setattr(NmcliBackend, _name, _remembered(_name, NETWORK_SECONDS))
+NmcliBackend.system_facts = _remembered("system_facts", FACTS_SECONDS)
+NmcliBackend.cameras = _cameras
+for _name in ("connect", "adopt", "discard", "activate_profile", "forget_profile",
+              "start_hotspot", "stop_hotspot", "set_wifi_country", "create_checkpoint",
+              "rollback_checkpoint", "destroy_checkpoint"):
+    setattr(NmcliBackend, _name, _forgetting(_name))

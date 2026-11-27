@@ -410,3 +410,66 @@ def test_the_hotspot_knows_whether_anybody_is_on_it(backend, nmcli, monkeypatch)
     assert backend.hotspot_clients() == 2
     monkeypatch.setattr(nmcli_backend, "find_tool", lambda name: None)
     assert backend.hotspot_clients() is None
+
+
+# --- Asking the system less often -------------------------------------------
+#
+# A refresh used to ask NetworkManager about the active connection about
+# fifteen times and open the camera stack with rpicam-hello every few seconds,
+# which can contend with PiTrac for the cameras it is measuring with.
+
+
+class Clock:
+    def __init__(self):
+        self.now = 1000.0
+
+    def __call__(self):
+        return self.now
+
+
+@pytest.fixture
+def clock(monkeypatch):
+    fake = Clock()
+    monkeypatch.setattr(nmcli_backend.time, "monotonic", fake)
+    return fake
+
+
+def test_the_active_connection_is_asked_once_per_refresh_not_per_question(backend, nmcli, clock):
+    for _ in range(10):
+        backend.active_connection()
+    asked = len(nmcli.calls)
+    assert asked <= 3, "ten questions in one moment should cost one lookup"
+    clock.now += nmcli_backend.NETWORK_SECONDS + 0.1
+    backend.active_connection()
+    assert len(nmcli.calls) > asked, "an old answer must be asked again"
+
+
+def test_changing_the_network_forgets_what_was_remembered(backend, nmcli, clock):
+    backend.active_connection()
+    before = len(nmcli.calls)
+    backend.forget_profile("easyconnect-Ferndale")
+    after_change = len(nmcli.calls)
+    backend.active_connection()
+    assert len(nmcli.calls) > after_change > before
+
+
+def test_the_cameras_are_not_reopened_every_few_seconds(backend, nmcli, clock, monkeypatch):
+    nmcli.reply("--list-cameras", "Available cameras\n0 : imx296 [1456x1088]\n1 : imx296 [1456x1088]\n")
+    monkeypatch.setattr(nmcli_backend, "find_tool", lambda name: "/usr/bin/" + name)
+    for _ in range(5):
+        assert len(backend.cameras()) == 2
+        clock.now += 5
+    assert sum("--list-cameras" in call for call in nmcli.calls) == 1
+
+
+def test_while_pitrac_measures_its_cameras_are_left_alone(backend, nmcli, clock, monkeypatch):
+    nmcli.reply("--list-cameras", "0 : imx296 [1456x1088]\n1 : imx296 [1456x1088]\n")
+    monkeypatch.setattr(nmcli_backend, "find_tool", lambda name: "/usr/bin/" + name)
+    backend.cameras()
+    clock.now += nmcli_backend.CAMERAS_FOUND_SECONDS + 1
+    monkeypatch.setattr(NmcliBackend, "process_running", lambda self, pattern: pattern == "pitrac_lm")
+    assert len(backend.cameras()) == 2
+    assert sum("--list-cameras" in call for call in nmcli.calls) == 1
+    clock.now += nmcli_backend.CAMERAS_IN_USE_SECONDS
+    backend.cameras()
+    assert sum("--list-cameras" in call for call in nmcli.calls) == 2

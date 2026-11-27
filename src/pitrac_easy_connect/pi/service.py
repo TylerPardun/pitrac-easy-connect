@@ -168,6 +168,9 @@ class PiService:
         self.discovery = discovery.DiscoveryResponder(self.describe, port=discovery_port)
 
         self._lock = threading.RLock()
+        #: Refreshes run one at a time; see refresh() and request_refresh().
+        self._refresh_lock = threading.Lock()
+        self._refresh_wanted = threading.Event()
         self._state = State.STARTING
         self._simulator_status: Optional[Dict[str, Any]] = None
         self._last_report = None
@@ -297,6 +300,7 @@ class PiService:
 
     def stop(self) -> None:
         self._stop.set()
+        self._refresh_wanted.set()  # wake the poll loop so it sees the stop
         for thread in (self._poller, self._network_watcher):
             if thread is not None:
                 thread.join(timeout=3)
@@ -413,14 +417,20 @@ class PiService:
                 self.relay.sweep()
             except Exception:
                 pass
-            if time.monotonic() - last_refresh > POLL_SECONDS * 2:
+            wanted = self._refresh_wanted.is_set()
+            if wanted or time.monotonic() - last_refresh > POLL_SECONDS * 2:
+                self._refresh_wanted.clear()
                 last_refresh = time.monotonic()
                 try:
                     self._ensure_relay_target()
                     self.refresh()
                 except Exception:
                     pass
-            self._stop.wait(POLL_SECONDS)
+            # Woken early by request_refresh, so an attached computer hears
+            # about a change at once rather than at the next poll.
+            self._refresh_wanted.wait(POLL_SECONDS)
+            if self._stop.is_set():
+                break
 
     def _ensure_relay_target(self) -> None:
         """Check PiTrac's simulators once each time PiTrac comes up.
@@ -448,7 +458,22 @@ class PiService:
             self._note("Could not add Easy-Connect to PiTrac's simulators: {}".format(exc))
         self._relay_target_checked = True
 
+    def request_refresh(self) -> None:
+        """Ask for a refresh soon, without running one on this thread.
+
+        For the link's reader thread above all: a self-test takes seconds, and
+        running one there held up shot results and pings behind it.
+        """
+
+        self._refresh_wanted.set()
+
     def refresh(self) -> State:
+        # One at a time. Several threads asked at once, and each ran the whole
+        # self-test -- camera detection and all -- side by side.
+        with self._refresh_lock:
+            return self._refresh()
+
+    def _refresh(self) -> State:
         report = self.selftest.run()
         network = self.provisioner.status()
         state = state_for(report, network, self.link_server.connected)
@@ -545,14 +570,14 @@ class PiService:
             except EasyConnectError as exc:
                 # It got here some other way. The window stays open.
                 self._note("Not confirmed yet: {}".format(exc.detail))
-        self.refresh()
+        self.request_refresh()
 
     def _on_companion_detach(self, session: CompanionSession) -> None:
         self.relay.detach_companion()
         with self._lock:
             self._simulator_status = None
         self._note("{} disconnected".format(session.computer_name or "The computer"))
-        self.refresh()
+        self.request_refresh()
 
     def _on_companion_frame(self, session: CompanionSession, frame: Dict[str, Any]) -> None:
         kind = frame.get("type")
@@ -568,7 +593,7 @@ class PiService:
             # Only for news. A refresh pushes a status back, and earlier desktop
             # releases answer every push with another of these.
             if news:
-                self.refresh()
+                self.request_refresh()
         elif kind == "command":
             if str(frame.get("command", "")) in SLOW_COMMANDS:
                 # Away from the thread that reads this session. Joining a
