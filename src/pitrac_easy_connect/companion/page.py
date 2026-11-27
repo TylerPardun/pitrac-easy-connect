@@ -1678,6 +1678,7 @@ function showPane(name){
     if(RANGE.start()) RANGE.resize();
     refreshRange();
   }
+  unloadHiddenFrames();
   loadFrames();
 }
 document.querySelectorAll("#tabs button").forEach(button=>
@@ -1844,6 +1845,9 @@ const OWNER_TOKEN_CACHE_MS=25*60*1000;
 async function ensureOwnerToken(){
   if(ownerTokenDeviceId!==status.activeDeviceId){ ownerToken=""; ownerTokenDeviceId=status.activeDeviceId; }
   if(ownerToken && Date.now()-ownerTokenAt<OWNER_TOKEN_CACHE_MS) return ownerToken;
+  // A refusal is not retried on every 3-second render; a minute is plenty.
+  if(!ownerToken && Date.now()-ownerTokenAt<60*1000) return ownerToken;
+  ownerTokenAt=Date.now();
   try{
     const result=await api("/api/enclosure",{command:"issueOwnerToken"});
     ownerToken=result.token||"";
@@ -1865,8 +1869,10 @@ async function openSetupFrame(){
   }
   const token=await ensureOwnerToken();
   const base="http://"+address+(port===80?"":":"+port);
+  // Keyed by the address, not the token in it: a renewed token changed the
+  // URL, and the frame reloaded under whatever was being typed into it.
   frameInto("setupFrame","setupHint", token?base+"?ownerToken="+encodeURIComponent(token):base,
-    "Connect to PiTrac to change its settings.");
+    "Connect to PiTrac to change its settings.", base);
 }
 
 function loadFrames(){
@@ -1882,11 +1888,29 @@ function loadFrames(){
   if(pane==="setup") openSetupFrame();
 }
 
-function frameInto(frameId, hintId, url, emptyText){
+function frameInto(frameId, hintId, url, emptyText, key){
   const frame=$(frameId), hint=$(hintId);
   if(!url){ frame.style.display="none"; hint.style.display=""; hint.textContent=emptyText; return; }
   hint.style.display="none"; frame.style.display="";
-  if(frame.dataset.src!==url){ frame.dataset.src=url; frame.src=url; }
+  const same=key||url;
+  if(frame.dataset.src!==same){ frame.dataset.src=same; frame.src=url; }
+}
+
+// A frame left loaded after its tab is closed goes on polling the enclosure:
+// the setup page asks for PiTrac's status every few seconds, and each answer
+// costs the Pi a round of system checks, for the rest of the session.
+function unloadHiddenFrames(){
+  [["pitracFrame","pitrac"],["setupFrame","setup"]].forEach(([id,owner])=>{
+    const frame=$(id);
+    if(pane!==owner && frame.dataset.src){
+      // A fresh empty frame in its place: no navigation, nothing for the
+      // page's security policy to judge, and the old page is gone.
+      frame.removeAttribute("src");
+      const empty=frame.cloneNode(false);
+      delete empty.dataset.src;
+      frame.replaceWith(empty);
+    }
+  });
 }
 
 async function refresh(){

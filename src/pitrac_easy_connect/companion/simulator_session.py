@@ -79,6 +79,12 @@ class SimulatorSession:
         #: out a timeout to prove the connection is still there.
         self.messages_seen = 0
         self._lock = threading.RLock()
+        #: One connection attempt at a time, held across the network wait so
+        #: that _lock -- which every status read takes -- never is.
+        self._connecting = threading.Lock()
+        #: Bumped by close(), so a connect that was under way when the session
+        #: was closed does not bring it back to life.
+        self._closes = 0
         self._sock: Optional[socket.socket] = None
         self._reader: Optional[threading.Thread] = None
         self._stop = threading.Event()
@@ -97,23 +103,43 @@ class SimulatorSession:
             return self._sock is not None
 
     def connect(self) -> None:
-        with self._lock:
-            if self._sock is not None:
-                return
+        # The connect itself happens outside _lock. Holding it across a refused
+        # connection -- about two seconds on Windows -- stalled every status
+        # read, and with it the window, for as long.
+        with self._connecting:
+            with self._lock:
+                if self._sock is not None:
+                    return
+                closes = self._closes
             try:
                 sock = socket.create_connection((self.host, self.port), timeout=CONNECT_TIMEOUT)
             except OSError as exc:
-                self.last_error = _friendly(self.simulator, exc)
+                with self._lock:
+                    self.last_error = _friendly(self.simulator, exc)
                 raise
             sock.settimeout(0.5)
             self._prepare(sock)
-            self._sock = sock
-            self.generation += 1
-            self._owed = None
-            self.last_error = ""
-            self._stop.clear()
-            self._reader = threading.Thread(target=self._read_loop, args=(sock,), daemon=True)
-            self._reader.start()
+            with self._lock:
+                if self._closes != closes or self._sock is not None:
+                    try:
+                        sock.close()
+                    except OSError:
+                        pass
+                    if self._sock is not None:
+                        return
+                    raise ConnectionAbortedError("the session was closed while connecting")
+                self._connect_locked(sock)
+
+    def _connect_locked(self, sock: socket.socket) -> None:
+        """Adopt a fresh connection. Called with _lock held."""
+
+        self._sock = sock
+        self.generation += 1
+        self._owed = None
+        self.last_error = ""
+        self._stop.clear()
+        self._reader = threading.Thread(target=self._read_loop, args=(sock,), daemon=True)
+        self._reader.start()
 
     def ensure_connected(self) -> bool:
         try:
@@ -131,6 +157,7 @@ class SimulatorSession:
     def close(self) -> None:
         self._stop.set()
         with self._lock:
+            self._closes += 1
             sock, self._sock = self._sock, None
             self._owed = None
         if sock is not None:

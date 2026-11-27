@@ -1105,14 +1105,18 @@ class CompanionService:
         if simulator is None:
             self._report_simulator_state()
             return False
+        retired = None
         with self._lock:
             session = self._session
             if session is not None and session.simulator is not simulator:
-                session.close()
-                session = None
+                retired, session = session, None
             if session is None:
                 session = self._new_session(simulator)
                 self._session = session
+        # Closed outside the lock: closing waits up to two seconds for the old
+        # reader thread, and status reads were waiting behind it.
+        if retired is not None:
+            retired.close()
 
         connected = session.ensure_connected()
         if not connected:
