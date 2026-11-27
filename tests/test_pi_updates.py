@@ -794,6 +794,7 @@ def test_the_guard_is_armed_before_the_link_moves_never_after(released, upstream
     assert len(details["asset_sha256"]) == 64
 
 
+@on_posix
 def test_a_restart_that_ends_the_updater_does_not_undo_a_guarded_update(released, upstream):
     """What a real enclosure did: switch to the new version, restart itself,
     take the end of its own restart for a failed one, and switch back.
@@ -821,6 +822,7 @@ def test_a_restart_that_ends_the_updater_does_not_undo_a_guarded_update(released
     assert swapped == [link.resolve()]
 
 
+@on_posix
 def test_without_a_guard_a_failed_restart_is_still_undone(released, upstream):
     """No guard means nobody else will, so the updater keeps that job."""
 
