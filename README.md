@@ -15,7 +15,7 @@ own application window. It connects the enclosure to your home Wi-Fi, finds it
 automatically, and puts each measured shot on its own range or into GSPro. It also
 includes PiTrac's dashboard, shot history, and a practice range.
 
-A five-step guide walks you through the first setup. If you move the enclosure to another home, you only need to choose the new Wi-Fi network. You do not need to reconfigure PiTrac.
+A short guide walks you through the first setup. If you move the enclosure to another home, you only need to choose the new Wi-Fi network. You do not need to reconfigure PiTrac.
 
 - **Version:** 0.10.6
 - **License:** [MIT](LICENSE)
@@ -38,9 +38,10 @@ A five-step guide walks you through the first setup. If you move the enclosure t
 | **Local Range** | A first-person range with nothing else to buy, open or sign in to. Set a target, and the club is chosen from its distance and how far you hit each one; change it with one key. Every shot shows carry, total, distance to the pin, speed, launch, direction and spin, and the session shows where they finished. Works on macOS and Windows |
 | **OpenGolfSim** | Plays its range and courses on macOS and Windows. It is free and separate: choose **Developer API** as its launch monitor. Each shot shows whether it was played, and where the simulator says it went |
 | **GSPro** | Sends each measured shot to GSPro, which runs on Windows. PiTrac is pointed at Easy-Connect once, when the enclosure is set up, and never again — so a new router, a new address, or a move to another house does not break shot delivery. A **Play mode** page shows which is selected, whether GSPro is answering, and the steps to get it listening |
-| **Setup and system checks** | A five-step guide handles the first setup. The app also checks that the cameras, calibration, software, storage, and other essentials are ready, then explains anything that needs attention |
+| **Setup and system checks** | A short guide handles the first setup. The app also checks that the cameras, calibration, software, storage, and other essentials are ready, then explains anything that needs attention |
 | **Shot history and practice range** | Every shot is saved with the club it was hit with, including shots played through GSPro. Averages build up with or without a simulator. Recent shot images PiTrac has saved are shown separately |
-| **Dashboard and settings** | Includes PiTrac's dashboard and tools to back up, restore, update, or reset the enclosure for a new owner |
+| **Updates** | The app checks for new versions itself and offers **Update now** on its first page. After it restarts it brings the enclosure to the same version by itself, and the enclosure puts the previous version back if a new one does not start |
+| **Dashboard and settings** | Includes PiTrac's dashboard and tools to back up, restore, or reset the enclosure for a new owner |
 
 ### What it looks like
 
@@ -76,52 +77,125 @@ The app finds the enclosure automatically, limits access to computers you have a
 
 ---
 
-## Install on the Raspberry Pi
+## Set up a Raspberry Pi from scratch
 
-PiTrac itself must already be installed and working — see
-[PiTracLM/PiTrac](https://github.com/PiTracLM/PiTrac). If you are starting with
-a blank memory card, install PiTrac first by following
-[PiTracLM's own instructions](https://github.com/PiTracLM/PiTrac).
-It covers the entire process, from flashing the card to running the launch
-monitor.
+This takes a blank memory card to a working enclosure. Steps 1 to 3 are the
+Raspberry Pi and PiTrac itself; step 4 is Easy-Connect. If PiTrac is already
+installed and measuring, go straight to step 4.
 
-This release was built and tested against one PiTrac revision. PiTrac has no
-numbered releases, so check that revision out before building it:
+**You will need:** a Raspberry Pi 5 (this release is tested on one), a 32 GB or
+larger microSD card, a computer to write the card from, and the PiTrac hardware:
+two global-shutter cameras (Raspberry Pi Global Shutter or InnoMaker IMX296),
+two **Raspberry Pi 5 camera cables** (narrow 22-pin end for the Pi, wide 15-pin
+end for the camera) and the rest of PiTrac's build. PiTrac's
+[build guide](https://docs.pitrac.org/build-guide/) covers the hardware.
+
+### 1. Write the memory card
+
+1. Install [Raspberry Pi Imager](https://www.raspberrypi.com/software/) and
+   choose **Raspberry Pi 5**, then **Raspberry Pi OS (64-bit)**. This release is
+   tested on the Debian 13 "trixie" release of it.
+2. When Imager offers to customise the settings, set:
+   - a **username and password** (PiTrac installs for this user),
+   - your **Wi-Fi** network and **country** (Easy-Connect takes over the Wi-Fi
+     later, but this gets the Pi online for the install),
+   - **SSH**, with password authentication.
+3. Write the card, put it in the Pi and switch on. After a minute or two, from
+   your computer:
+
+   ```bash
+   ssh <username>@<hostname>.local
+   ```
+
+   If the name does not answer, use the Pi's IP address from your router's
+   list of devices.
+
+### 2. Connect the cameras and check them
+
+Always **switch the Pi off** before plugging or unplugging a camera cable: it
+only looks for cameras when it starts.
+
+1. Plug the narrow end of each cable into the Pi's **CAM/DISP 0** and
+   **CAM/DISP 1** connectors, and the wide end into each camera. At every end,
+   lift the latch, push the cable fully in and close the latch, with no bare
+   contacts showing.
+2. Switch on and run:
+
+   ```bash
+   rpicam-hello --list-cameras
+   ```
+
+   Both cameras should be listed. If it says **No cameras available!**, a likely
+   cause is a cable fitted upside down at one end, which stops the camera
+   answering at all (`dmesg | grep imx296` then shows `failed ... -121`).
+   Switch off, turn the cable over **at the camera end**, and try again; if
+   that does not help, swap cables and cameras to see which one follows.
+
+### 3. Install PiTrac
+
+Easy-Connect is tested against one PiTrac revision, and PiTrac has no numbered
+releases, so check that revision out before building:
 
 ```bash
+sudo apt update && sudo apt install -y git
+git clone https://github.com/PiTracLM/PiTrac.git
+cd PiTrac
 git checkout 78f1de60fd21398f34d348f19f55e73029bc95f9
+cd packaging
+sudo ./build.sh dev
 ```
 
-A newer PiTrac may work. Easy-Connect checks what PiTrac answers and says so
-plainly when it cannot use it, but PiTrac's own update button can move it past
-what has been tested.
+This builds and installs PiTrac, its camera tools and its dashboard, and takes a
+while. Then follow PiTrac's build guide to **calibrate the strobe and the
+cameras**; PiTrac will not take pictures until the strobe is calibrated. Its
+dashboard is at `http://<hostname>.local:8080`.
 
-Once PiTrac is working, copy the kit's source zip to the Pi, then on the Pi:
+A newer PiTrac may work: Easy-Connect checks what PiTrac answers and says
+plainly when it cannot use it. Avoid PiTrac's own update button, which can move
+it past the tested revision.
+
+### 4. Install Easy-Connect
+
+On the Pi:
 
 ```bash
-unzip "PiTrac Easy-Connect"*source.zip
-cd PiTrac-Easy-Connect
+cd ~
+curl -L -o easy-connect.tar.gz https://github.com/TylerPardun/pitrac-easy-connect/archive/refs/tags/v0.10.6.tar.gz
+tar -xzf easy-connect.tar.gz
+cd pitrac-easy-connect-0.10.6
 sudo bash packaging/pi/install.sh
 ```
 
-If `pitrac.local` does not answer, use the Pi's IP address instead — your
-router lists it. If you have used this Pi before and `ssh` refuses to connect
-after the card was rewritten, run `ssh-keygen -R pitrac.local` and try again.
+With a kit on a USB stick instead, copy its source zip to the Pi and run
+`unzip "PiTrac Easy-Connect"*source.zip`, `cd PiTrac-Easy-Connect` and the same
+`sudo bash packaging/pi/install.sh`.
 
-The installer checks the enclosure, installs and starts Easy-Connect, prepares
-PiTrac to send shots to the app, and prints the **owner card**.
+The installer checks the Pi, installs and starts Easy-Connect, prepares PiTrac
+to send shots to it, and prints the **owner card**:
 
 > **Photograph the owner card.** Its setup Wi-Fi password is generated for that
-> Pi alone, and it is the only way to reconnect if the enclosure cannot reach
-> a network.
+> Pi alone. It is the only way back in if the enclosure cannot reach a network,
+> and it is how a second computer is given access.
 
-Re-run the same installer to upgrade. Your setup, saved Wi-Fi networks,
-connected computers, and camera calibration are all preserved.
+The enclosure takes the stable name printed on the card,
+`pitrac-<device id>.local`. If it cannot join a saved network it makes its own,
+named on the card, so it can always be set up. That is all that is ever done on
+the Pi: from now on **the app updates it**, and nothing needs installing there
+again. (An enclosure set up before 0.10.6 needs this step run once more to
+receive updates from the app; the app says so when it meets one.)
 
-The service assigns each enclosure the stable hostname printed in its identity,
-`pitrac-<device id>.local`, and publishes `_pitrac._tcp` through Avahi. UDP
-discovery remains the primary search path and keeps working when mDNS is
-unavailable.
+If `ssh` refuses to connect after a card was rewritten, run
+`ssh-keygen -R <hostname>.local` and try again.
+
+### When something is not right
+
+| What you see | What to do |
+|---|---|
+| **No cameras available!** or *0 of 2 cameras detected* | Switch off, turn the cable over at the camera end, switch on. The app's camera check names the cause it finds |
+| *PiTrac does not offer /api/sims* | PiTrac is older than the tested revision; repeat step 3 |
+| PiTrac's camera test says the strobe needs calibrating | Calibrate the strobe in PiTrac's dashboard first |
+| The app says **PiTrac needs a one-time reinstall** | Run step 4 again; settings and pairings are kept |
+| The app cannot find the enclosure | Check it has power; give it two minutes; on a new network it makes its own Wi-Fi, named on the owner card |
 
 ---
 
@@ -136,6 +210,10 @@ blank owner card, and a short `READ ME FIRST.txt`.
 | Mac | `PiTrac Easy-Connect <version> (Mac ...).dmg`. Drag the app into Applications |
 | Windows 11 | `PiTrac Easy-Connect <version> (Windows).exe` |
 
+Download them from the [latest release](https://github.com/TylerPardun/pitrac-easy-connect/releases/latest)
+(the Mac `.zip` for Apple silicon or Intel, or the Windows `-setup.exe`), or
+take them from a kit.
+
 Neither is signed with a paid certificate, so each system asks the first time:
 
 | Computer | What to do |
@@ -143,8 +221,17 @@ Neither is signed with a paid certificate, so each system asks the first time:
 | Mac | Open it once, then **System Settings → Privacy & Security → Open Anyway** |
 | Windows | **More info**, then **Run anyway** |
 
-Installing a later kit over the top keeps pairing, Wi-Fi, calibration, settings,
-and shot history. Use the same kit for the Pi and for every computer.
+**Updates.** When a new version is out, the app says so at the top of its first
+page. Press **Update now**: it installs, restarts, and then brings the enclosure
+to the same version by itself. Pairing, Wi-Fi, calibration, settings, and shot
+history are kept. Copies of Easy-Connect before 0.10.6 cannot update
+themselves; install 0.10.6 by hand once.
+
+**More than one computer.** The first computer to connect is trusted
+automatically. Any other computer asks for the password on the owner card, or
+can be let in from a computer that is already trusted (**Pair another
+computer**). The enclosure talks to one computer at a time and remembers the
+others; **Connect here** moves it to the one in front of you.
 
 If macOS cannot find PiTrac, open **System Settings → Privacy & Security →
 Local Network** and allow PiTrac Easy-Connect, then search again.

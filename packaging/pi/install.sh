@@ -78,7 +78,9 @@ if [ "$UNINSTALL" = yes ]; then
 fi
 
 step "Checking this Raspberry Pi"
-MODEL="$(tr -d '\0' < /proc/device-tree/model 2>/dev/null || echo unknown)"
+# The redirect applies to the command, not to the < that opens the file, so
+# the shell's own "No such file" went to the screen; read it inside a group.
+MODEL="$( { tr -d '\0' < /proc/device-tree/model; } 2>/dev/null || echo unknown)"
 say "Model: $MODEL"
 case "$MODEL" in
     *"Raspberry Pi 5"*) ;;
@@ -105,12 +107,15 @@ else
 fi
 say "UDP discovery remains available independently of Avahi."
 
-if ! nmcli -t -f DEVICE,TYPE device status | grep -q ':wifi$'; then
+if ! nmcli -t -f DEVICE,TYPE device status | grep ':wifi$' >/dev/null; then
     die "No Wi-Fi device was found."
 fi
 
 # The enclosure's setup signal needs the radio to support access-point mode.
-if command -v iw >/dev/null && ! iw list 2>/dev/null | grep -qE '^\s+\* AP$'; then
+# grep reads everything rather than -q: -q stops at the first match, iw is cut
+# off mid-output (SIGPIPE, 141), pipefail counts that as failure, and the
+# warning fired exactly when the radio did support it.
+if command -v iw >/dev/null && ! iw list 2>/dev/null | grep -E '^\s+\* AP$' >/dev/null; then
     say "WARNING: this Wi-Fi adapter may not support the setup hotspot."
 fi
 
