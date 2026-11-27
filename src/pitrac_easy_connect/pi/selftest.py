@@ -18,7 +18,7 @@ ones that matter: an enclosure that is still being assembled must say the
 cameras are missing, not quietly leave them out of the total.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Callable, Dict, List, Optional
 
 from ..common.errors import (
@@ -84,6 +84,8 @@ class CheckResult:
     detail: str = ""
     error: Optional[ErrorInfo] = None
     critical: bool = False
+    #: Why it failed, with the evidence, when the check can tell.
+    diagnosis: Optional[Dict[str, Any]] = None
 
     @property
     def blocks_play(self) -> bool:
@@ -108,6 +110,8 @@ class CheckResult:
         }
         if self.error is not None:
             value["error"] = self.error.as_dict()
+        if self.diagnosis is not None:
+            value["diagnosis"] = self.diagnosis
         return value
 
 
@@ -302,13 +306,31 @@ class SelfTest:
                 PASS,
                 "{} cameras detected".format(len(cameras)),
             )
+        detail = "{} of {} cameras detected".format(len(cameras), REQUIRED_CAMERAS)
+        error = PI_NO_CAMERA
+        diagnosis = None
+        # Why, not just how many: reseating a cable, editing config.txt and
+        # reinstalling camera software are different jobs. The diagnosis is a
+        # help, never a gate -- if it cannot be worked out, the count stands.
+        try:
+            from .camera_diagnosis import diagnose
+
+            evidence = self.backend.camera_evidence(len(cameras), REQUIRED_CAMERAS)
+            found = diagnose(evidence)
+            if found.cause != "ok":
+                detail = "{}. {}".format(detail, found.finding)
+                error = replace(PI_NO_CAMERA, next_step=found.fix)
+                diagnosis = dict(found.as_dict(), evidence=evidence.as_dict())
+        except Exception:
+            pass
         return CheckResult(
             "cameras",
             "Cameras",
             FAIL,
-            "{} of {} cameras detected".format(len(cameras), REQUIRED_CAMERAS),
-            PI_NO_CAMERA,
+            detail,
+            error,
             critical=True,
+            diagnosis=diagnosis,
         )
 
     def _calibration(self) -> CheckResult:

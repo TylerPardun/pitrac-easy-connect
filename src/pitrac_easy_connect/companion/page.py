@@ -1444,6 +1444,17 @@ function renderDetails(data){
     ["PiTrac",device.version||"-"],["Easy-Connect",data.version],
     ["Versions match",update.enclosureVersion?(update.versionsMatch?"yes":"no — update both"):"-"],
     ["Updates",update.detail||"-"]];
+  // What the enclosure saw at each level when a camera is missing, so a cable
+  // fault and a software fault can be told apart without opening a terminal.
+  const cameraCheck=((enclosure.selfTest||{}).checks||[]).find(c=>c.key==="cameras");
+  const seen=cameraCheck&&cameraCheck.diagnosis&&cameraCheck.diagnosis.evidence;
+  if(seen){
+    rows.push(["Camera detection", seen.autoDetect?"automatic at power-on":"off in config.txt"]);
+    rows.push(["Cameras the Pi looked for", seen.expectedSensors.length?seen.expectedSensors.join(", "):"none answered"]);
+    rows.push(["Cameras working", seen.boundSensors.length?seen.boundSensors.join(", "):"none"]);
+    rows.push(["Camera software", seen.rpicamMessage||(seen.listed+" listed")]);
+    if(seen.kernelLines.length) rows.push(["Kernel said", seen.kernelLines[seen.kernelLines.length-1]]);
+  }
   $("kv").innerHTML=rows.map(([k,v])=>`<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join("");
 }
 

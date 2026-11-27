@@ -387,6 +387,17 @@ class SimulatedPi(PiBackend):
     def cameras(self) -> List[CameraInfo]:
         return [CameraInfo(index=i, model="imx296") for i in range(self.camera_count)]
 
+    def camera_evidence(self, listed: int, required: int):
+        """A Pi whose missing cameras never answered at power-on, as unplugged ones do."""
+
+        from .camera_diagnosis import CameraEvidence
+
+        present = ["imx296"] * min(self.camera_count, required)
+        return CameraEvidence(
+            required=required, listed=listed, config_found=True, auto_detect=True,
+            expected_sensors=list(present), bound_sensors=list(present),
+        )
+
     def service_status(self, name: str) -> ServiceStatus:
         active = self.services.get(name)
         return ServiceStatus(

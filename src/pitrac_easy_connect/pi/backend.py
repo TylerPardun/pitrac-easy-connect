@@ -308,6 +308,11 @@ class PiBackend:
     def cameras(self) -> List[CameraInfo]:
         raise NotImplementedError
 
+    def camera_evidence(self, listed: int, required: int):
+        """What the Pi knows about why cameras are missing; see camera_diagnosis."""
+
+        raise NotImplementedError
+
     def service_status(self, name: str) -> ServiceStatus:
         raise NotImplementedError
 

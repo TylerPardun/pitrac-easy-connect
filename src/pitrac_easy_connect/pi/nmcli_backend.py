@@ -696,6 +696,25 @@ class NmcliBackend(PiBackend):
                 cameras.append(CameraInfo(index=int(match.group(1)), model=match.group(2)))
         return cameras
 
+    #: Reading the kernel log on every self-test is wasteful; a missing camera
+    #: does not change its story in half a minute.
+    CAMERA_EVIDENCE_SECONDS = 30.0
+
+    def camera_evidence(self, listed: int, required: int):
+        from . import camera_diagnosis
+
+        cached = getattr(self, "_camera_evidence", None)
+        if cached and cached[0] == (listed, required) and time.monotonic() - cached[1] < self.CAMERA_EVIDENCE_SECONDS:
+            return cached[2]
+
+        def run(command, timeout):
+            done = _run(command, timeout=timeout, check=False)
+            return done.returncode, done.stdout or "", done.stderr or ""
+
+        evidence = camera_diagnosis.gather(run, find_tool, listed=listed, required=required)
+        self._camera_evidence = ((listed, required), time.monotonic(), evidence)
+        return evidence
+
     def service_status(self, name: str) -> ServiceStatus:
         present = _run(
             ["systemctl", "list-unit-files", name], timeout=10, check=False
