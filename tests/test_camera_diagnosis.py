@@ -151,3 +151,28 @@ def test_a_diagnosis_that_cannot_be_worked_out_leaves_the_count(tmp_path):
     check = next(c for c in selftest.run().as_dict()["checks"] if c["key"] == "cameras")
     assert check["detail"] == "0 of 2 cameras detected"
     assert "diagnosis" not in check
+
+
+def test_this_enclosures_real_boot_log_is_read_as_neither_camera_answering():
+    """Recorded on the user's Pi 5 with explicit imx296 overlays, 2026-11-27."""
+
+    kernel = "\n".join([
+        "[    2.851937] rp1-cfe 1f00110000.csi: found subdevice /axi/pcie@1000120000/rp1/i2c@88000/imx296@1a",
+        "[    2.852984] rp1-cfe 1f00128000.csi: found subdevice /axi/pcie@1000120000/rp1/i2c@80000/imx296@1a",
+        "[    3.519083] imx296 11-001a: 8-bit write to 0x3000 failed: -121",
+        "[    3.519093] imx296 11-001a: failed to get sensor out of standby (-121)",
+        "[    3.519220] imx296 11-001a: probe with driver imx296 failed with error -121",
+        "[    4.035077] imx296 10-001a: 8-bit write to 0x3000 failed: -121",
+        "[    4.035087] imx296 10-001a: failed to get sensor out of standby (-121)",
+        "[    4.035227] imx296 10-001a: probe with driver imx296 failed with error -121",
+    ])
+    lines = [line for line in kernel.splitlines() if cd.KERNEL_CAMERA.search(line)]
+    found = diagnose(CameraEvidence(
+        listed=0, config_found=True, auto_detect=True,
+        overlays=["imx296,cam0", "imx296,cam1"],
+        expected_sensors=["imx296", "imx296"], bound_sensors=[],
+        kernel_lines=lines[-cd.KERNEL_LINES_KEPT:],
+    ))
+    assert found.cause == "camera-not-answering"
+    assert "2 did not answer" in found.finding
+    assert "-121" in found.finding
