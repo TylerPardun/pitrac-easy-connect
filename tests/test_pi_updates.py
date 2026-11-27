@@ -871,6 +871,7 @@ class _GuardClock:
 # --- What stops an update on a real enclosure, found before one is tried ----
 
 
+@on_posix
 def test_update_problems_names_a_missing_switch_user_right(tmp_path, monkeypatch):
     from pitrac_easy_connect.pi import service as service_module
 
@@ -917,8 +918,9 @@ def test_the_live_link_is_beside_the_releases_in_the_writable_directory():
             / "pitrac-easy-connect.service").read_text()
     writable = [line.split("=", 1)[1].lstrip("-") for line in unit.splitlines()
                 if line.startswith("ReadWritePaths=")]
-    assert str(root) in writable
-    assert "PYTHONPATH={}".format(service_module.ENCLOSURE_LINK_PATH) in unit
+    # The unit is read on the enclosure, so compare as the enclosure writes paths.
+    assert root.as_posix() in writable
+    assert "PYTHONPATH={}".format(service_module.ENCLOSURE_LINK_PATH.as_posix()) in unit
     # Naming root takes CAP_SETUID away on current systemd; see the unit.
     assert not any(line.strip().startswith("User=") for line in unit.splitlines())
 
