@@ -1,5 +1,6 @@
 """The operating-system window used by every desktop launch."""
 
+import sys
 from typing import Callable, Optional
 
 
@@ -49,22 +50,30 @@ def run_native(
         # makes the backend enforce that boundary even if future page markup
         # accidentally requests a new window.
         webview.settings["OPEN_EXTERNAL_LINKS_IN_BROWSER"] = False
+        # Hidden until Home has loaded, so a blank window never precedes it --
+        # on macOS only. There the backend fires "shown" for a hidden window and
+        # this is how it was tested. On Windows a hidden form is shown and
+        # hidden again at creation and "shown" is not dependable after that:
+        # the release build's real-window check saw the window never leave
+        # "starting". Windows opens it at once, as before, on the same dark
+        # background, which is what spares the white flash.
+        reveal_when_loaded = sys.platform == "darwin"
         native_window = webview.create_window(
             # The minimum is the width the wide layout needs; below it the
             # panes fall back to the single column they use today.
             title, url, width=width, height=height, min_size=(900, 600),
-            background_color="#0b0f0d", hidden=True,
+            background_color="#0b0f0d", hidden=reveal_when_loaded,
         )
 
         def shown() -> None:
-            # Both desktop backends fire shown when the native handle is ready,
-            # including for hidden windows. Wait off the GUI thread for the
-            # first document so a blank window never precedes the home screen.
-            # A slow or failed load must still leave a window the owner can close.
-            native_window.events.loaded.wait(3)
-            if native_window.events.closed.is_set():
-                return
-            native_window.show()
+            if reveal_when_loaded:
+                # Off the GUI thread: wait for the first document, then show.
+                # A slow or failed load must still leave a window the owner
+                # can close.
+                native_window.events.loaded.wait(3)
+                if native_window.events.closed.is_set():
+                    return
+                native_window.show()
             if on_activation_ready is not None:
                 on_activation_ready(lambda: _bring_to_front(native_window))
             if on_created is not None:

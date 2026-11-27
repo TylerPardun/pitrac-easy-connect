@@ -260,5 +260,20 @@ def test_native_window_opens_in_the_same_colour_as_the_page():
     from pitrac_easy_connect.companion.page import PAGE
 
     used = _geometry_used()
-    assert used["hidden"] is True
     assert "--bg:" + used["background_color"] in PAGE
+
+
+@pytest.mark.parametrize("platform,hidden", [("darwin", True), ("win32", False)])
+def test_the_window_waits_for_home_only_where_that_is_known_to_work(
+    monkeypatch, platform, hidden
+):
+    """Hidden until Home loads on macOS; opened at once on Windows.
+
+    A hidden window is revealed from the backend's "shown" event. macOS fires
+    it for a hidden window; on Windows the release build's real-window check
+    saw the window never leave "starting", which on a desktop would be an app
+    that never appears.
+    """
+
+    monkeypatch.setattr(window.sys, "platform", platform)
+    assert _geometry_used()["hidden"] is hidden
