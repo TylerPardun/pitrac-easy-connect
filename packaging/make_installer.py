@@ -460,8 +460,13 @@ def try_it(executable, version, work):
         status = app.ask("/api/status")
         if status["simulator"] != "local":
             raise BuildError("A new installation should start on the Local Range")
-        if status["update"]["desktop"]["state"] != "idle":
-            raise BuildError("It went looking for an update that cannot exist")
+        # It may look for a newer version -- it does, on every start, and an
+        # offline build simply finds none. It must never start installing one
+        # by itself: that waits for somebody to press Update now.
+        if status["update"]["desktop"]["state"] not in (
+            "idle", "checking", "up-to-date", "available", "check-failed",
+        ):
+            raise BuildError("It started installing an update nobody asked for")
         app.ask("/api/range-demo", {})
         app.ask("/api/range-target", {"yards": 100})
         if app.ask("/api/range")["count"] != 1:
