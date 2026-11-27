@@ -437,12 +437,20 @@ def register_guard(journal_path: Path, journal) -> None:  # pragma: no cover - P
 
 
 def unregister_guard(journal) -> None:  # pragma: no cover - Pi only
+    """Stop the guard running at boot. Called by the guard itself, as it ends.
+
+    No daemon-reload: this runs inside the guard's own unit, and reloading with
+    its file gone leaves systemd holding a unit with default settings -- a
+    90-second start limit -- for a guard that may have been running for
+    minutes. On a real enclosure that killed the guard at the end of a
+    rollback. Removing the file is enough; the next reload forgets the unit.
+    """
+
     _systemctl("disable", GUARD_UNIT)
     try:
         (Path("/etc/systemd/system") / GUARD_UNIT).unlink()
     except OSError:
         pass
-    _systemctl("daemon-reload")
 
 
 GUARD_UNIT_TEMPLATE = """\
